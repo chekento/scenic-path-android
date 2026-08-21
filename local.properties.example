@@ -1,0 +1,4 @@
+# Copy to local.properties. Never commit local.properties.
+# For development only. Production secrets belong on the backend.
+SCENIC_API_BASE_URL=http://10.0.2.2:8787
+MAP_STYLE_URL=https://demotiles.maplibre.org/style.json

@@ -1,0 +1,36 @@
+{
+  "origin": {
+    "lat": 53.675,
+    "lon": 10.237,
+    "label": "Ahrensburg"
+  },
+  "destination": {
+    "lat": 53.551,
+    "lon": 9.994,
+    "label": "Hamburg"
+  },
+  "preferences": {
+    "weights": {
+      "beautifulRoads": 0.9,
+      "forest": 0.85,
+      "water": 0.9,
+      "mountains": 0.75,
+      "viewpoints": 1.0,
+      "culture": 0.8,
+      "museums": 0.65,
+      "architecture": 0.65,
+      "parks": 0.6,
+      "food": 0.35
+    },
+    "maxExtraMinutes": 45,
+    "maxExtraPercent": 35,
+    "maxStops": 5,
+    "minimumFoodRating": 4.6,
+    "minimumFoodReviewCount": 100,
+    "onlyOpenFood": false,
+    "avoidMotorways": true,
+    "avoidTolls": false,
+    "windingness": 70,
+    "hilliness": 55
+  }
+}
