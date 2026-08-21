@@ -1,6 +1,7 @@
 package cloud.kosch.scenicpath
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
@@ -15,16 +16,21 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 
 @Composable
-fun ScenicPathApp() {
+fun ScenicPathApp(locationPermissionGranted: Boolean) {
     var start by remember { mutableStateOf("Current location") }
     var destination by remember { mutableStateOf("") }
     var showScenicDNA by remember { mutableStateOf(false) }
     var showPlanner by remember { mutableStateOf(false) }
     var preferences by remember { mutableStateOf(ScenicPreferences()) }
     var plan by remember { mutableStateOf(TripPlan()) }
+    var recenterToken by remember { mutableIntStateOf(0) }
 
     Box(Modifier.fillMaxSize()) {
-        ScenicMap(modifier = Modifier.fillMaxSize())
+        ScenicMap(
+            modifier = Modifier.fillMaxSize(),
+            locationPermissionGranted = locationPermissionGranted,
+            recenterToken = recenterToken,
+        )
 
         Column(
             modifier = Modifier
@@ -66,7 +72,10 @@ fun ScenicPathApp() {
                 singleLine = true,
             )
 
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Row(
+                modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
                 AssistChip(
                     onClick = { showPlanner = true },
                     label = { Text(plan.routeCharacter.label) },
@@ -95,11 +104,19 @@ fun ScenicPathApp() {
             }
         }
 
-        FloatingActionButton(
-            onClick = { showPlanner = true },
+        Column(
             modifier = Modifier.align(Alignment.BottomEnd).padding(18.dp),
+            horizontalAlignment = Alignment.End,
+            verticalArrangement = Arrangement.spacedBy(10.dp),
         ) {
-            Icon(Icons.Default.EditRoad, "Open route planner")
+            if (locationPermissionGranted) {
+                SmallFloatingActionButton(onClick = { recenterToken++ }) {
+                    Icon(Icons.Default.MyLocation, "Center on my location")
+                }
+            }
+            FloatingActionButton(onClick = { showPlanner = true }) {
+                Icon(Icons.Default.EditRoad, "Open route planner")
+            }
         }
     }
 
