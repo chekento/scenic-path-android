@@ -18,8 +18,10 @@ import androidx.compose.ui.unit.dp
 fun ScenicPathApp() {
     var start by remember { mutableStateOf("Current location") }
     var destination by remember { mutableStateOf("") }
-    var showSettings by remember { mutableStateOf(false) }
+    var showScenicDNA by remember { mutableStateOf(false) }
+    var showPlanner by remember { mutableStateOf(false) }
     var preferences by remember { mutableStateOf(ScenicPreferences()) }
+    var plan by remember { mutableStateOf(TripPlan()) }
 
     Box(Modifier.fillMaxSize()) {
         ScenicMap(modifier = Modifier.fillMaxSize())
@@ -32,57 +34,95 @@ fun ScenicPathApp() {
                 .clip(MaterialTheme.shapes.extraLarge)
                 .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.96f))
                 .padding(14.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp)
+            verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Icon(Icons.Default.Landscape, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
+                Icon(Icons.Default.Landscape, null, tint = MaterialTheme.colorScheme.primary)
                 Spacer(Modifier.width(8.dp))
-                Text("Scenic Path", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+                Column {
+                    Text("Scenic Path", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+                    Text("The beautiful way", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
                 Spacer(Modifier.weight(1f))
-                IconButton(onClick = { showSettings = true }) {
-                    Icon(Icons.Default.Tune, contentDescription = "Scenic preferences")
+                IconButton(onClick = { showScenicDNA = true }) {
+                    Icon(Icons.Default.Tune, "Scenic DNA")
                 }
             }
+
             OutlinedTextField(
                 value = start,
                 onValueChange = { start = it },
                 label = { Text("Start") },
-                leadingIcon = { Icon(Icons.Default.MyLocation, contentDescription = null) },
+                leadingIcon = { Icon(Icons.Default.MyLocation, null) },
                 modifier = Modifier.fillMaxWidth(),
-                singleLine = true
+                singleLine = true,
             )
             OutlinedTextField(
                 value = destination,
                 onValueChange = { destination = it },
-                label = { Text("Destination") },
-                leadingIcon = { Icon(Icons.Default.Flag, contentDescription = null) },
+                label = { Text("Where do you want to go?") },
+                leadingIcon = { Icon(Icons.Default.Flag, null) },
                 modifier = Modifier.fillMaxWidth(),
-                singleLine = true
+                singleLine = true,
             )
+
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                AssistChip(
+                    onClick = { showPlanner = true },
+                    label = { Text(plan.routeCharacter.label) },
+                    leadingIcon = { Icon(Icons.Default.AutoAwesome, null, Modifier.size(18.dp)) },
+                )
+                AssistChip(
+                    onClick = { showPlanner = true },
+                    label = { Text(if (plan.stops.isEmpty()) "No fixed stops" else "${plan.stops.size} stops") },
+                    leadingIcon = { Icon(Icons.Default.LocationOn, null, Modifier.size(18.dp)) },
+                )
+                AssistChip(
+                    onClick = { showPlanner = true },
+                    label = { Text("+${preferences.maxExtraMinutes} min") },
+                    leadingIcon = { Icon(Icons.Default.MoreTime, null, Modifier.size(18.dp)) },
+                )
+            }
+
             Button(
-                onClick = { /* wired to backend in milestone M1 */ },
-                modifier = Modifier.fillMaxWidth(),
-                enabled = destination.isNotBlank()
+                onClick = { showPlanner = true },
+                modifier = Modifier.fillMaxWidth().height(52.dp),
+                enabled = destination.isNotBlank(),
             ) {
-                Icon(Icons.Default.AutoAwesome, contentDescription = null)
+                Icon(Icons.Default.Route, null)
                 Spacer(Modifier.width(8.dp))
-                Text("Find the beautiful way")
+                Text(if (plan.stops.isEmpty()) "Plan the beautiful route" else "Review route plan")
             }
         }
 
-        AssistChip(
-            onClick = { showSettings = true },
-            label = { Text("≤ ${preferences.maxExtraMinutes} min extra · Scenic ${preferences.weights.viewpoints.times(100).toInt()}%") },
-            leadingIcon = { Icon(Icons.Default.Route, contentDescription = null) },
-            modifier = Modifier.align(Alignment.BottomCenter).padding(18.dp)
+        FloatingActionButton(
+            onClick = { showPlanner = true },
+            modifier = Modifier.align(Alignment.BottomEnd).padding(18.dp),
+        ) {
+            Icon(Icons.Default.EditRoad, "Open route planner")
+        }
+    }
+
+    if (showPlanner) {
+        RoutePlannerSheet(
+            start = start,
+            destination = destination,
+            plan = plan,
+            preferences = preferences,
+            onPlanChange = { plan = it },
+            onPreferencesChange = { preferences = it },
+            onDismiss = { showPlanner = false },
         )
     }
 
-    if (showSettings) {
+    if (showScenicDNA) {
         ScenicSettingsSheet(
             preferences = preferences,
-            onChange = { preferences = it },
-            onDismiss = { showSettings = false }
+            onChange = {
+                preferences = it
+                plan = plan.copy(routeCharacter = RouteCharacter.CUSTOM)
+            },
+            onDismiss = { showScenicDNA = false },
         )
     }
 }
@@ -92,15 +132,20 @@ fun ScenicPathApp() {
 private fun ScenicSettingsSheet(
     preferences: ScenicPreferences,
     onChange: (ScenicPreferences) -> Unit,
-    onDismiss: () -> Unit
+    onDismiss: () -> Unit,
 ) {
     ModalBottomSheet(onDismissRequest = onDismiss) {
         Column(
             Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(horizontal = 20.dp).padding(bottom = 32.dp),
-            verticalArrangement = Arrangement.spacedBy(14.dp)
+            verticalArrangement = Arrangement.spacedBy(14.dp),
         ) {
-            Text("What should the route feel like?", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
-            Text("Scenic Path treats beauty as a weighted objective, not as a fixed route type.")
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text("Scenic DNA", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
+                    Text("Fine-tune what beautiful means to you.", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+                IconButton(onClick = onDismiss) { Icon(Icons.Default.Close, "Close") }
+            }
 
             WeightSlider("Beautiful roads", preferences.weights.beautifulRoads) { v -> onChange(preferences.copy(weights = preferences.weights.copy(beautifulRoads = v))) }
             WeightSlider("Forests", preferences.weights.forest) { v -> onChange(preferences.copy(weights = preferences.weights.copy(forest = v))) }
@@ -114,29 +159,21 @@ private fun ScenicSettingsSheet(
             WeightSlider("Top-rated food", preferences.weights.food) { v -> onChange(preferences.copy(weights = preferences.weights.copy(food = v))) }
 
             HorizontalDivider()
-            Text("Detour budget", fontWeight = FontWeight.SemiBold)
-            Text("Maximum +${preferences.maxExtraMinutes} minutes")
+            Text("Road feel", fontWeight = FontWeight.SemiBold)
+            Text("Winding ${preferences.windingness}%")
             Slider(
-                value = preferences.maxExtraMinutes.toFloat(),
-                onValueChange = { onChange(preferences.copy(maxExtraMinutes = it.toInt())) },
-                valueRange = 0f..180f,
-                steps = 17
+                value = preferences.windingness.toFloat(),
+                onValueChange = { onChange(preferences.copy(windingness = it.toInt())) },
+                valueRange = 0f..100f,
+            )
+            Text("Hilly ${preferences.hilliness}%")
+            Slider(
+                value = preferences.hilliness.toFloat(),
+                onValueChange = { onChange(preferences.copy(hilliness = it.toInt())) },
+                valueRange = 0f..100f,
             )
 
-            Text("Food quality", fontWeight = FontWeight.SemiBold)
-            Text("At least ${"%.1f".format(preferences.minimumFoodRating)}★ and ${preferences.minimumFoodReviewCount}+ reviews")
-            Slider(
-                value = preferences.minimumFoodRating.toFloat(),
-                onValueChange = { onChange(preferences.copy(minimumFoodRating = it.toDouble())) },
-                valueRange = 4.2f..5.0f,
-                steps = 7
-            )
-
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text("Avoid motorways", modifier = Modifier.weight(1f))
-                Switch(checked = preferences.avoidMotorways, onCheckedChange = { onChange(preferences.copy(avoidMotorways = it)) })
-            }
-            Button(onClick = onDismiss, modifier = Modifier.fillMaxWidth()) { Text("Apply profile") }
+            Button(onClick = onDismiss, modifier = Modifier.fillMaxWidth()) { Text("Use this Scenic DNA") }
         }
     }
 }
