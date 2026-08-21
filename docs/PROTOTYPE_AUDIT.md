@@ -19,4 +19,4 @@ The supplied WebSim prototype is a strong product demo, but it is not yet a prod
 6. **Provider keys must not be shipped as reusable secrets.** Route orchestration and Places queries belong behind a backend/proxy.
 
 ## Product decision
-The WebSim prototype is preserved in `/prototype` as UX/reference material. The Android app is a clean implementation, not a wrapper.
+The original WebSim prototype remains preserved in the M0 source bundle as UX/reference material. This GitHub branch intentionally contains the clean native Android implementation rather than mixing the legacy browser code into the app source.
