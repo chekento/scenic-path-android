@@ -4,6 +4,8 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.LocationOn
@@ -14,6 +16,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.delay
 
@@ -31,8 +34,9 @@ fun PlacePickerSheet(
     var results by remember { mutableStateOf<List<PlaceSuggestion>>(emptyList()) }
     var searching by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
+    var searchNonce by remember { mutableIntStateOf(0) }
 
-    LaunchedEffect(query, bias) {
+    LaunchedEffect(query, bias, searchNonce) {
         val normalized = query.trim()
         if (normalized.length < 2) {
             results = emptyList()
@@ -40,18 +44,25 @@ fun PlacePickerSheet(
             error = null
             return@LaunchedEffect
         }
-        delay(320)
+
+        // Protect type-ahead services from request spam while keeping the UI responsive.
+        delay(if (searchNonce > 0) 80 else 380)
         searching = true
         error = null
-        runCatching { ScenicApi.searchPlaces(context, normalized, bias) }
-            .onSuccess {
-                results = it
-                if (it.isEmpty()) error = "No matching places found"
-            }
-            .onFailure {
-                results = emptyList()
-                error = it.message ?: "Search unavailable"
-            }
+
+        val found = if (BuildConfig.DEBUG) {
+            // On a physical phone the default 10.0.2.2 backend address points nowhere.
+            // Use OSM/Photon directly for development so place selection remains testable.
+            runCatching { OsmPlaceSearch.search(normalized, bias) }.getOrNull().orEmpty()
+                .ifEmpty {
+                    runCatching { ScenicApi.searchPlaces(context, normalized, bias) }.getOrNull().orEmpty()
+                }
+        } else {
+            runCatching { ScenicApi.searchPlaces(context, normalized, bias) }.getOrNull().orEmpty()
+        }
+
+        results = found
+        error = if (found.isEmpty()) "No matching places found — try city + street or a landmark name." else null
         searching = false
     }
 
@@ -66,7 +77,10 @@ fun PlacePickerSheet(
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Column(Modifier.weight(1f)) {
                     Text(title, style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
-                    Text("Search and choose the exact place", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text(
+                        if (BuildConfig.DEBUG) "Search OpenStreetMap places, addresses and landmarks" else "Search and choose the exact place",
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
                 }
                 IconButton(onClick = onDismiss) { Icon(Icons.Default.Close, "Close") }
             }
@@ -78,8 +92,16 @@ fun PlacePickerSheet(
                 singleLine = true,
                 label = { Text("Place, address or landmark") },
                 leadingIcon = { Icon(Icons.Default.Search, null) },
+                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+                keyboardActions = KeyboardActions(onSearch = { searchNonce++ }),
                 trailingIcon = {
-                    if (searching) CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
+                    if (searching) {
+                        CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
+                    } else if (query.trim().length >= 2) {
+                        IconButton(onClick = { searchNonce++ }) {
+                            Icon(Icons.Default.Search, "Search now")
+                        }
+                    }
                 },
             )
 
@@ -116,6 +138,14 @@ fun PlacePickerSheet(
                         }
                     }
                 }
+            }
+
+            if (BuildConfig.DEBUG) {
+                Text(
+                    "Search data © OpenStreetMap contributors · Photon development service",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
             }
         }
     }
