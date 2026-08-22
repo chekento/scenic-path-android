@@ -20,6 +20,7 @@ import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import org.maplibre.android.camera.CameraUpdateFactory
 import org.maplibre.android.geometry.LatLng
+import org.maplibre.android.geometry.LatLngBounds
 import org.maplibre.android.maps.MapLibreMap
 import org.maplibre.android.maps.MapView
 import org.maplibre.android.style.layers.CircleLayer
@@ -46,12 +47,8 @@ private const val STOP_LAYER = "scenic-stop-layer"
 
 /**
  * MapLibre host with deliberately boring lifecycle management.
- *
- * Important: the MapView is remembered and is NOT a DisposableEffect key that changes when
- * the view is created. The previous implementation could dispose/destroy a freshly-created
- * MapView during the first recomposition, which is a plausible cause of the instant-close bug.
- * GPS is supplied by FusedLocationProviderClient outside MapLibre, so a location-engine failure
- * cannot take down map startup.
+ * GPS is supplied by FusedLocationProviderClient outside MapLibre, so a
+ * location-engine failure cannot take down map startup.
  */
 @Composable
 fun ScenicMap(
@@ -177,6 +174,19 @@ fun ScenicMap(
         if (styleLoaded) mapRef?.let { updateMapData(it, userLocation, routePoints, stops) }
     }
 
+    // A newly calculated route should immediately make visual sense: show the whole
+    // journey, then let the user recenter to GPS manually when desired.
+    LaunchedEffect(routePoints, styleLoaded) {
+        if (styleLoaded && routePoints.size >= 2) {
+            runCatching {
+                val bounds = LatLngBounds.Builder().apply {
+                    routePoints.forEach { include(LatLng(it.lat, it.lon)) }
+                }.build()
+                mapRef?.animateCamera(CameraUpdateFactory.newLatLngBounds(bounds, 96), 650)
+            }.onFailure { onMapError(it.message ?: "Route overview failed") }
+        }
+    }
+
     LaunchedEffect(recenterToken, userLocation, styleLoaded) {
         if (recenterToken > 0 && styleLoaded) {
             userLocation?.let { point ->
@@ -197,28 +207,30 @@ private fun updateMapData(
 ) {
     val style = map.style ?: return
 
-    userLocation?.let { location ->
-        val feature = Feature.fromGeometry(Point.fromLngLat(location.lon, location.lat))
-        val existing = style.getSourceAs<GeoJsonSource>(USER_SOURCE)
-        if (existing == null) {
-            style.addSource(GeoJsonSource(USER_SOURCE, feature))
-            style.addLayer(
-                CircleLayer(USER_LAYER, USER_SOURCE).withProperties(
-                    circleRadius(8f),
-                    circleColor("#1769E0"),
-                    circleStrokeColor("#FFFFFF"),
-                    circleStrokeWidth(3f),
-                )
+    val userFeature = userLocation?.let { location ->
+        Feature.fromGeometry(Point.fromLngLat(location.lon, location.lat))
+    }
+    val userSource = style.getSourceAs<GeoJsonSource>(USER_SOURCE)
+    if (userSource == null && userFeature != null) {
+        style.addSource(GeoJsonSource(USER_SOURCE, userFeature))
+        style.addLayer(
+            CircleLayer(USER_LAYER, USER_SOURCE).withProperties(
+                circleRadius(8f),
+                circleColor("#1769E0"),
+                circleStrokeColor("#FFFFFF"),
+                circleStrokeWidth(3f),
             )
-        } else {
-            existing.setGeoJson(feature)
-        }
+        )
+    } else if (userFeature != null) {
+        userSource?.setGeoJson(userFeature)
+    } else {
+        userSource?.setGeoJson(FeatureCollection.fromFeatures(emptyArray()))
     }
 
+    val routeSource = style.getSourceAs<GeoJsonSource>(ROUTE_SOURCE)
     if (routePoints.size >= 2) {
         val line = LineString.fromLngLats(routePoints.map { Point.fromLngLat(it.lon, it.lat) })
-        val existing = style.getSourceAs<GeoJsonSource>(ROUTE_SOURCE)
-        if (existing == null) {
+        if (routeSource == null) {
             style.addSource(GeoJsonSource(ROUTE_SOURCE, Feature.fromGeometry(line)))
             style.addLayer(
                 LineLayer(ROUTE_LAYER, ROUTE_SOURCE).withProperties(
@@ -228,8 +240,10 @@ private fun updateMapData(
                 )
             )
         } else {
-            existing.setGeoJson(Feature.fromGeometry(line))
+            routeSource.setGeoJson(Feature.fromGeometry(line))
         }
+    } else {
+        routeSource?.setGeoJson(FeatureCollection.fromFeatures(emptyArray()))
     }
 
     val stopFeatures = stops.mapNotNull { stop ->
@@ -239,10 +253,10 @@ private fun updateMapData(
             it.addStringProperty("kind", stop.kind.name)
         }
     }
+    val stopSource = style.getSourceAs<GeoJsonSource>(STOP_SOURCE)
     if (stopFeatures.isNotEmpty()) {
         val collection = FeatureCollection.fromFeatures(stopFeatures)
-        val existing = style.getSourceAs<GeoJsonSource>(STOP_SOURCE)
-        if (existing == null) {
+        if (stopSource == null) {
             style.addSource(GeoJsonSource(STOP_SOURCE, collection))
             style.addLayer(
                 CircleLayer(STOP_LAYER, STOP_SOURCE).withProperties(
@@ -253,8 +267,10 @@ private fun updateMapData(
                 )
             )
         } else {
-            existing.setGeoJson(collection)
+            stopSource.setGeoJson(collection)
         }
+    } else {
+        stopSource?.setGeoJson(FeatureCollection.fromFeatures(emptyArray()))
     }
 }
 
