@@ -60,7 +60,10 @@ private const val HIGHLIGHT_LAYER = "scenic-highlight-layer"
 private const val HIGHLIGHT_SYMBOL_LAYER = "scenic-highlight-symbol-layer"
 
 /**
- * MapLibre host with stable lifecycle, manual GPS recentering and interactive scene POIs.
+ * MapLibre host with stable lifecycle, GPS recentering and interactive scenic POIs.
+ *
+ * v0.4.3 keeps route-provided POIs and independently enriched map POIs together. Route
+ * rendering never depends on the discovery service finishing successfully.
  */
 @Composable
 fun ScenicMap(
@@ -78,26 +81,65 @@ fun ScenicMap(
     var styleLoaded by remember { mutableStateOf(false) }
     var mapError by remember { mutableStateOf<String?>(null) }
     var lastHandledRecenterToken by remember { mutableIntStateOf(0) }
+    var initialLocationFocused by remember { mutableStateOf(false) }
     var localHighlights by remember { mutableStateOf<List<ScenePointUi>>(emptyList()) }
     var selectedHighlight by remember { mutableStateOf<ScenePointUi?>(null) }
     val latestUserLocation by rememberUpdatedState(userLocation)
-    val visibleHighlights = if (highlights.isNotEmpty()) highlights else localHighlights
+
+    val visibleHighlights = remember(highlights, localHighlights) {
+        buildList {
+            addAll(highlights)
+            localHighlights.forEach { candidate ->
+                val duplicate = any { existing ->
+                    existing.id == candidate.id ||
+                        existing.name.equals(candidate.name, ignoreCase = true)
+                }
+                if (!duplicate) add(candidate)
+            }
+        }.take(36)
+    }
     val latestVisibleHighlights by rememberUpdatedState(visibleHighlights)
 
+    // Map enrichment is intentionally separate from route generation. A successful route
+    // appears immediately; POIs can arrive moments later without replacing or blanking it.
     LaunchedEffect(routePoints, highlights) {
         selectedHighlight = null
-        if (routePoints.size < 2 || highlights.isNotEmpty() || !BuildConfig.DEBUG) {
+        if (routePoints.size < 2 || !BuildConfig.DEBUG) {
             localHighlights = emptyList()
             return@LaunchedEffect
         }
+        if (highlights.size >= 18) {
+            localHighlights = emptyList()
+            return@LaunchedEffect
+        }
+
         localHighlights = emptyList()
-        localHighlights = runCatching {
-            OsmSceneDiscovery.discover(
+        val quick = runCatching {
+            PhotonSceneFallback.discover(
                 route = routePoints,
                 enabledKinds = prototypeSelectableSceneKinds,
-                maxResults = 24,
+                maxResults = 30,
+                fast = true,
             )
         }.getOrElse { emptyList() }
+
+        val enriched = if (quick.isNotEmpty()) {
+            quick
+        } else {
+            runCatching {
+                OsmSceneDiscovery.discover(
+                    route = routePoints,
+                    enabledKinds = prototypeSelectableSceneKinds,
+                    maxResults = 30,
+                )
+            }.getOrElse { emptyList() }
+        }
+
+        localHighlights = enriched.filterNot { candidate ->
+            highlights.any { existing ->
+                existing.id == candidate.id || existing.name.equals(candidate.name, ignoreCase = true)
+            }
+        }
     }
 
     val mapView = remember(context) {
@@ -180,8 +222,6 @@ fun ScenicMap(
                             map.uiSettings.isAttributionEnabled = true
                             map.uiSettings.isLogoEnabled = true
                             map.addOnMapClickListener { latLng ->
-                                // Resolve a marker by screen-space distance rather than relying on
-                                // GeoJSON convenience methods that differ across MapLibre versions.
                                 val tap = map.projection.toScreenLocation(latLng)
                                 val hit = latestVisibleHighlights
                                     .mapNotNull { highlight ->
@@ -252,6 +292,19 @@ fun ScenicMap(
     LaunchedEffect(userLocation, routePoints, stops, visibleHighlights, styleLoaded) {
         if (styleLoaded) {
             mapRef?.let { updateMapData(it, userLocation, routePoints, stops, visibleHighlights) }
+        }
+    }
+
+    // Before the first route, focus the map on the first reliable live GPS position once.
+    LaunchedEffect(userLocation, routePoints, styleLoaded) {
+        if (styleLoaded && routePoints.size < 2 && !initialLocationFocused) {
+            userLocation?.let { point ->
+                mapRef?.animateCamera(
+                    CameraUpdateFactory.newLatLngZoom(LatLng(point.lat, point.lon), 10.5),
+                    650,
+                )
+                initialLocationFocused = true
+            }
         }
     }
 
@@ -329,12 +382,18 @@ private fun updateMapData(
         routeSource?.setGeoJson(FeatureCollection.fromFeatures(emptyArray<Feature>()))
     }
 
+    val includedOrder = highlights
+        .filter { it.includedInRoute }
+        .mapIndexed { index, point -> point.id to (index + 1).toString() }
+        .toMap()
+
     val highlightFeatures = highlights.map { highlight ->
         Feature.fromGeometry(Point.fromLngLat(highlight.point.lon, highlight.point.lat)).also {
             it.addStringProperty("id", highlight.id)
             it.addStringProperty("name", highlight.name)
             it.addStringProperty("kind", highlight.kind)
-            it.addStringProperty("symbol", mapSymbol(highlight.kind))
+            it.addStringProperty("symbol", includedOrder[highlight.id] ?: mapSymbol(highlight.kind))
+            it.addBooleanProperty("included", highlight.includedInRoute)
         }
     }
     val highlightSource = style.getSourceAs<GeoJsonSource>(HIGHLIGHT_SOURCE)
@@ -436,7 +495,7 @@ private fun ScenicLocationCard(
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Surface(
                     shape = MaterialTheme.shapes.large,
-                    color = MaterialTheme.colorScheme.secondaryContainer,
+                    color = if (highlight.includedInRoute) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.secondaryContainer,
                 ) {
                     Text(
                         mapSymbol(highlight.kind),
@@ -456,12 +515,29 @@ private fun ScenicLocationCard(
                 IconButton(onClick = onClose) { Icon(Icons.Default.Close, "Close location info") }
             }
 
+            if (highlight.includedInRoute) {
+                Text(
+                    "✓ Automatically included in this journey",
+                    fontWeight = FontWeight.SemiBold,
+                    color = MaterialTheme.colorScheme.primary,
+                )
+            }
+
             val details = buildList {
                 if (highlight.distanceFromRouteMeters > 0) add("${highlight.distanceFromRouteMeters} m from route")
                 add("Suggested stop ${highlight.suggestedDwellMinutes} min")
+                highlight.personalMatch?.let { add("${it.toInt()}% match") }
                 highlight.rating?.let { add(String.format("%.1f★", it)) }
             }
             Text(details.joinToString(" · "), style = MaterialTheme.typography.bodyMedium)
+
+            highlight.rationale?.takeIf { it.isNotBlank() }?.let { rationale ->
+                Text(
+                    "Why here: $rationale",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
 
             if (!highlight.attribution.isNullOrBlank()) {
                 Text(
