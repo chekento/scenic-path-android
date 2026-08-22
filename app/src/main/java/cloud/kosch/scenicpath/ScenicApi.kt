@@ -18,14 +18,26 @@ data class PlaceSuggestion(
     val point: GeoPoint,
 )
 
+data class ScenePointUi(
+    val id: String,
+    val name: String,
+    val kind: String,
+    val subtype: String?,
+    val point: GeoPoint,
+    val relevance: Double,
+)
+
 data class RouteCandidateUi(
     val id: String,
+    val character: String,
     val distanceMeters: Double,
     val durationSeconds: Double,
     val scenicScore: Double,
     val extraMinutes: Double,
     val points: List<GeoPoint>,
     val provider: String,
+    val scenePoints: List<ScenePointUi> = emptyList(),
+    val strongestSignals: List<String> = emptyList(),
     val isPreviewFallback: Boolean = false,
 )
 
@@ -157,7 +169,7 @@ object ScenicApi {
             setRequestProperty("Content-Type", "application/json; charset=utf-8")
             outputStream.bufferedWriter(Charsets.UTF_8).use { it.write(body.toString()) }
         }
-        return connection.useJson { response -> parsePlan(response) }
+        return connection.useJson(::parsePlan)
     }
 
     private fun parsePlan(response: JSONObject): RoutePlanUi {
@@ -166,24 +178,47 @@ object ScenicApi {
         val candidates = buildList {
             for (index in 0 until candidatesJson.length()) {
                 val item = candidatesJson.optJSONObject(index) ?: continue
-                val pointsJson = item.optJSONArray("points") ?: JSONArray()
-                val points = buildList {
-                    for (pointIndex in 0 until pointsJson.length()) {
-                        val p = pointsJson.optJSONObject(pointIndex) ?: continue
-                        val lat = p.optDouble("lat", Double.NaN)
-                        val lon = p.optDouble("lon", Double.NaN)
-                        if (lat.isFinite() && lon.isFinite()) add(GeoPoint(lat, lon))
+                val points = parsePoints(item.optJSONArray("points"))
+                val scenePoints = buildList {
+                    val highlights = item.optJSONArray("scenePoints") ?: JSONArray()
+                    for (highlightIndex in 0 until highlights.length()) {
+                        val highlight = highlights.optJSONObject(highlightIndex) ?: continue
+                        val pointObject = highlight.optJSONObject("point") ?: continue
+                        val lat = pointObject.optDouble("lat", Double.NaN)
+                        val lon = pointObject.optDouble("lon", Double.NaN)
+                        if (!lat.isFinite() || !lon.isFinite()) continue
+                        add(
+                            ScenePointUi(
+                                id = highlight.optString("id", "highlight-$highlightIndex"),
+                                name = highlight.optString("name", "Scenic highlight"),
+                                kind = highlight.optString("kind", "SCENIC"),
+                                subtype = highlight.optString("subtype").takeIf { it.isNotBlank() },
+                                point = GeoPoint(lat, lon),
+                                relevance = highlight.optDouble("relevance", 0.5),
+                            )
+                        )
+                    }
+                }
+                val strongestSignals = buildList {
+                    val signals = item.optJSONObject("corridor")
+                        ?.optJSONObject("diagnostics")
+                        ?.optJSONArray("strongestSignals") ?: JSONArray()
+                    for (signalIndex in 0 until signals.length()) {
+                        signals.optString(signalIndex).takeIf { it.isNotBlank() }?.let(::add)
                     }
                 }
                 add(
                     RouteCandidateUi(
                         id = item.optString("id", "route-$index"),
+                        character = item.optString("character", "BEAUTIFUL"),
                         distanceMeters = item.optDouble("distanceMeters", 0.0),
                         durationSeconds = item.optDouble("durationSeconds", 0.0),
                         scenicScore = item.optDouble("scenicScore", 0.0),
                         extraMinutes = item.optDouble("extraMinutes", 0.0),
                         points = points,
                         provider = item.optString("provider", "Scenic Path"),
+                        scenePoints = scenePoints,
+                        strongestSignals = strongestSignals,
                     )
                 )
             }
@@ -194,6 +229,16 @@ object ScenicApi {
             baselineDistanceMeters = baseline?.optDouble("distanceMeters"),
             note = response.optString("note").takeIf { it.isNotBlank() },
         )
+    }
+
+    private fun parsePoints(pointsJson: JSONArray?): List<GeoPoint> = buildList {
+        val source = pointsJson ?: JSONArray()
+        for (pointIndex in 0 until source.length()) {
+            val p = source.optJSONObject(pointIndex) ?: continue
+            val lat = p.optDouble("lat", Double.NaN)
+            val lon = p.optDouble("lon", Double.NaN)
+            if (lat.isFinite() && lon.isFinite()) add(GeoPoint(lat, lon))
+        }
     }
 
     /** Debug-only route preview. Never used in release builds. */
@@ -224,6 +269,7 @@ object ScenicApi {
                 candidates = listOf(
                     RouteCandidateUi(
                         id = "debug-preview",
+                        character = "DIRECT",
                         distanceMeters = route.optDouble("distance", 0.0),
                         durationSeconds = route.optDouble("duration", 0.0),
                         scenicScore = 0.0,
