@@ -1,67 +1,37 @@
-# Scenic Path — The Beautiful Way Finder
+# Scenic Path — The Beautiful Way
 
-**Scenic Path** is a native Android navigation project that optimizes for the *quality of the journey* rather than only time or distance.
+Native Android prototype for an experience-first scenic route planner.
 
-The supplied WebSim prototype is preserved as product inspiration. This repository starts a clean Play-Store-oriented implementation for Android 16.
+Scenic Path does not only ask “how do I get from A to B?”. It asks how to turn the user's available extra time into a more beautiful journey: alternative road corridors, automatically selected scenic stops, heritage, views, water, parks, architecture, culture and food.
 
-## Product idea
-Choose what “beautiful” means for this trip:
+## Current development milestone — v0.4.5
 
-- beautiful / quiet / winding roads
-- forests and protected landscapes
-- lakes, rivers and coastline
-- mountains, relief and viewpoints
-- historic sights and monuments
-- museums, galleries and architecture
-- parks and gardens
-- carefully selected food stops
+- Kotlin + Jetpack Compose native Android app
+- MapLibre + OpenStreetMap/OpenFreeMap map stack
+- OSM-native Valhalla development routing
+- time-budget-aware Journey Optimizer
+- long-route segmentation below public development-provider distance limits
+- automatic Smart Stops with exact detour/budget validation
+- numbered included-stop markers and category markers on the map
+- stable non-draggable Smart Stops dialog
+- category coverage: every enabled scene category gets a reserved result slot whenever a usable candidate exists in the search corridor
+- targeted discovery for viewpoints, museums, nature, heritage, parks, art, worship, water, food and architecture
+- Top Food participates in long-route automatic stop selection; the development-device fallback uses OSM metadata without inventing ratings
+- production backend supports Google Places Top Food with real ratings/review counts and review-confidence ranking when `GOOGLE_PLACES_API_KEY` is configured
 
-The user also defines a detour budget. Scenic Path then ranks candidate routes by a **ScenicScore** and refuses routes that exceed the configured extra time/percentage.
+## Development provider note
 
-## Why this is different
-The old prototype adds scenic POIs to an otherwise conventional route. The new architecture scores the **route corridor itself** and treats POIs as optional experience anchors.
+Public Photon, Overpass and Valhalla endpoints are used only for development/testing. A production release must use controlled/self-hosted or contracted infrastructure with appropriate capacity, policies and attribution.
 
-## Status
-**M0 / foundation**
+Provider secrets such as Google Places or routing keys belong in backend/deployment secret storage and must never be embedded in the Android APK.
 
-- Android package `cloud.kosch.scenicpath`
-- API 36 target
-- Kotlin + Jetpack Compose UI foundation
-- MapLibre Native map foundation
-- scenic preference model
-- provider-neutral ScenicScore with tests
-- TomTom thrilling-route adapter on the backend
-- backend boundary so routing/Places secrets never need to live in the APK
-- CI workflows for Android build and backend tests
-- prototype audit and Play Store checklist
+## Still planned
 
-Next milestone M1 connects address search, live location, route rendering, landscape/culture enrichment and strict food ranking.
-
-## Development
-### Android
-1. Copy `local.properties.example` to `local.properties`.
-2. Start the backend (below).
-3. Open the project in Android Studio and run the `app` configuration.
-
-The default map style is MapLibre's demo style **for development only**. Configure a production map provider before distribution.
-
-### Backend
-```bash
-cd backend
-cp .env.example .env
-# Export values from .env in your preferred runtime/deployment environment.
-TOMTOM_API_KEY=... npm start
-```
-
-Health check: `GET /health`
-
-Route endpoint: `POST /v1/plan`
-
-## Security
-Do not put reusable TomTom/Google Places/server keys in the Android repository. The app calls the Scenic Path backend; provider credentials remain server-side.
-
-## Repository naming
-Recommended GitHub repository: **`scenic-path-android`**.
-
-## License
-No open-source license has been selected yet. Until the owner chooses one, normal copyright rules apply.
+- one persistent shared journey/POI state for planner, map, Smart Stops and navigation
+- richer POI information from Wikipedia/Wikidata/Wikimedia
+- ETA-aware opening hours
+- marker clustering for dense areas
+- segment-level ScenicScore with elevation/relief data
+- turn-by-turn navigation, TTS, upcoming-stop warnings and scenic rerouting
+- offline/degraded-network behavior
+- signed Play Store AAB and final privacy/data-safety review
