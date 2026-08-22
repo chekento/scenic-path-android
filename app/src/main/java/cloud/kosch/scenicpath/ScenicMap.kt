@@ -68,6 +68,8 @@ fun ScenicMap(
     var mapRef by remember { mutableStateOf<MapLibreMap?>(null) }
     var styleLoaded by remember { mutableStateOf(false) }
     var mapError by remember { mutableStateOf<String?>(null) }
+    var lastHandledRecenterToken by remember { mutableIntStateOf(0) }
+    val latestUserLocation by rememberUpdatedState(userLocation)
 
     val mapView = remember(context) {
         runCatching {
@@ -179,7 +181,8 @@ fun ScenicMap(
     }
 
     // A newly calculated route should immediately make visual sense: show the whole
-    // journey, then let the user recenter to GPS manually when desired.
+    // journey, then leave camera movement entirely to the user until they explicitly
+    // tap Locate Me again.
     LaunchedEffect(routePoints, styleLoaded) {
         if (styleLoaded && routePoints.size >= 2) {
             runCatching {
@@ -191,13 +194,16 @@ fun ScenicMap(
         }
     }
 
-    LaunchedEffect(recenterToken, userLocation, styleLoaded) {
-        if (recenterToken > 0 && styleLoaded) {
-            userLocation?.let { point ->
+    // Recenter exactly once per explicit Locate Me tap. GPS updates continue moving
+    // the blue position marker but never move the camera on their own.
+    LaunchedEffect(recenterToken, styleLoaded) {
+        if (styleLoaded && recenterToken > lastHandledRecenterToken) {
+            latestUserLocation?.let { point ->
                 mapRef?.animateCamera(
                     CameraUpdateFactory.newLatLngZoom(LatLng(point.lat, point.lon), 15.2),
                     700,
                 )
+                lastHandledRecenterToken = recenterToken
             }
         }
     }
