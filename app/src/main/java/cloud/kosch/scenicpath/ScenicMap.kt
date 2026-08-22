@@ -86,25 +86,33 @@ fun ScenicMap(
     var localHighlights by remember(routePoints) { mutableStateOf<List<ScenePointUi>>(emptyList()) }
     var selectedHighlight by remember { mutableStateOf<ScenePointUi?>(null) }
     val latestUserLocation by rememberUpdatedState(userLocation)
+    val sharedHighlights = ScenicPoiSharedState.pointsFor(routePoints)
 
-    val visibleHighlights = remember(highlights, localHighlights) {
+    val visibleHighlights = remember(highlights, sharedHighlights, localHighlights) {
         buildList {
             addAll(highlights)
+            sharedHighlights.forEach { candidate ->
+                val duplicate = any { existing ->
+                    existing.id == candidate.id || existing.name.equals(candidate.name, ignoreCase = true)
+                }
+                if (!duplicate) add(candidate)
+            }
             localHighlights.forEach { candidate ->
                 val duplicate = any { existing ->
                     existing.id == candidate.id || existing.name.equals(candidate.name, ignoreCase = true)
                 }
                 if (!duplicate) add(candidate)
             }
-        }.take(40)
+        }.take(100)
     }
     val latestVisibleHighlights by rememberUpdatedState(visibleHighlights)
 
     // Enrich an already visible route in the background. This cannot delay or clear the
-    // route. Targeted OSM discovery adds culture/history that Photon alone can under-sample.
+    // route. It also runs in non-debug builds while this prototype still relies on public
+    // development POI services, so mapped Smart Stops do not disappear from release APKs.
     LaunchedEffect(routePoints) {
         selectedHighlight = null
-        if (routePoints.size < 2 || !BuildConfig.DEBUG) {
+        if (routePoints.size < 2) {
             localHighlights = emptyList()
             return@LaunchedEffect
         }
@@ -113,7 +121,7 @@ fun ScenicMap(
                 FastRoutePoiDiscovery.discover(
                     route = routePoints,
                     enabledKinds = prototypeSelectableSceneKinds,
-                    maxResults = 36,
+                    maxResults = 100,
                 )
             }.getOrElse { emptyList() }
         }.filterNot { candidate ->
@@ -387,8 +395,8 @@ private fun syncScenicMarkers(
     context: Context,
     highlights: List<ScenePointUi>,
 ) {
-    // Annotations are deliberately rebuilt atomically. At the current 40-marker cap this is
-    // cheap and prevents stale symbols when switching route variants.
+    // Annotations are deliberately rebuilt atomically. At the current 100-marker cap this
+    // remains cheap enough for the prototype and prevents stale symbols between variants.
     map.removeAnnotations()
     if (highlights.isEmpty()) return
 
@@ -397,9 +405,9 @@ private fun syncScenicMarkers(
     val iconFactory = IconFactory.getInstance(context)
     val cache = mutableMapOf<String, org.maplibre.android.annotations.Icon>()
 
-    val options = highlights.take(40).map { highlight ->
+    val options = highlights.take(100).map { highlight ->
         val number = includedOrder[highlight.id]
-        val symbol = number ?: mapSymbol(highlight.kind)
+        val symbol = number ?: mapSymbol(highlight)
         val includedStop = number != null
         val cacheKey = "$symbol:$includedStop"
         val icon = cache.getOrPut(cacheKey) {
@@ -415,17 +423,17 @@ private fun syncScenicMarkers(
 }
 
 private fun createMarkerBitmap(symbol: String, included: Boolean): Bitmap {
-    val size = if (included) 78 else 68
+    val size = if (included) 78 else 76
     val bitmap = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
     val canvas = Canvas(bitmap)
     val center = size / 2f
 
     val fill = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = if (included) Color.rgb(245, 158, 11) else Color.rgb(20, 124, 82)
+        color = if (included) Color.rgb(245, 158, 11) else Color.WHITE
         style = Paint.Style.FILL
     }
     val stroke = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = Color.WHITE
+        color = if (included) Color.WHITE else Color.rgb(20, 124, 82)
         style = Paint.Style.STROKE
         strokeWidth = if (included) 6f else 5f
     }
@@ -433,37 +441,25 @@ private fun createMarkerBitmap(symbol: String, included: Boolean): Bitmap {
     canvas.drawCircle(center, center, center - 5f, stroke)
 
     val text = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = Color.WHITE
+        color = if (included) Color.WHITE else Color.rgb(20, 92, 65)
         textAlign = Paint.Align.CENTER
-        typeface = Typeface.DEFAULT_BOLD
-        textSize = if (symbol.length > 1) size * 0.35f else size * 0.42f
+        typeface = if (included) Typeface.DEFAULT_BOLD else Typeface.DEFAULT
+        textSize = if (included) size * 0.42f else size * 0.50f
     }
     val y = center - (text.ascent() + text.descent()) / 2f
     canvas.drawText(symbol, center, y, text)
     return bitmap
 }
 
-private fun mapSymbol(kind: String): String = when (kind) {
-    StopKind.VIEWPOINT.name -> "V"
-    StopKind.MUSEUM.name -> "M"
-    StopKind.NATURE.name -> "N"
-    StopKind.MONUMENT.name -> "H"
-    StopKind.PARK.name -> "P"
-    StopKind.ART.name -> "A"
-    StopKind.WORSHIP.name -> "W"
-    StopKind.WATER.name -> "~"
-    StopKind.FOOD.name -> "F"
-    StopKind.ARCHITECTURE.name -> "B"
-    else -> "★"
-}
+private fun mapSymbol(highlight: ScenePointUi): String = scenicCategoryLaneFor(highlight).emoji
 
 private fun sceneTypeLabel(highlight: ScenePointUi): String {
-    val kind = StopKind.entries.firstOrNull { it.name == highlight.kind }?.label ?: "Scenic location"
+    val category = scenicCategoryLaneFor(highlight).label
     val subtype = highlight.subtype
         ?.replace('_', ' ')
         ?.replaceFirstChar { it.uppercase() }
-        ?.takeIf { it.isNotBlank() && !kind.contains(it, ignoreCase = true) }
-    return listOfNotNull(kind, subtype).joinToString(" · ")
+        ?.takeIf { it.isNotBlank() && !category.contains(it, ignoreCase = true) }
+    return listOfNotNull(category, subtype).joinToString(" · ")
 }
 
 @Composable
@@ -486,7 +482,7 @@ private fun ScenicLocationCard(
                     color = if (highlight.includedInRoute) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.secondaryContainer,
                 ) {
                     Text(
-                        mapSymbol(highlight.kind),
+                        mapSymbol(highlight),
                         modifier = Modifier.padding(horizontal = 11.dp, vertical = 7.dp),
                         fontWeight = FontWeight.Bold,
                     )
