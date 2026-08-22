@@ -10,7 +10,6 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -35,19 +34,18 @@ class MainActivity : ComponentActivity() {
                         result[Manifest.permission.ACCESS_COARSE_LOCATION] == true
                 }
 
-                LaunchedEffect(Unit) {
-                    if (!locationPermissionGranted) {
-                        permissionLauncher.launch(
-                            arrayOf(
-                                Manifest.permission.ACCESS_COARSE_LOCATION,
-                                Manifest.permission.ACCESS_FINE_LOCATION,
-                            )
-                        )
-                    }
-                }
-
                 Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
-                    ScenicPathApp(locationPermissionGranted = locationPermissionGranted)
+                    ScenicPathApp(
+                        locationPermissionGranted = locationPermissionGranted,
+                        requestLocationPermission = {
+                            permissionLauncher.launch(
+                                arrayOf(
+                                    Manifest.permission.ACCESS_COARSE_LOCATION,
+                                    Manifest.permission.ACCESS_FINE_LOCATION,
+                                )
+                            )
+                        },
+                    )
                 }
             }
         }
