@@ -10,6 +10,7 @@ import java.util.Locale
 import kotlin.math.asin
 import kotlin.math.cos
 import kotlin.math.max
+import kotlin.math.min
 import kotlin.math.pow
 import kotlin.math.roundToInt
 import kotlin.math.sin
@@ -27,22 +28,28 @@ object PhotonSceneFallback {
         route: List<GeoPoint>,
         enabledKinds: Set<StopKind>,
         maxResults: Int = 18,
+        fast: Boolean = false,
     ): List<ScenePointUi> = withContext(Dispatchers.IO) {
         if (route.size < 2) return@withContext emptyList()
         val categories = categoriesFor(enabledKinds)
         if (categories.isEmpty()) return@withContext emptyList()
 
-        val sampleCount = when {
-            routeLengthMeters(route) > 180_000 -> 5
-            routeLengthMeters(route) > 70_000 -> 4
+        val length = routeLengthMeters(route)
+        val normalCount = when {
+            length > 180_000 -> 5
+            length > 70_000 -> 4
             else -> 3
         }
+        // Long-route planning already samples the complete stitched corridor. Four
+        // responsive lookups provide enough coverage for the first-pass candidate pool;
+        // a slow public Photon request must never stall the complete journey.
+        val sampleCount = if (fast) min(4, normalCount) else normalCount
         val samples = routeSamples(route, sampleCount)
         val routeForDistance = routeSamples(route, 100)
         val found = linkedMapOf<String, ScenePointUi>()
 
         for (sample in samples) {
-            val features = runCatching { query(sample, categories) }.getOrNull() ?: continue
+            val features = runCatching { query(sample, categories, fast) }.getOrNull() ?: continue
             for (i in 0 until features.length()) {
                 val feature = features.optJSONObject(i) ?: continue
                 val geometry = feature.optJSONObject("geometry") ?: continue
@@ -94,13 +101,17 @@ object PhotonSceneFallback {
             .take(maxResults)
     }
 
-    private fun query(sample: GeoPoint, categories: List<String>): org.json.JSONArray {
+    private fun query(
+        sample: GeoPoint,
+        categories: List<String>,
+        fast: Boolean,
+    ): org.json.JSONArray {
         val include = URLEncoder.encode(categories.joinToString(","), Charsets.UTF_8.name())
         val url = "$ENDPOINT?lon=${sample.lon}&lat=${sample.lat}&radius=20&limit=12&lang=de&include=$include"
         val connection = (URL(url).openConnection() as HttpURLConnection).apply {
             requestMethod = "GET"
-            connectTimeout = 3_500
-            readTimeout = 6_500
+            connectTimeout = if (fast) 2_000 else 3_500
+            readTimeout = if (fast) 3_500 else 6_500
             setRequestProperty("Accept", "application/json")
             setRequestProperty("User-Agent", "ScenicPath-Android/${BuildConfig.VERSION_NAME} development")
         }
