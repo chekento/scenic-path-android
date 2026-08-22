@@ -1,6 +1,7 @@
 package cloud.kosch.scenicpath
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
@@ -12,24 +13,79 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import kotlinx.coroutines.launch
+import java.util.Locale
 
 @Composable
 fun ScenicPathApp(locationPermissionGranted: Boolean) {
-    var start by remember { mutableStateOf("Current location") }
-    var destination by remember { mutableStateOf("") }
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    val location = rememberLocationUiState(locationPermissionGranted)
+
+    var startSelection by remember { mutableStateOf<PlaceSuggestion?>(null) }
+    var destinationSelection by remember { mutableStateOf<PlaceSuggestion?>(null) }
+    var showStartPicker by remember { mutableStateOf(false) }
+    var showDestinationPicker by remember { mutableStateOf(false) }
+    var showStopPicker by remember { mutableStateOf(false) }
+    var showStopKindPicker by remember { mutableStateOf(false) }
+    var pendingStopKind by remember { mutableStateOf(StopKind.CUSTOM) }
     var showScenicDNA by remember { mutableStateOf(false) }
     var showPlanner by remember { mutableStateOf(false) }
     var preferences by remember { mutableStateOf(ScenicPreferences()) }
     var plan by remember { mutableStateOf(TripPlan()) }
     var recenterToken by remember { mutableIntStateOf(0) }
+    var routePlan by remember { mutableStateOf<RoutePlanUi?>(null) }
+    var selectedCandidateIndex by remember { mutableIntStateOf(0) }
+    var routeLoading by remember { mutableStateOf(false) }
+    var routeError by remember { mutableStateOf<String?>(null) }
+    var mapError by remember { mutableStateOf<String?>(null) }
+
+    val origin = startSelection?.point ?: location.point
+    val destination = destinationSelection?.point
+    val startLabel = startSelection?.title ?: if (location.point != null) "Current location" else "Waiting for GPS"
+    val destinationLabel = destinationSelection?.title.orEmpty()
+    val activeRoute = routePlan?.candidates?.getOrNull(selectedCandidateIndex)
+
+    fun buildRoute() {
+        val from = origin
+        val to = destination
+        if (from == null) {
+            routeError = "Current location is not ready. Choose a start place or wait for GPS."
+            return
+        }
+        if (to == null) {
+            routeError = "Choose a destination first."
+            return
+        }
+        routeLoading = true
+        routeError = null
+        showPlanner = false
+        scope.launch {
+            ScenicApi.planRoute(from, to, plan, preferences)
+                .onSuccess { result ->
+                    routePlan = result
+                    selectedCandidateIndex = 0
+                    routeLoading = false
+                    if (result.candidates.isEmpty()) routeError = "No route matched the current detour budget."
+                }
+                .onFailure { error ->
+                    routeLoading = false
+                    routeError = error.message ?: "Route planning failed"
+                }
+        }
+    }
 
     Box(Modifier.fillMaxSize()) {
         ScenicMap(
             modifier = Modifier.fillMaxSize(),
-            locationPermissionGranted = locationPermissionGranted,
+            userLocation = location.point,
+            routePoints = activeRoute?.points.orEmpty(),
+            stops = plan.stops,
             recenterToken = recenterToken,
+            onMapError = { mapError = it },
         )
 
         Column(
@@ -50,26 +106,30 @@ fun ScenicPathApp(locationPermissionGranted: Boolean) {
                     Text("The beautiful way", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
                 Spacer(Modifier.weight(1f))
+                if (routeLoading) CircularProgressIndicator(Modifier.size(24.dp), strokeWidth = 2.dp)
                 IconButton(onClick = { showScenicDNA = true }) {
                     Icon(Icons.Default.Tune, "Scenic DNA")
                 }
             }
 
-            OutlinedTextField(
-                value = start,
-                onValueChange = { start = it },
-                label = { Text("Start") },
-                leadingIcon = { Icon(Icons.Default.MyLocation, null) },
-                modifier = Modifier.fillMaxWidth(),
-                singleLine = true,
+            PlaceField(
+                label = "Start",
+                value = startLabel,
+                icon = Icons.Default.MyLocation,
+                supporting = when {
+                    startSelection != null -> startSelection?.subtitle
+                    location.accuracyMeters != null -> "GPS ±${location.accuracyMeters!!.toInt()} m"
+                    location.error != null -> location.error
+                    else -> "Using live GPS"
+                },
+                onClick = { showStartPicker = true },
             )
-            OutlinedTextField(
-                value = destination,
-                onValueChange = { destination = it },
-                label = { Text("Where do you want to go?") },
-                leadingIcon = { Icon(Icons.Default.Flag, null) },
-                modifier = Modifier.fillMaxWidth(),
-                singleLine = true,
+            PlaceField(
+                label = "Destination",
+                value = destinationLabel.ifBlank { "Where do you want to go?" },
+                icon = Icons.Default.Flag,
+                supporting = destinationSelection?.subtitle,
+                onClick = { showDestinationPicker = true },
             )
 
             Row(
@@ -91,16 +151,23 @@ fun ScenicPathApp(locationPermissionGranted: Boolean) {
                     label = { Text("+${preferences.maxExtraMinutes} min") },
                     leadingIcon = { Icon(Icons.Default.MoreTime, null, Modifier.size(18.dp)) },
                 )
+                if (startSelection != null && location.point != null) {
+                    AssistChip(
+                        onClick = { startSelection = null },
+                        label = { Text("Use GPS start") },
+                        leadingIcon = { Icon(Icons.Default.GpsFixed, null, Modifier.size(18.dp)) },
+                    )
+                }
             }
 
             Button(
                 onClick = { showPlanner = true },
                 modifier = Modifier.fillMaxWidth().height(52.dp),
-                enabled = destination.isNotBlank(),
+                enabled = destination != null && !routeLoading,
             ) {
                 Icon(Icons.Default.Route, null)
                 Spacer(Modifier.width(8.dp))
-                Text(if (plan.stops.isEmpty()) "Plan the beautiful route" else "Review route plan")
+                Text(if (routePlan == null) "Plan the beautiful route" else "Edit journey plan")
             }
         }
 
@@ -109,6 +176,26 @@ fun ScenicPathApp(locationPermissionGranted: Boolean) {
             horizontalAlignment = Alignment.End,
             verticalArrangement = Arrangement.spacedBy(10.dp),
         ) {
+            if (routeError != null) {
+                ErrorCard(routeError!!, onDismiss = { routeError = null })
+            }
+            activeRoute?.let { route ->
+                RouteResultCard(
+                    route = route,
+                    candidateIndex = selectedCandidateIndex,
+                    candidateCount = routePlan?.candidates?.size ?: 1,
+                    note = routePlan?.note,
+                    onPrevious = {
+                        val count = routePlan?.candidates?.size ?: 0
+                        if (count > 0) selectedCandidateIndex = (selectedCandidateIndex - 1 + count) % count
+                    },
+                    onNext = {
+                        val count = routePlan?.candidates?.size ?: 0
+                        if (count > 0) selectedCandidateIndex = (selectedCandidateIndex + 1) % count
+                    },
+                    onRebuild = { showPlanner = true },
+                )
+            }
             if (locationPermissionGranted) {
                 SmallFloatingActionButton(onClick = { recenterToken++ }) {
                     Icon(Icons.Default.MyLocation, "Center on my location")
@@ -118,17 +205,99 @@ fun ScenicPathApp(locationPermissionGranted: Boolean) {
                 Icon(Icons.Default.EditRoad, "Open route planner")
             }
         }
+
+        if (mapError != null && routeError == null) {
+            AssistChip(
+                onClick = { mapError = null },
+                label = { Text("Map fallback active") },
+                leadingIcon = { Icon(Icons.Default.WarningAmber, null) },
+                modifier = Modifier.align(Alignment.BottomStart).padding(18.dp),
+            )
+        }
     }
 
     if (showPlanner) {
         RoutePlannerSheet(
-            start = start,
-            destination = destination,
+            start = startLabel,
+            destination = destinationLabel,
             plan = plan,
             preferences = preferences,
             onPlanChange = { plan = it },
             onPreferencesChange = { preferences = it },
+            onRequestAddStop = {
+                showPlanner = false
+                showStopKindPicker = true
+            },
+            onBuildRoute = ::buildRoute,
             onDismiss = { showPlanner = false },
+        )
+    }
+
+    if (showStartPicker) {
+        PlacePickerSheet(
+            title = "Choose start",
+            initialQuery = startSelection?.title.orEmpty(),
+            bias = location.point,
+            onDismiss = { showStartPicker = false },
+            onPick = {
+                startSelection = it
+                showStartPicker = false
+                routePlan = null
+            },
+        )
+    }
+
+    if (showDestinationPicker) {
+        PlacePickerSheet(
+            title = "Choose destination",
+            initialQuery = destinationSelection?.title.orEmpty(),
+            bias = origin,
+            onDismiss = { showDestinationPicker = false },
+            onPick = {
+                destinationSelection = it
+                showDestinationPicker = false
+                routePlan = null
+            },
+        )
+    }
+
+    if (showStopKindPicker) {
+        StopKindDialog(
+            selected = pendingStopKind,
+            onDismiss = {
+                showStopKindPicker = false
+                showPlanner = true
+            },
+            onSelect = { kind ->
+                pendingStopKind = kind
+                showStopKindPicker = false
+                showStopPicker = true
+            },
+        )
+    }
+
+    if (showStopPicker) {
+        PlacePickerSheet(
+            title = "Add ${pendingStopKind.label.lowercase()} stop",
+            bias = origin,
+            onDismiss = {
+                showStopPicker = false
+                showPlanner = true
+            },
+            onPick = { place ->
+                plan = plan.copy(
+                    stops = plan.stops + PlannedStop(
+                        id = "place-${System.nanoTime()}",
+                        name = place.title,
+                        kind = pendingStopKind,
+                        point = place.point,
+                        subtitle = place.subtitle,
+                    )
+                )
+                showStopPicker = false
+                showPlanner = true
+                routePlan = null
+            },
         )
     }
 
@@ -138,10 +307,152 @@ fun ScenicPathApp(locationPermissionGranted: Boolean) {
             onChange = {
                 preferences = it
                 plan = plan.copy(routeCharacter = RouteCharacter.CUSTOM)
+                routePlan = null
             },
             onDismiss = { showScenicDNA = false },
         )
     }
+}
+
+@Composable
+private fun PlaceField(
+    label: String,
+    value: String,
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    supporting: String?,
+    onClick: () -> Unit,
+) {
+    Surface(
+        shape = MaterialTheme.shapes.large,
+        tonalElevation = 1.dp,
+        modifier = Modifier.fillMaxWidth().clickable(onClick = onClick),
+    ) {
+        Row(
+            Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Icon(icon, null, tint = MaterialTheme.colorScheme.primary)
+            Spacer(Modifier.width(12.dp))
+            Column(Modifier.weight(1f)) {
+                Text(label, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text(value, fontWeight = FontWeight.Medium, maxLines = 1)
+                if (!supporting.isNullOrBlank()) {
+                    Text(supporting, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1)
+                }
+            }
+            Icon(Icons.Default.ChevronRight, null)
+        }
+    }
+}
+
+@Composable
+private fun RouteResultCard(
+    route: RouteCandidateUi,
+    candidateIndex: Int,
+    candidateCount: Int,
+    note: String?,
+    onPrevious: () -> Unit,
+    onNext: () -> Unit,
+    onRebuild: () -> Unit,
+) {
+    Card(
+        modifier = Modifier.widthIn(max = 360.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.97f)),
+    ) {
+        Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text(
+                        if (route.isPreviewFallback) "Route preview" else "Scenic route",
+                        fontWeight = FontWeight.Bold,
+                    )
+                    Text(
+                        "${formatDistance(route.distanceMeters)} · ${formatDuration(route.durationSeconds)}",
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                }
+                if (!route.isPreviewFallback) {
+                    SuggestionChip(
+                        onClick = {},
+                        label = { Text("${route.scenicScore.toInt()} scenic") },
+                    )
+                }
+            }
+            if (route.isPreviewFallback) {
+                Text(
+                    "Debug fallback: geometry works, but ScenicScore requires the Scenic Path backend.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.tertiary,
+                )
+            } else if (!note.isNullOrBlank()) {
+                Text(note, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                if (candidateCount > 1) {
+                    IconButton(onClick = onPrevious) { Icon(Icons.Default.ChevronLeft, "Previous route") }
+                    Text("${candidateIndex + 1}/$candidateCount")
+                    IconButton(onClick = onNext) { Icon(Icons.Default.ChevronRight, "Next route") }
+                }
+                Spacer(Modifier.weight(1f))
+                TextButton(onClick = onRebuild) { Text("Edit") }
+                Button(onClick = { /* turn-by-turn foreground service is next */ }) {
+                    Icon(Icons.Default.Navigation, null, Modifier.size(18.dp))
+                    Spacer(Modifier.width(6.dp))
+                    Text("Preview")
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ErrorCard(message: String, onDismiss: () -> Unit) {
+    Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer)) {
+        Row(Modifier.padding(10.dp), verticalAlignment = Alignment.CenterVertically) {
+            Icon(Icons.Default.WarningAmber, null, tint = MaterialTheme.colorScheme.onErrorContainer)
+            Spacer(Modifier.width(8.dp))
+            Text(message, Modifier.weight(1f), color = MaterialTheme.colorScheme.onErrorContainer, style = MaterialTheme.typography.bodySmall)
+            IconButton(onClick = onDismiss) { Icon(Icons.Default.Close, "Dismiss") }
+        }
+    }
+}
+
+@Composable
+private fun StopKindDialog(
+    selected: StopKind,
+    onDismiss: () -> Unit,
+    onSelect: (StopKind) -> Unit,
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("What kind of stop?") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                StopKind.entries.forEach { kind ->
+                    Surface(
+                        shape = MaterialTheme.shapes.medium,
+                        color = if (kind == selected) MaterialTheme.colorScheme.secondaryContainer else MaterialTheme.colorScheme.surface,
+                        modifier = Modifier.fillMaxWidth().clickable { onSelect(kind) },
+                    ) {
+                        Text(kind.label, Modifier.padding(12.dp), fontWeight = FontWeight.Medium)
+                    }
+                }
+            }
+        },
+        confirmButton = {},
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
+    )
+}
+
+private fun formatDistance(meters: Double): String = if (meters >= 1000) {
+    String.format(Locale.getDefault(), "%.1f km", meters / 1000.0)
+} else "${meters.toInt()} m"
+
+private fun formatDuration(seconds: Double): String {
+    val minutes = (seconds / 60.0).toInt()
+    val hours = minutes / 60
+    val rest = minutes % 60
+    return if (hours > 0) "${hours}h ${rest}m" else "${minutes}m"
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
