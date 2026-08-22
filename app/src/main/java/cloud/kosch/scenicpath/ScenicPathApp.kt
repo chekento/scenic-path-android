@@ -85,12 +85,34 @@ fun ScenicPathApp(
         }
     }
 
+    fun addSuggestedStop(highlight: ScenePointUi) {
+        if (plan.stops.any { it.id == highlight.id }) return
+        val kind = StopKind.entries.firstOrNull { it.name == highlight.kind } ?: StopKind.SCENIC
+        plan = plan.copy(
+            stops = plan.stops + PlannedStop(
+                id = highlight.id,
+                name = highlight.name,
+                kind = kind,
+                dwellMinutes = highlight.suggestedDwellMinutes,
+                locked = true,
+                mustVisit = true,
+                point = highlight.point,
+                rating = highlight.rating,
+                ratingCount = highlight.ratingCount,
+                subtype = highlight.subtype,
+            )
+        )
+        routePlan = null
+        showPlanner = true
+    }
+
     Box(Modifier.fillMaxSize()) {
         ScenicMap(
             modifier = Modifier.fillMaxSize(),
             userLocation = location.point,
             routePoints = activeRoute?.points.orEmpty(),
             stops = plan.stops,
+            highlights = activeRoute?.scenePoints.orEmpty(),
             recenterToken = recenterToken,
             onMapError = { mapError = it },
         )
@@ -208,6 +230,7 @@ fun ScenicPathApp(
                         val count = routePlan?.candidates?.size ?: 0
                         if (count > 0) selectedCandidateIndex = (selectedCandidateIndex + 1) % count
                     },
+                    onAddHighlight = ::addSuggestedStop,
                     onRebuild = { showPlanner = true },
                 )
             }
@@ -368,21 +391,23 @@ private fun RouteResultCard(
     note: String?,
     onPrevious: () -> Unit,
     onNext: () -> Unit,
+    onAddHighlight: (ScenePointUi) -> Unit,
     onRebuild: () -> Unit,
 ) {
     Card(
-        modifier = Modifier.widthIn(max = 360.dp),
+        modifier = Modifier.widthIn(max = 390.dp),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.97f)),
     ) {
         Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Column(Modifier.weight(1f)) {
                     Text(
-                        if (route.isPreviewFallback) "Route preview" else "Scenic route",
+                        if (route.isPreviewFallback) "Route preview" else routeCharacterLabel(route.character),
                         fontWeight = FontWeight.Bold,
                     )
                     Text(
-                        "${formatDistance(route.distanceMeters)} · ${formatDuration(route.durationSeconds)}",
+                        "${formatDistance(route.distanceMeters)} · ${formatDuration(route.durationSeconds)}" +
+                            if (route.extraMinutes > 0.5) " · +${route.extraMinutes.toInt()} min" else "",
                         style = MaterialTheme.typography.bodySmall,
                     )
                 }
@@ -393,6 +418,51 @@ private fun RouteResultCard(
                     )
                 }
             }
+
+            if (route.strongestSignals.isNotEmpty()) {
+                Row(
+                    Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    route.strongestSignals.take(3).forEach { signal ->
+                        AssistChip(onClick = {}, label = { Text(signalLabel(signal)) })
+                    }
+                }
+            }
+
+            if (route.scenePoints.isNotEmpty()) {
+                HorizontalDivider()
+                Text("Along this route", style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.SemiBold)
+                route.scenePoints.take(3).forEach { highlight ->
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(sceneEmoji(highlight.kind), style = MaterialTheme.typography.titleMedium)
+                        Spacer(Modifier.width(8.dp))
+                        Column(Modifier.weight(1f)) {
+                            Text(highlight.name, fontWeight = FontWeight.Medium, maxLines = 1)
+                            val details = buildList {
+                                if (highlight.distanceFromRouteMeters > 0) add("${highlight.distanceFromRouteMeters} m from route")
+                                highlight.rating?.let { rating ->
+                                    val reviews = highlight.ratingCount?.let { " · $it reviews" }.orEmpty()
+                                    add(String.format(Locale.getDefault(), "%.1f★%s", rating, reviews))
+                                }
+                                add("${highlight.suggestedDwellMinutes} min")
+                            }.joinToString(" · ")
+                            Text(details, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1)
+                        }
+                        IconButton(onClick = { onAddHighlight(highlight) }) {
+                            Icon(Icons.Default.AddCircleOutline, "Add ${highlight.name} to journey")
+                        }
+                    }
+                }
+                if (route.scenePoints.size > 3) {
+                    Text(
+                        "+${route.scenePoints.size - 3} more optional highlights along this route",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+
             if (route.isPreviewFallback) {
                 Text(
                     "Debug fallback: geometry works, but ScenicScore requires the Scenic Path backend.",
@@ -438,18 +508,19 @@ private fun StopKindDialog(
     onDismiss: () -> Unit,
     onSelect: (StopKind) -> Unit,
 ) {
+    val manualKinds = prototypeSelectableSceneKinds + StopKind.CUSTOM
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text("What kind of stop?") },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                StopKind.entries.forEach { kind ->
+                manualKinds.forEach { kind ->
                     Surface(
                         shape = MaterialTheme.shapes.medium,
                         color = if (kind == selected) MaterialTheme.colorScheme.secondaryContainer else MaterialTheme.colorScheme.surface,
                         modifier = Modifier.fillMaxWidth().clickable { onSelect(kind) },
                     ) {
-                        Text(kind.label, Modifier.padding(12.dp), fontWeight = FontWeight.Medium)
+                        Text("${kind.emoji}  ${kind.label}", Modifier.padding(12.dp), fontWeight = FontWeight.Medium)
                     }
                 }
             }
@@ -458,6 +529,34 @@ private fun StopKindDialog(
         dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
     )
 }
+
+private fun routeCharacterLabel(character: String): String = when (character.uppercase()) {
+    "BEAUTIFUL" -> "Beautiful route"
+    "BALANCED" -> "Balanced route"
+    "DIRECT" -> "Direct route"
+    "CUSTOM" -> "Custom scenic route"
+    else -> "Scenic route"
+}
+
+private fun signalLabel(signal: String): String = when (signal) {
+    "beautifulRoads" -> "Scenic roads"
+    "forest" -> "Forest"
+    "water" -> "Water"
+    "mountains" -> "Relief"
+    "viewpoints" -> "Views"
+    "culture" -> "Culture"
+    "monuments" -> "History"
+    "museums" -> "Museums"
+    "art" -> "Art"
+    "worship" -> "Historic worship"
+    "architecture" -> "Architecture"
+    "parks" -> "Parks"
+    "food" -> "Top food"
+    "scenicHighlights" -> "Highlights"
+    else -> signal.replaceFirstChar { it.uppercase() }
+}
+
+private fun sceneEmoji(kind: String): String = StopKind.entries.firstOrNull { it.name == kind }?.emoji ?: "⭐"
 
 private fun formatDistance(meters: Double): String = if (meters >= 1000) {
     String.format(Locale.getDefault(), "%.1f km", meters / 1000.0)
@@ -493,13 +592,17 @@ private fun ScenicSettingsSheet(
             WeightSlider("Beautiful roads", preferences.weights.beautifulRoads) { v -> onChange(preferences.copy(weights = preferences.weights.copy(beautifulRoads = v))) }
             WeightSlider("Forests", preferences.weights.forest) { v -> onChange(preferences.copy(weights = preferences.weights.copy(forest = v))) }
             WeightSlider("Lakes & rivers", preferences.weights.water) { v -> onChange(preferences.copy(weights = preferences.weights.copy(water = v))) }
-            WeightSlider("Mountains", preferences.weights.mountains) { v -> onChange(preferences.copy(weights = preferences.weights.copy(mountains = v))) }
+            WeightSlider("Mountains & relief", preferences.weights.mountains) { v -> onChange(preferences.copy(weights = preferences.weights.copy(mountains = v))) }
             WeightSlider("Viewpoints", preferences.weights.viewpoints) { v -> onChange(preferences.copy(weights = preferences.weights.copy(viewpoints = v))) }
-            WeightSlider("Culture & sights", preferences.weights.culture) { v -> onChange(preferences.copy(weights = preferences.weights.copy(culture = v))) }
-            WeightSlider("Museums & art", preferences.weights.museums) { v -> onChange(preferences.copy(weights = preferences.weights.copy(museums = v))) }
+            WeightSlider("Culture overall", preferences.weights.culture) { v -> onChange(preferences.copy(weights = preferences.weights.copy(culture = v))) }
+            WeightSlider("Monuments & history", preferences.weights.monuments) { v -> onChange(preferences.copy(weights = preferences.weights.copy(monuments = v))) }
+            WeightSlider("Museums", preferences.weights.museums) { v -> onChange(preferences.copy(weights = preferences.weights.copy(museums = v))) }
+            WeightSlider("Art", preferences.weights.art) { v -> onChange(preferences.copy(weights = preferences.weights.copy(art = v))) }
+            WeightSlider("Historic worship", preferences.weights.worship) { v -> onChange(preferences.copy(weights = preferences.weights.copy(worship = v))) }
             WeightSlider("Architecture", preferences.weights.architecture) { v -> onChange(preferences.copy(weights = preferences.weights.copy(architecture = v))) }
             WeightSlider("Parks & gardens", preferences.weights.parks) { v -> onChange(preferences.copy(weights = preferences.weights.copy(parks = v))) }
             WeightSlider("Top-rated food", preferences.weights.food) { v -> onChange(preferences.copy(weights = preferences.weights.copy(food = v))) }
+            WeightSlider("Scenic highlights", preferences.weights.scenicHighlights) { v -> onChange(preferences.copy(weights = preferences.weights.copy(scenicHighlights = v))) }
 
             HorizontalDivider()
             Text("Road feel", fontWeight = FontWeight.SemiBold)
