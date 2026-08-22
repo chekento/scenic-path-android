@@ -33,8 +33,8 @@ enum class StopKind(
     FOOD("Top food", "🍽️", ScenePointGroup.FOOD, 45),
     ARCHITECTURE("Towers & bridges", "🏗️", ScenePointGroup.PLACES_SPACES, 18),
 
-    // Internal/fallback scene-point type from the prototype.
-    SCENIC("Scenic highlight", "⭐", ScenePointGroup.OTHER, 15, autoDiscoverable = false),
+    // Internal fallback: automatically considered, but not another visible switch.
+    SCENIC("Scenic highlight", "⭐", ScenePointGroup.OTHER, 15, autoDiscoverable = true),
     CUSTOM("Custom", "📍", ScenePointGroup.OTHER, 30, autoDiscoverable = false),
 }
 
@@ -64,7 +64,7 @@ enum class SceneSubtype(val rawId: String, val parent: StopKind, val label: Stri
     RUINS("ruins", StopKind.MONUMENT, "Ruins"),
     MEMORIAL("memorial", StopKind.MONUMENT, "Memorial"),
     HISTORIC("historic", StopKind.MONUMENT, "Historic site"),
-    ATTRACTION("attraction", StopKind.MONUMENT, "Attraction"),
+    ATTRACTION("attraction", StopKind.SCENIC, "Attraction"),
 
     PARK("park", StopKind.PARK, "Park"),
     GARDEN("garden", StopKind.PARK, "Garden"),
@@ -101,7 +101,8 @@ fun sceneKindForRawType(type: String?): StopKind {
         "art" in t || "gallery" in t -> StopKind.ART
         listOf("waterfall", "beach", "water", "lake", "river").any(t::contains) -> StopKind.WATER
         listOf("peak", "natural", "landmark", "cape").any(t::contains) -> StopKind.NATURE
-        listOf("monument", "castle", "ruins", "memorial", "historic", "attraction").any(t::contains) -> StopKind.MONUMENT
+        "attraction" in t -> StopKind.SCENIC
+        listOf("monument", "castle", "ruins", "memorial", "historic").any(t::contains) -> StopKind.MONUMENT
         listOf("church", "worship", "cathedral", "mosque", "temple").any(t::contains) -> StopKind.WORSHIP
         listOf("food", "cafe", "restaurant").any(t::contains) -> StopKind.FOOD
         listOf("architecture", "tower", "lighthouse", "bridge").any(t::contains) -> StopKind.ARCHITECTURE
