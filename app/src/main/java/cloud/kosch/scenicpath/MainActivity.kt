@@ -35,7 +35,7 @@ class MainActivity : ComponentActivity() {
                 }
 
                 Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
-                    ScenicPathApp(
+                    ScenicPathRoot(
                         locationPermissionGranted = locationPermissionGranted,
                         requestLocationPermission = {
                             permissionLauncher.launch(
