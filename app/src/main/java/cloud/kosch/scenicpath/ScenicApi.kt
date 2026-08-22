@@ -33,6 +33,10 @@ data class ScenePointUi(
     val openNow: Boolean? = null,
     val url: String? = null,
     val attribution: String? = null,
+    val includedInRoute: Boolean = false,
+    val personalMatch: Double? = null,
+    val rationale: String? = null,
+    val estimatedDetourMinutes: Double? = null,
 )
 
 data class RouteCandidateUi(
@@ -47,6 +51,14 @@ data class RouteCandidateUi(
     val scenePoints: List<ScenePointUi> = emptyList(),
     val strongestSignals: List<String> = emptyList(),
     val isPreviewFallback: Boolean = false,
+    val variantLabel: String? = null,
+    val experienceScore: Double = scenicScore,
+    val autoStopIds: List<String> = emptyList(),
+    val driveExtraMinutes: Double = extraMinutes,
+    val dwellMinutes: Int = 0,
+    val totalExtraMinutes: Double = extraMinutes,
+    val corridorRadiusKm: Double = 0.0,
+    val dataConfidence: Double = 0.0,
 )
 
 data class RoutePlanUi(
@@ -82,10 +94,7 @@ object ScenicApi {
         runCatching { planBackend(origin, destination, plan, effectivePreferences) }
             .recoverCatching { backendError ->
                 if (!BuildConfig.DEBUG) throw backendError
-                // Physical-device development must still respect Scenic Path intent.
-                // Unlike the old OSRM geometry-only fallback, this OSM/Valhalla path
-                // honors motorway avoidance and can discover/insert scenic waypoints.
-                OsmScenicRoutingFallback.plan(origin, destination, plan, effectivePreferences)
+                ScenicJourneyOptimizer.plan(origin, destination, plan, effectivePreferences)
             }
     }
 
@@ -190,6 +199,12 @@ object ScenicApi {
             for (index in 0 until candidatesJson.length()) {
                 val item = candidatesJson.optJSONObject(index) ?: continue
                 val points = parsePoints(item.optJSONArray("points"))
+                val autoStopIds = buildList {
+                    val ids = item.optJSONArray("autoStopIds") ?: JSONArray()
+                    for (idIndex in 0 until ids.length()) {
+                        ids.optString(idIndex).takeIf { it.isNotBlank() }?.let(::add)
+                    }
+                }
                 val scenePoints = buildList {
                     val highlights = item.optJSONArray("scenePoints") ?: JSONArray()
                     for (highlightIndex in 0 until highlights.length()) {
@@ -198,9 +213,10 @@ object ScenicApi {
                         val lat = pointObject.optDouble("lat", Double.NaN)
                         val lon = pointObject.optDouble("lon", Double.NaN)
                         if (!lat.isFinite() || !lon.isFinite()) continue
+                        val id = highlight.optString("id", "highlight-$highlightIndex")
                         add(
                             ScenePointUi(
-                                id = highlight.optString("id", "highlight-$highlightIndex"),
+                                id = id,
                                 name = highlight.optString("name", "Scenic highlight"),
                                 kind = highlight.optString("kind", "SCENIC"),
                                 subtype = highlight.optString("subtype").takeIf { it.isNotBlank() },
@@ -214,31 +230,51 @@ object ScenicApi {
                                 openNow = if (highlight.has("openNow") && !highlight.isNull("openNow")) highlight.optBoolean("openNow") else null,
                                 url = highlight.optString("url").takeIf { it.isNotBlank() },
                                 attribution = highlight.optString("attribution").takeIf { it.isNotBlank() },
+                                includedInRoute = highlight.optBoolean("includedInRoute", id in autoStopIds),
+                                personalMatch = highlight.optDoubleOrNull("personalMatch"),
+                                rationale = highlight.optString("rationale").takeIf { it.isNotBlank() },
+                                estimatedDetourMinutes = highlight.optDoubleOrNull("estimatedDetourMinutes"),
                             )
                         )
                     }
                 }
                 val strongestSignals = buildList {
-                    val signals = item.optJSONObject("corridor")
-                        ?.optJSONObject("diagnostics")
-                        ?.optJSONArray("strongestSignals") ?: JSONArray()
-                    for (signalIndex in 0 until signals.length()) {
-                        val signal = signals.optString(signalIndex)
-                        if (signal.isNotBlank()) add(signal)
+                    val directSignals = item.optJSONArray("strongestSignals")
+                    if (directSignals != null) {
+                        for (signalIndex in 0 until directSignals.length()) {
+                            directSignals.optString(signalIndex).takeIf { it.isNotBlank() }?.let(::add)
+                        }
+                    } else {
+                        val signals = item.optJSONObject("corridor")
+                            ?.optJSONObject("diagnostics")
+                            ?.optJSONArray("strongestSignals") ?: JSONArray()
+                        for (signalIndex in 0 until signals.length()) {
+                            signals.optString(signalIndex).takeIf { it.isNotBlank() }?.let(::add)
+                        }
                     }
                 }
+                val scenicScore = item.optDouble("scenicScore", 0.0)
+                val extraMinutes = item.optDouble("extraMinutes", 0.0)
                 add(
                     RouteCandidateUi(
                         id = item.optString("id", "route-$index"),
                         character = item.optString("character", "BEAUTIFUL"),
                         distanceMeters = item.optDouble("distanceMeters", 0.0),
                         durationSeconds = item.optDouble("durationSeconds", 0.0),
-                        scenicScore = item.optDouble("scenicScore", 0.0),
-                        extraMinutes = item.optDouble("extraMinutes", 0.0),
+                        scenicScore = scenicScore,
+                        extraMinutes = extraMinutes,
                         points = points,
                         provider = item.optString("provider", "Scenic Path"),
                         scenePoints = scenePoints,
                         strongestSignals = strongestSignals,
+                        variantLabel = item.optString("variantLabel").takeIf { it.isNotBlank() },
+                        experienceScore = item.optDouble("experienceScore", scenicScore),
+                        autoStopIds = autoStopIds,
+                        driveExtraMinutes = item.optDouble("driveExtraMinutes", extraMinutes),
+                        dwellMinutes = item.optInt("dwellMinutes", 0),
+                        totalExtraMinutes = item.optDouble("totalExtraMinutes", extraMinutes),
+                        corridorRadiusKm = item.optDouble("corridorRadiusKm", 0.0),
+                        dataConfidence = item.optDouble("dataConfidence", 0.0),
                     )
                 )
             }
