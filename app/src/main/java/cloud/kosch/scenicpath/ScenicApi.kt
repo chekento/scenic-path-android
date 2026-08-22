@@ -132,6 +132,7 @@ object ScenicApi {
             put("routeCharacter", plan.routeCharacter.name)
             put("preserveScenicIntentOnReroute", plan.preserveScenicIntentOnReroute)
             put("flexibleStopOrder", plan.flexibleStopOrder)
+            put("enabledSceneKinds", JSONArray(plan.enabledSceneKinds.map { it.name }))
             put("preferences", preferences.toJson())
             put("stops", JSONArray().apply {
                 plan.stops.forEach { stop ->
@@ -140,6 +141,7 @@ object ScenicApi {
                             put("id", stop.id)
                             put("name", stop.name)
                             put("kind", stop.kind.name)
+                            stop.subtype?.let { put("subtype", it) }
                             put("locked", stop.locked)
                             put("mustVisit", stop.mustVisit)
                             put("dwellMinutes", stop.dwellMinutes)
@@ -284,9 +286,13 @@ private fun ScenicPreferences.toJson() = JSONObject().apply {
         put("mountains", weights.mountains.toDouble())
         put("viewpoints", weights.viewpoints.toDouble())
         put("culture", weights.culture.toDouble())
+        put("monuments", weights.monuments.toDouble())
         put("museums", weights.museums.toDouble())
+        put("art", weights.art.toDouble())
+        put("worship", weights.worship.toDouble())
         put("architecture", weights.architecture.toDouble())
         put("parks", weights.parks.toDouble())
         put("food", weights.food.toDouble())
+        put("scenicHighlights", weights.scenicHighlights.toDouble())
     })
 }
