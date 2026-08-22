@@ -1,5 +1,7 @@
 import http from "node:http";
 import { rankRoutes } from "./scenic-score.js";
+import { analyzeCorridor } from "./corridor-analyzer.js";
+import { enrichRouteFromOsm } from "./osm-enrichment.js";
 import { tomTomRoute } from "./tomtom.js";
 import { tomTomSearch } from "./tomtom-search.js";
 
@@ -28,38 +30,91 @@ function routePoints(route) {
   );
 }
 
-function normalizeTomTom(raw, fastestSeconds) {
-  return (raw.routes ?? []).map((r, index) => ({
-    id: `tomtom-${index}`,
-    durationSeconds: r.summary?.travelTimeInSeconds ?? 0,
+function normalizeRoute(route, index, fastestSeconds, character, provider = "TomTom") {
+  const durationSeconds = route.summary?.travelTimeInSeconds ?? 0;
+  return {
+    id: `${provider.toLowerCase()}-${character.toLowerCase()}-${index}`,
+    character,
+    durationSeconds,
     fastestDurationSeconds: fastestSeconds,
-    distanceMeters: r.summary?.lengthInMeters ?? 0,
-    extraMinutes: Math.max(0, ((r.summary?.travelTimeInSeconds ?? fastestSeconds) - fastestSeconds) / 60),
-    points: routePoints(r),
-    // Corridor enrichment will replace conservative zeros as M1 evolves.
-    factors: {
-      beautifulRoads: Math.max(0, 0.72 - index * 0.04),
-      forest: 0.0,
-      water: 0.0,
-      mountains: 0.0,
-      viewpoints: 0.0,
-      culture: 0.0,
-      museums: 0.0,
-      architecture: 0.0,
-      parks: 0.0,
-      food: 0.0
+    distanceMeters: route.summary?.lengthInMeters ?? 0,
+    extraMinutes: Math.max(0, (durationSeconds - fastestSeconds) / 60),
+    points: routePoints(route),
+    provider,
+  };
+}
+
+function dedupeCandidates(candidates) {
+  const seen = new Set();
+  return candidates.filter(candidate => {
+    const key = `${Math.round(candidate.distanceMeters / 100)}:${Math.round(candidate.durationSeconds / 30)}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+async function enrichCandidate(candidate, enabledSceneKinds) {
+  let enrichment = { observations: [], source: "geometry-only" };
+  if (process.env.OSM_ENRICHMENT_URL) {
+    try {
+      enrichment = await enrichRouteFromOsm({
+        points: candidate.points,
+        endpoint: process.env.OSM_ENRICHMENT_URL,
+      });
+    } catch (error) {
+      console.warn("corridor enrichment degraded:", error.message);
+      enrichment = { observations: [], source: "degraded", reason: error.message };
+    }
+  }
+
+  const analysis = analyzeCorridor({
+    points: candidate.points,
+    observations: enrichment.observations,
+    enabledSceneKinds,
+  });
+
+  return {
+    ...candidate,
+    factors: analysis.factors,
+    motorwayShare: analysis.motorwayShare,
+    industrialShare: analysis.industrialShare,
+    scenePoints: analysis.scenePoints,
+    corridor: {
+      source: enrichment.source,
+      diagnostics: analysis.diagnostics,
+      degradedReason: enrichment.reason,
     },
-    motorwayShare: 0,
-    industrialShare: 0,
-    provider: "TomTom"
-  }));
+  };
+}
+
+function balancedPreferences(preferences) {
+  return {
+    ...preferences,
+    windingness: Math.min(55, Math.max(35, preferences.windingness ?? 50)),
+    hilliness: Math.min(45, Math.max(25, preferences.hilliness ?? 40)),
+  };
+}
+
+function beautifulPreferences(preferences) {
+  return {
+    ...preferences,
+    windingness: Math.max(65, preferences.windingness ?? 70),
+    hilliness: Math.max(45, preferences.hilliness ?? 50),
+    avoidMotorways: preferences.avoidMotorways !== false,
+  };
 }
 
 const server = http.createServer(async (req, res) => {
   const requestUrl = new URL(req.url, `http://${req.headers.host || "localhost"}`);
 
   if (req.method === "GET" && requestUrl.pathname === "/health") {
-    return json(res, 200, { ok: true, service: "scenic-path-backend", version: "0.2.0" });
+    return json(res, 200, {
+      ok: true,
+      service: "scenic-path-backend",
+      version: "0.3.0",
+      corridorEnrichment: process.env.OSM_ENRICHMENT_URL ? "configured" : "geometry-only"
+    });
   }
 
   if (req.method === "GET" && requestUrl.pathname === "/v1/search") {
@@ -92,6 +147,7 @@ const server = http.createServer(async (req, res) => {
       const orderedStops = (body.stops ?? [])
         .filter((stop) => stop.position && Number.isFinite(stop.position.lat) && Number.isFinite(stop.position.lon));
       const waypoints = orderedStops.map((stop) => stop.position);
+      const enabledSceneKinds = Array.isArray(body.enabledSceneKinds) ? body.enabledSceneKinds : [];
 
       const fastestRaw = await tomTomRoute({
         apiKey: process.env.TOMTOM_API_KEY,
@@ -101,33 +157,57 @@ const server = http.createServer(async (req, res) => {
         preferences: body.preferences,
         routeType: "fastest"
       });
-      const fastestSeconds = fastestRaw.routes?.[0]?.summary?.travelTimeInSeconds;
+      const fastestRoute = fastestRaw.routes?.[0];
+      const fastestSeconds = fastestRoute?.summary?.travelTimeInSeconds;
       if (!fastestSeconds) throw new Error("No fastest baseline route returned");
 
-      const scenicRaw = await tomTomRoute({
-        apiKey: process.env.TOMTOM_API_KEY,
-        origin: body.origin,
-        destination: body.destination,
-        waypoints,
-        preferences: body.preferences,
-        routeType: body.routeCharacter === "DIRECT" ? "fastest" : "thrilling"
-      });
-      const ranked = rankRoutes(normalizeTomTom(scenicRaw, fastestSeconds), body.preferences);
+      const [beautifulRaw, balancedRaw] = await Promise.all([
+        tomTomRoute({
+          apiKey: process.env.TOMTOM_API_KEY,
+          origin: body.origin,
+          destination: body.destination,
+          waypoints,
+          preferences: beautifulPreferences(body.preferences),
+          routeType: "thrilling"
+        }),
+        tomTomRoute({
+          apiKey: process.env.TOMTOM_API_KEY,
+          origin: body.origin,
+          destination: body.destination,
+          waypoints,
+          preferences: balancedPreferences(body.preferences),
+          routeType: "thrilling"
+        })
+      ]);
+
+      const rawCandidates = [
+        normalizeRoute(fastestRoute, 0, fastestSeconds, "DIRECT"),
+        ...(balancedRaw.routes ?? []).map((route, index) => normalizeRoute(route, index, fastestSeconds, "BALANCED")),
+        ...(beautifulRaw.routes ?? []).map((route, index) => normalizeRoute(route, index, fastestSeconds, body.routeCharacter === "CUSTOM" ? "CUSTOM" : "BEAUTIFUL")),
+      ];
+
+      const enriched = await Promise.all(
+        dedupeCandidates(rawCandidates).map(candidate => enrichCandidate(candidate, enabledSceneKinds))
+      );
+      const ranked = rankRoutes(enriched, body.preferences);
 
       return json(res, 200, {
         baseline: {
           durationSeconds: fastestSeconds,
-          distanceMeters: fastestRaw.routes[0].summary.lengthInMeters,
-          points: routePoints(fastestRaw.routes[0])
+          distanceMeters: fastestRoute.summary.lengthInMeters,
+          points: routePoints(fastestRoute)
         },
         candidates: ranked,
         stops: orderedStops,
         plan: {
           mode: body.mode ?? "QUICK",
           routeCharacter: body.routeCharacter ?? "BEAUTIFUL",
+          enabledSceneKinds,
           preserveScenicIntentOnReroute: body.preserveScenicIntentOnReroute !== false
         },
-        note: "M1 routing now respects ordered resolved stops; corridor enrichment is the next scoring layer."
+        note: process.env.OSM_ENRICHMENT_URL
+          ? "Routes are ranked with corridor geometry plus configured landscape/scene enrichment."
+          : "Routes are currently ranked with road geometry; configure OSM_ENRICHMENT_URL for landscape and scene-point enrichment."
       });
     } catch (error) {
       console.error(error);
