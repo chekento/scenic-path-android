@@ -62,28 +62,23 @@ object OsmScenicRoutingFallback {
             emptyList()
         }
 
-        val autoStops = selectAutoStops(discovered, plan, effective)
-        val scenicWithStops = if (autoStops.isNotEmpty()) {
-            runCatching {
-                requestValhalla(
-                    locations = listOf(origin) + fixedStops + autoStops.map { it.point } + destination,
-                    avoidMotorways = effective.avoidMotorways,
-                    avoidTolls = effective.avoidTolls,
-                )
-            }.getOrNull()
-        } else {
-            null
-        }
+        // Smart planning is intentionally incremental. The previous all-or-nothing
+        // approach could select several attractive POIs and then discard every stop if
+        // the combined route exceeded the budget. We now test candidates one by one,
+        // keep every feasible addition and order accepted stops along the route.
+        val autoResult = buildAutoStopRoute(
+            origin = origin,
+            destination = destination,
+            fixedStops = fixedStops,
+            baseline = baseline,
+            initialScenic = initialScenic,
+            suggestions = discovered,
+            plan = plan,
+            preferences = effective,
+        )
+        val acceptedAutoStops = autoResult.stops
+        val selectedScenic = autoResult.route
 
-        val acceptedAutoStops = if (scenicWithStops != null) {
-            val travelExtraMinutes = max(0.0, (scenicWithStops.durationSeconds - baseline.durationSeconds) / 60.0)
-            val dwellMinutes = autoStops.sumOf { it.suggestedDwellMinutes }
-            if (travelExtraMinutes + dwellMinutes <= effective.maxExtraMinutes + 1.0) autoStops else emptyList()
-        } else {
-            emptyList()
-        }
-
-        val selectedScenic = if (acceptedAutoStops.isNotEmpty()) scenicWithStops!! else initialScenic
         val extraMinutes = max(0.0, (selectedScenic.durationSeconds - baseline.durationSeconds) / 60.0)
         val scenicScore = debugScenicScore(
             avoidMotorways = effective.avoidMotorways,
@@ -99,6 +94,14 @@ object OsmScenicRoutingFallback {
             if (discovered.any { it.kind == StopKind.MONUMENT.name }) add("monuments")
         }
 
+        // Auto-included stops are surfaced first so the compact route bar immediately
+        // explains why the route bends through them. Remaining discoveries stay optional.
+        val acceptedIds = acceptedAutoStops.mapTo(mutableSetOf()) { it.id }
+        val surfacedScenePoints = buildList {
+            addAll(acceptedAutoStops)
+            addAll(discovered.filterNot { it.id in acceptedIds })
+        }.take(18)
+
         val scenicCandidate = RouteCandidateUi(
             id = "osm-scenic-device",
             character = plan.routeCharacter.name,
@@ -108,7 +111,7 @@ object OsmScenicRoutingFallback {
             extraMinutes = extraMinutes,
             points = selectedScenic.points,
             provider = "Valhalla · OpenStreetMap development",
-            scenePoints = discovered.take(18),
+            scenePoints = surfacedScenePoints,
             strongestSignals = signals.take(4),
             isPreviewFallback = false,
         )
@@ -139,11 +142,14 @@ object OsmScenicRoutingFallback {
                 if (effective.avoidMotorways) append(" · motorway-free route validated")
                 when {
                     acceptedAutoStops.isNotEmpty() -> {
-                        append(" · ${acceptedAutoStops.size} scenic waypoint")
+                        append(" · ${acceptedAutoStops.size} scenic stop")
                         if (acceptedAutoStops.size != 1) append("s")
-                        append(" included")
+                        append(" automatically included")
+                        append(": ")
+                        append(acceptedAutoStops.take(3).joinToString { it.name })
+                        if (acceptedAutoStops.size > 3) append(" +${acceptedAutoStops.size - 3}")
                     }
-                    discovered.isNotEmpty() -> append(" · ${discovered.size} scenic locations found")
+                    discovered.isNotEmpty() -> append(" · ${discovered.size} scenic locations found, none fit the current time budget")
                     plan.autoSuggestStops -> append(" · no scene data returned by public discovery services")
                 }
             },
@@ -154,6 +160,11 @@ object OsmScenicRoutingFallback {
         val distanceMeters: Double,
         val durationSeconds: Double,
         val points: List<GeoPoint>,
+    )
+
+    private data class AutoStopRouteResult(
+        val route: RawRoute,
+        val stops: List<ScenePointUi>,
     )
 
     private fun requestValhalla(
@@ -266,33 +277,101 @@ object OsmScenicRoutingFallback {
             setRequestProperty("X-Client-Id", CLIENT_ID)
         }
 
-    private fun selectAutoStops(
+    private fun buildAutoStopRoute(
+        origin: GeoPoint,
+        destination: GeoPoint,
+        fixedStops: List<GeoPoint>,
+        baseline: RawRoute,
+        initialScenic: RawRoute,
         suggestions: List<ScenePointUi>,
         plan: TripPlan,
         preferences: ScenicPreferences,
-    ): List<ScenePointUi> {
-        if (!plan.autoSuggestStops || suggestions.isEmpty()) return emptyList()
+    ): AutoStopRouteResult {
+        if (!plan.autoSuggestStops || suggestions.isEmpty()) {
+            return AutoStopRouteResult(initialScenic, emptyList())
+        }
+
         val maximum = when {
-            preferences.maxExtraMinutes >= 150 -> min(4, preferences.maxStops)
-            preferences.maxExtraMinutes >= 90 -> min(3, preferences.maxStops)
-            preferences.maxExtraMinutes >= 45 -> min(2, preferences.maxStops)
+            preferences.maxExtraMinutes >= 150 -> min(5, preferences.maxStops)
+            preferences.maxExtraMinutes >= 110 -> min(4, preferences.maxStops)
+            preferences.maxExtraMinutes >= 75 -> min(3, preferences.maxStops)
+            preferences.maxExtraMinutes >= 40 -> min(2, preferences.maxStops)
             preferences.maxExtraMinutes >= 20 -> min(1, preferences.maxStops)
             else -> 0
         }
-        if (maximum <= 0) return emptyList()
+        if (maximum <= 0) return AutoStopRouteResult(initialScenic, emptyList())
 
-        var remaining = preferences.maxExtraMinutes
-        val picked = mutableListOf<ScenePointUi>()
-        suggestions.forEach { candidate ->
-            if (picked.size >= maximum) return@forEach
-            val dwell = candidate.suggestedDwellMinutes
-            if (dwell + 10 > remaining) return@forEach
-            val diverse = picked.none { it.kind == candidate.kind } || picked.size >= maximum - 1
-            if (!diverse) return@forEach
-            picked += candidate
-            remaining -= dwell
+        val rankedCandidates = suggestions
+            .sortedByDescending { autoStopUtility(it) }
+            .take(12)
+
+        var accepted = emptyList<ScenePointUi>()
+        var currentRoute = initialScenic
+
+        for (candidate in rankedCandidates) {
+            if (accepted.size >= maximum) break
+            if (candidate.distanceFromRouteMeters > 12_000) continue
+            if (accepted.any { it.id == candidate.id }) continue
+
+            // Prefer variety, but do not make it a hard rule. A route through two truly
+            // exceptional castles can still be better than forcing in a weak category.
+            val sameKindCount = accepted.count { it.kind == candidate.kind }
+            if (sameKindCount >= 2) continue
+
+            val currentDwell = accepted.sumOf { it.suggestedDwellMinutes }
+            val estimatedCandidateDetourMinutes = candidate.distanceFromRouteMeters / 350.0
+            val currentTravelExtra = max(0.0, (currentRoute.durationSeconds - baseline.durationSeconds) / 60.0)
+            if (currentTravelExtra + currentDwell + candidate.suggestedDwellMinutes + estimatedCandidateDetourMinutes > preferences.maxExtraMinutes + 8.0) {
+                continue
+            }
+
+            val trialStops = (accepted + candidate).sortedBy {
+                routeProgressIndex(initialScenic.points, it.point)
+            }
+            val trialRoute = runCatching {
+                requestValhalla(
+                    locations = listOf(origin) + fixedStops + trialStops.map { it.point } + destination,
+                    avoidMotorways = preferences.avoidMotorways,
+                    avoidTolls = preferences.avoidTolls,
+                )
+            }.getOrNull() ?: continue
+
+            val travelExtraMinutes = max(0.0, (trialRoute.durationSeconds - baseline.durationSeconds) / 60.0)
+            val dwellMinutes = trialStops.sumOf { it.suggestedDwellMinutes }
+            val totalExtraMinutes = travelExtraMinutes + dwellMinutes
+
+            if (totalExtraMinutes <= preferences.maxExtraMinutes + 1.0) {
+                accepted = trialStops
+                currentRoute = trialRoute
+            }
         }
-        return picked
+
+        return AutoStopRouteResult(currentRoute, accepted)
+    }
+
+    private fun autoStopUtility(point: ScenePointUi): Double {
+        val subtype = point.subtype.orEmpty().lowercase()
+        val heritageBonus = when (subtype) {
+            "castle", "defensive_castle", "stately", "palace", "manor" -> 24.0
+            "waterfall", "viewpoint", "lighthouse" -> 14.0
+            else -> 0.0
+        }
+        val routePenalty = point.distanceFromRouteMeters / 260.0
+        return point.suggestionScore + heritageBonus - routePenalty
+    }
+
+    private fun routeProgressIndex(route: List<GeoPoint>, point: GeoPoint): Int {
+        val samples = routeSamples(route, 120)
+        var bestIndex = 0
+        var bestDistance = Double.POSITIVE_INFINITY
+        samples.forEachIndexed { index, sample ->
+            val distance = haversineMeters(point, sample)
+            if (distance < bestDistance) {
+                bestDistance = distance
+                bestIndex = index
+            }
+        }
+        return bestIndex
     }
 
     private fun debugScenicScore(
@@ -370,7 +449,6 @@ object OsmScenicRoutingFallback {
         return (Math.toDegrees(atan2(y, x)) + 360) % 360
     }
 
-    @Suppress("unused")
     private fun haversineMeters(a: GeoPoint, b: GeoPoint): Double {
         val earth = 6_371_000.0
         val dLat = Math.toRadians(b.lat - a.lat)
