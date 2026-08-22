@@ -92,12 +92,12 @@ object ScenicApi {
     ): Result<RoutePlanUi> = withContext(Dispatchers.IO) {
         val effectivePreferences = preferences.forCharacter(plan.routeCharacter)
 
-        // Physical-device/debug builds exercise the same v0.4 Journey Optimizer every
-        // time. This avoids first waiting for the emulator-only 10.0.2.2 backend and,
-        // more importantly, makes the next device test unambiguously test the new core.
+        // Physical-device/debug builds exercise the v0.4 Journey Optimizer directly.
+        // The segmented transport guard keeps long journeys below public development
+        // provider path limits while presenting one continuous trip to the user.
         if (BuildConfig.DEBUG) {
             return@withContext runCatching {
-                ScenicJourneyOptimizer.plan(origin, destination, plan, effectivePreferences)
+                SegmentedJourneyOptimizer.plan(origin, destination, plan, effectivePreferences)
             }
         }
 
