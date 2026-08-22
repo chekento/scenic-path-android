@@ -28,7 +28,7 @@ object PhotonSceneFallback {
         route: List<GeoPoint>,
         enabledKinds: Set<StopKind>,
         maxResults: Int = 18,
-        fast: Boolean = false,
+        fast: Boolean = true,
     ): List<ScenePointUi> = withContext(Dispatchers.IO) {
         if (route.size < 2) return@withContext emptyList()
         val categories = categoriesFor(enabledKinds)
@@ -40,9 +40,6 @@ object PhotonSceneFallback {
             length > 70_000 -> 4
             else -> 3
         }
-        // Long-route planning already samples the complete stitched corridor. Four
-        // responsive lookups provide enough coverage for the first-pass candidate pool;
-        // a slow public Photon request must never stall the complete journey.
         val sampleCount = if (fast) min(4, normalCount) else normalCount
         val samples = routeSamples(route, sampleCount)
         val routeForDistance = routeSamples(route, 100)
