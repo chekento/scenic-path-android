@@ -80,6 +80,13 @@ export function classifyTags(tags = {}) {
     return baseObservation({ kind: "WATER", subtype: "beach", tags, signals: { water: 1, scenicHighlights: 0.8 }, relevance: 0.82 });
   }
 
+  if (amenity === "place_of_worship") {
+    const isHistoric = Boolean(tags.historic || tags.heritage || tags.start_date || tags.tourism);
+    if (isHistoric) {
+      return baseObservation({ kind: "WORSHIP", subtype: tags.building || historic || "place_of_worship", tags, signals: { worship: 1, culture: 0.85 }, relevance: 0.82 });
+    }
+  }
+
   if (["castle", "ruins", "memorial", "monument", "archaeological_site", "battlefield"].includes(historic)) {
     return baseObservation({ kind: "MONUMENT", subtype: historic, tags, signals: { monuments: 1, culture: 0.9 }, relevance: 0.88 });
   }
@@ -89,13 +96,6 @@ export function classifyTags(tags = {}) {
 
   if (["park", "garden", "nature_reserve"].includes(leisure)) {
     return baseObservation({ kind: "PARK", subtype: leisure, tags, signals: { parks: 1, forest: leisure === "nature_reserve" ? 0.7 : 0.25 }, relevance: 0.78 });
-  }
-
-  if (amenity === "place_of_worship") {
-    const isHistoric = Boolean(tags.historic || tags.heritage || tags.start_date || tags.tourism);
-    if (isHistoric) {
-      return baseObservation({ kind: "WORSHIP", subtype: tags.building || "place_of_worship", tags, signals: { worship: 1, culture: 0.85 }, relevance: 0.82 });
-    }
   }
 
   if (["restaurant", "cafe"].includes(amenity)) {
