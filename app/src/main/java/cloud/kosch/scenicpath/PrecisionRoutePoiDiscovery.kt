@@ -21,17 +21,10 @@ import kotlin.math.sin
 import kotlin.math.sqrt
 
 /**
- * Resilient route-wide POI discovery for the physical-device prototype.
+ * Resilient route-wide OSM POI discovery.
  *
- * The previous implementation sent one very large Overpass query containing every category.
- * In real mobile testing those requests could time out and the app silently fell back to
- * Photon, which strongly favoured common nature/water/park features. Restaurants, museums,
- * heritage and architecture therefore disappeared together.
- *
- * This precision pass isolates independent query families. A slow nature request can no
- * longer suppress FOOD or heritage. Each family scans the complete route through a bounded
- * set of route anchors and fails independently. The result is still OSM-native and does not
- * invent ratings or opening-state information.
+ * Categories are deliberately isolated into independent request families. A timeout in a
+ * broad nature request can therefore never erase restaurants, museums, heritage or art.
  */
 object PrecisionRoutePoiDiscovery {
     private val endpoints = listOf(
@@ -45,7 +38,7 @@ object PrecisionRoutePoiDiscovery {
         val kinds: Set<StopKind>,
         val radiusMeters: Int,
         val outputLimit: Int,
-        val extras: Set<String> = emptySet(),
+        val attractions: Boolean = false,
     )
 
     suspend fun discover(
@@ -58,13 +51,13 @@ object PrecisionRoutePoiDiscovery {
         if (route.size < 2 || enabledKinds.isEmpty()) return@withContext emptyList()
 
         val deep = radiusMeters >= 24_000 || maxSamples >= 12
-        val routeLength = route.zipWithNext().sumOf { (a, b) -> haversineMeters(a, b) }
+        val length = route.zipWithNext().sumOf { (a, b) -> haversineMeters(a, b) }
         val desiredSamples = when {
-            routeLength > 300_000 -> 12
-            routeLength > 180_000 -> 11
-            routeLength > 100_000 -> 10
-            routeLength > 50_000 -> 8
-            routeLength > 25_000 -> 7
+            length > 300_000 -> 12
+            length > 180_000 -> 11
+            length > 100_000 -> 10
+            length > 50_000 -> 8
+            length > 25_000 -> 7
             else -> 5
         } + if (deep) 2 else 0
         val samples = routeSamples(route, min(maxSamples, desiredSamples.coerceAtLeast(4)))
@@ -73,84 +66,71 @@ object PrecisionRoutePoiDiscovery {
         val foodRadius = min(radiusMeters, if (deep) 18_000 else 10_000)
         val cultureRadius = min(radiusMeters, if (deep) 25_000 else 15_000)
         val natureRadius = min(radiusMeters, if (deep) 22_000 else 14_000)
-        val familyLimit = if (deep) 850 else 520
+        val outputLimit = if (deep) 850 else 520
 
         val families = buildList {
-            if (StopKind.FOOD in enabledKinds) {
-                add(QueryFamily("food", setOf(StopKind.FOOD), foodRadius, familyLimit))
-            }
-            val heritage = setOf(StopKind.VIEWPOINT, StopKind.MUSEUM, StopKind.MONUMENT).intersect(enabledKinds)
-            if (heritage.isNotEmpty()) {
-                add(QueryFamily("heritage", heritage, cultureRadius, familyLimit))
-            }
-            val culture = setOf(StopKind.ART, StopKind.WORSHIP, StopKind.ARCHITECTURE).intersect(enabledKinds)
-            if (culture.isNotEmpty()) {
-                add(QueryFamily("culture", culture, cultureRadius, familyLimit))
-            }
-            val nature = setOf(StopKind.NATURE, StopKind.PARK, StopKind.WATER).intersect(enabledKinds)
-            if (nature.isNotEmpty()) {
-                add(QueryFamily("nature", nature, natureRadius, familyLimit))
-            }
-            // Scenic attractions are an internal discovery layer rather than another
-            // route-planner switch. They add zoos, theme parks and named attractions.
-            add(
-                QueryFamily(
-                    id = "attractions",
-                    kinds = emptySet(),
-                    radiusMeters = cultureRadius,
-                    outputLimit = if (deep) 500 else 300,
-                    extras = setOf("attractions"),
-                )
-            )
+            if (StopKind.FOOD in enabledKinds) add(QueryFamily("food", setOf(StopKind.FOOD), foodRadius, outputLimit))
+            setOf(StopKind.VIEWPOINT, StopKind.MUSEUM, StopKind.MONUMENT).intersect(enabledKinds)
+                .takeIf { it.isNotEmpty() }
+                ?.let { add(QueryFamily("heritage", it, cultureRadius, outputLimit)) }
+            setOf(StopKind.ART, StopKind.WORSHIP, StopKind.ARCHITECTURE).intersect(enabledKinds)
+                .takeIf { it.isNotEmpty() }
+                ?.let { add(QueryFamily("culture", it, cultureRadius, outputLimit)) }
+            setOf(StopKind.NATURE, StopKind.PARK, StopKind.WATER).intersect(enabledKinds)
+                .takeIf { it.isNotEmpty() }
+                ?.let { add(QueryFamily("nature", it, natureRadius, outputLimit)) }
+            add(QueryFamily("attractions", emptySet(), cultureRadius, if (deep) 500 else 300, attractions = true))
         }
 
         val collected = mutableListOf<ScenePointUi>()
         for (batch in families.chunked(2)) {
-            val results = coroutineScope {
+            val resultSets = coroutineScope {
                 batch.map { family ->
                     async(Dispatchers.IO) {
-                        runCatching {
-                            queryFamily(
-                                family = family,
-                                samples = samples,
-                                routeForDistance = routeForDistance,
-                                deep = deep,
-                            )
-                        }.getOrElse { emptyList() }
+                        runCatching { queryFamily(family, samples, routeForDistance, deep) }
+                            .getOrElse { emptyList() }
                     }
                 }.awaitAll()
             }
-            results.forEach(collected::addAll)
+            resultSets.forEach(collected::addAll)
         }
 
-        // Deduplicate provider overlaps while preserving genuinely distinct nearby POIs.
-        val deduped = mutableListOf<ScenePointUi>()
-        collected
-            .sortedByDescending { it.suggestionScore }
-            .forEach { candidate ->
-                val duplicate = deduped.any { existing ->
-                    existing.id == candidate.id ||
-                        (existing.name.equals(candidate.name, ignoreCase = true) &&
-                            haversineMeters(existing.point, candidate.point) < 220) ||
-                        haversineMeters(existing.point, candidate.point) < 70
-                }
-                if (!duplicate) deduped += candidate
-            }
+        balanceAndDedupe(collected, maxResults)
+    }
 
-        // Reserve several entries per rich human-facing category before the global score
-        // fill. This prevents hundreds of restaurants/water features from crowding out a
-        // rarer castle, gallery or lighthouse.
-        val byLane = deduped
-            .groupBy { scenicCategoryLaneFor(it).id }
+    /** Merge independently discovered sets without deleting different POIs merely because
+     * they happen to be close to one another. */
+    internal fun mergeForDisplay(
+        first: List<ScenePointUi>,
+        second: List<ScenePointUi>,
+        maxResults: Int,
+    ): List<ScenePointUi> = balanceAndDedupe(first + second, maxResults)
+
+    private fun balanceAndDedupe(input: List<ScenePointUi>, maxResults: Int): List<ScenePointUi> {
+        val deduped = mutableListOf<ScenePointUi>()
+        input.sortedByDescending { it.suggestionScore }.forEach { candidate ->
+            val duplicate = deduped.any { existing ->
+                existing.id == candidate.id ||
+                    (existing.kind == candidate.kind &&
+                        existing.name.equals(candidate.name, ignoreCase = true) &&
+                        haversineMeters(existing.point, candidate.point) < 350) ||
+                    (existing.kind == candidate.kind &&
+                        existing.subtype == candidate.subtype &&
+                        haversineMeters(existing.point, candidate.point) < 45)
+            }
+            if (!duplicate) deduped += candidate
+        }
+
+        val byLane = deduped.groupBy { scenicCategoryLaneFor(it).id }
             .mapValues { (_, values) -> values.sortedByDescending { it.suggestionScore } }
-        val balanced = mutableListOf<ScenePointUi>()
+        val result = mutableListOf<ScenePointUi>()
         var round = 0
-        while (balanced.size < maxResults && round < 10) {
+        while (result.size < maxResults && round < 12) {
             var added = false
             scenicCategoryLanes.forEach { lane ->
                 byLane[lane.id]?.getOrNull(round)?.let { candidate ->
-                    if (balanced.size < maxResults && balanced.none { it.id == candidate.id }) {
-                        balanced += candidate
+                    if (result.size < maxResults && result.none { it.id == candidate.id }) {
+                        result += candidate
                         added = true
                     }
                 }
@@ -159,9 +139,9 @@ object PrecisionRoutePoiDiscovery {
             round++
         }
         deduped.forEach { candidate ->
-            if (balanced.size < maxResults && balanced.none { it.id == candidate.id }) balanced += candidate
+            if (result.size < maxResults && result.none { it.id == candidate.id }) result += candidate
         }
-        balanced.take(maxResults)
+        return result.take(maxResults)
     }
 
     private fun queryFamily(
@@ -172,10 +152,8 @@ object PrecisionRoutePoiDiscovery {
     ): List<ScenePointUi> {
         val selectors = buildList {
             samples.forEach { sample ->
-                family.kinds.forEach { kind ->
-                    addAll(selectorsFor(kind, sample, family.radiusMeters))
-                }
-                if ("attractions" in family.extras) {
+                family.kinds.forEach { addAll(selectorsFor(it, sample, family.radiusMeters)) }
+                if (family.attractions) {
                     add(selector(sample, family.radiusMeters, "[tourism~\"^(attraction|zoo|theme_park)$\"][name]"))
                 }
             }
@@ -183,14 +161,9 @@ object PrecisionRoutePoiDiscovery {
         if (selectors.isEmpty()) return emptyList()
 
         val query = buildString {
-            append("[out:json][timeout:")
-            append(if (deep) 28 else 20)
-            append("];")
-            append('(')
+            append("[out:json][timeout:${if (deep) 28 else 20}];(")
             selectors.forEach(::append)
-            append(");out center ")
-            append(family.outputLimit)
-            append(';')
+            append(");out center ${family.outputLimit};")
         }
         val elements = execute(query, deep)
         val points = mutableListOf<ScenePointUi>()
@@ -205,11 +178,9 @@ object PrecisionRoutePoiDiscovery {
 
             val distance = routeForDistance.minOfOrNull { haversineMeters(point, it) } ?: continue
             if (distance > family.radiusMeters * 1.22) continue
-
             val name = preferredName(tags).ifBlank { fallbackName(rawType) }
             if (name.isBlank()) continue
             val relevance = relevance(kind, rawType, tags)
-            val metadataBonus = metadataBonus(kind, rawType, tags)
             val website = tags.optString("website")
                 .ifBlank { tags.optString("contact:website") }
                 .takeIf { it.startsWith("http://") || it.startsWith("https://") }
@@ -221,7 +192,7 @@ object PrecisionRoutePoiDiscovery {
                 subtype = rawType,
                 point = point,
                 relevance = relevance,
-                suggestionScore = (relevance * 100.0 + metadataBonus - distance / 430.0).coerceAtLeast(1.0),
+                suggestionScore = (relevance * 100.0 + metadataBonus(kind, rawType, tags) - distance / 430.0).coerceAtLeast(1.0),
                 distanceFromRouteMeters = distance.roundToInt(),
                 suggestedDwellMinutes = dwell(rawType, kind),
                 url = website,
@@ -237,9 +208,7 @@ object PrecisionRoutePoiDiscovery {
             selector(sample, radius, "[tourism=viewpoint][name]"),
             selector(sample, radius, "[man_made=observation_tower][name]"),
         )
-        StopKind.MUSEUM -> listOf(
-            selector(sample, radius, "[tourism=museum][name]"),
-        )
+        StopKind.MUSEUM -> listOf(selector(sample, radius, "[tourism=museum][name]"))
         StopKind.MONUMENT -> listOf(
             selector(sample, radius, "[historic][name]"),
             selector(sample, radius, "[heritage][name]"),
@@ -285,18 +254,20 @@ object PrecisionRoutePoiDiscovery {
     private fun execute(query: String, deep: Boolean): JSONArray {
         val encoded = "data=" + URLEncoder.encode(query, Charsets.UTF_8.name())
         var lastError: Throwable? = null
+
         for (endpoint in endpoints) {
-            val connection = (URL(endpoint).openConnection() as HttpURLConnection).apply {
-                requestMethod = "POST"
-                connectTimeout = 3_500
-                readTimeout = if (deep) 24_000 else 17_000
-                doOutput = true
-                setRequestProperty("Content-Type", "application/x-www-form-urlencoded; charset=utf-8")
-                setRequestProperty("Accept", "application/json")
-                setRequestProperty("User-Agent", "ScenicPath-Android/${BuildConfig.VERSION_NAME} development")
-                outputStream.bufferedWriter(Charsets.UTF_8).use { it.write(encoded) }
-            }
+            var connection: HttpURLConnection? = null
             try {
+                connection = (URL(endpoint).openConnection() as HttpURLConnection).apply {
+                    requestMethod = "POST"
+                    connectTimeout = 3_500
+                    readTimeout = if (deep) 24_000 else 17_000
+                    doOutput = true
+                    setRequestProperty("Content-Type", "application/x-www-form-urlencoded; charset=utf-8")
+                    setRequestProperty("Accept", "application/json")
+                    setRequestProperty("User-Agent", "ScenicPath-Android/${BuildConfig.VERSION_NAME} development")
+                }
+                connection.outputStream.bufferedWriter(Charsets.UTF_8).use { it.write(encoded) }
                 val code = connection.responseCode
                 val stream = if (code in 200..299) connection.inputStream else connection.errorStream
                 val text = stream?.bufferedReader(Charsets.UTF_8)?.use { it.readText() }.orEmpty()
@@ -305,7 +276,7 @@ object PrecisionRoutePoiDiscovery {
             } catch (error: Throwable) {
                 lastError = error
             } finally {
-                connection.disconnect()
+                connection?.disconnect()
             }
         }
         throw lastError ?: IllegalStateException("Precision POI discovery unavailable")
@@ -349,8 +320,7 @@ object PrecisionRoutePoiDiscovery {
             tags.optString("heritage").isNotBlank() || tags.optString("memorial").isNotBlank() -> "historic"
             manMade == "observation_tower" -> "observation_tower"
             manMade == "lighthouse" -> "lighthouse"
-            manMade == "water_tower" -> "tower"
-            manMade == "tower" -> "tower"
+            manMade == "water_tower" || manMade == "tower" -> "tower"
             manMade == "windmill" -> "windmill"
             manMade == "watermill" -> "watermill"
             tags.optString("bridge").isNotBlank() -> "bridge"
@@ -380,10 +350,9 @@ object PrecisionRoutePoiDiscovery {
         }
     }
 
-    private fun preferredName(tags: JSONObject): String =
-        tags.optString("name")
-            .ifBlank { tags.optString("name:de") }
-            .ifBlank { tags.optString("name:en") }
+    private fun preferredName(tags: JSONObject): String = tags.optString("name")
+        .ifBlank { tags.optString("name:de") }
+        .ifBlank { tags.optString("name:en") }
 
     private fun relevance(kind: StopKind, rawType: String, tags: JSONObject): Double {
         var value = when (rawType) {
@@ -404,12 +373,7 @@ object PrecisionRoutePoiDiscovery {
             "beach", "lake", "river", "spring" -> 0.84
             "park", "garden", "forest" -> 0.78
             "attraction" -> 0.82
-            else -> when (kind) {
-                StopKind.MONUMENT -> 0.90
-                StopKind.NATURE -> 0.82
-                StopKind.SCENIC -> 0.80
-                else -> 0.76
-            }
+            else -> if (kind == StopKind.MONUMENT) 0.90 else 0.76
         }
         if (tags.optString("wikidata").isNotBlank() || tags.optString("wikipedia").isNotBlank()) value += 0.13
         if (tags.optString("heritage").isNotBlank()) value += 0.08
@@ -459,8 +423,7 @@ object PrecisionRoutePoiDiscovery {
         else -> kind.defaultDwellMinutes
     }
 
-    private fun fallbackName(rawType: String): String = rawType
-        .replace('_', ' ')
+    private fun fallbackName(rawType: String): String = rawType.replace('_', ' ')
         .replaceFirstChar { if (it.isLowerCase()) it.titlecase(Locale.ROOT) else it.toString() }
 
     private fun elementPoint(element: JSONObject): GeoPoint? {
