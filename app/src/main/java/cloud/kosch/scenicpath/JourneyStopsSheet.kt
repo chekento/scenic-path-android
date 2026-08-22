@@ -12,9 +12,19 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
+import kotlin.math.ln
 import kotlin.math.roundToInt
 
-@OptIn(ExperimentalMaterial3Api::class)
+/**
+ * Stable Smart Stops surface.
+ *
+ * This intentionally is NOT a ModalBottomSheet anymore. The sheet drag state and the
+ * scrolling list were still competing at scroll boundaries on physical devices and could
+ * make the window visibly bounce/shake. A fixed dialog has exactly one vertical scroll
+ * owner and no draggable sheet anchors.
+ */
 @Composable
 fun JourneyStopsSheet(
     route: RouteCandidateUi?,
@@ -23,7 +33,6 @@ fun JourneyStopsSheet(
     onManualSearch: () -> Unit,
     onDismiss: () -> Unit,
 ) {
-    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     var enriched by remember(route?.id) { mutableStateOf<List<ScenePointUi>>(emptyList()) }
     var enrichmentLoading by remember(route?.id) { mutableStateOf(false) }
 
@@ -38,7 +47,7 @@ fun JourneyStopsSheet(
             FastRoutePoiDiscovery.discover(
                 route = current.points,
                 enabledKinds = prototypeSelectableSceneKinds,
-                maxResults = 36,
+                maxResults = 40,
             )
         }.getOrElse { emptyList() }
         enrichmentLoading = false
@@ -62,105 +71,181 @@ fun JourneyStopsSheet(
     }
     val included = merged.filter { it.includedInRoute }
     val includedIds = included.mapTo(mutableSetOf()) { it.id }
-    val alternatives = merged.filterNot { it.id in includedIds || it.id in manuallyAddedIds }
+    val topFood = merged
+        .filter { it.kind == StopKind.FOOD.name && it.id !in includedIds && it.id !in manuallyAddedIds }
+        .maxByOrNull(::foodPickScore)
+    val alternatives = merged.filterNot {
+        it.id in includedIds || it.id in manuallyAddedIds || it.id == topFood?.id
+    }
 
-    ModalBottomSheet(
+    Dialog(
         onDismissRequest = onDismiss,
-        sheetState = sheetState,
+        properties = DialogProperties(
+            usePlatformDefaultWidth = false,
+            dismissOnBackPress = true,
+            dismissOnClickOutside = true,
+        ),
     ) {
-        // One single LazyColumn owns all vertical scrolling. The old nested LazyColumn inside
-        // a sheet Column could fight the sheet drag gesture at both scroll edges and caused
-        // the visible "dancing"/shaking after scrolling down and back up.
-        LazyColumn(
+        Surface(
             modifier = Modifier
-                .fillMaxWidth()
-                .heightIn(min = 320.dp, max = 690.dp),
-            contentPadding = PaddingValues(start = 18.dp, end = 18.dp, bottom = 30.dp),
-            verticalArrangement = Arrangement.spacedBy(11.dp),
+                .fillMaxWidth(0.96f)
+                .fillMaxHeight(0.90f),
+            shape = MaterialTheme.shapes.extraLarge,
+            tonalElevation = 8.dp,
+            shadowElevation = 12.dp,
         ) {
-            item(key = "header") {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Icon(Icons.Default.AutoAwesome, null, tint = MaterialTheme.colorScheme.primary)
-                    Spacer(Modifier.width(10.dp))
-                    Column(Modifier.weight(1f)) {
-                        Text("Smart Stops", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
-                        Text(
-                            "Included stops and worthwhile alternatives along this journey.",
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    }
-                    IconButton(onClick = onDismiss) { Icon(Icons.Default.Close, "Close Smart Stops") }
-                }
-            }
-
-            if (route == null) {
-                item(key = "empty-route") {
-                    Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow)) {
-                        Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(5.dp)) {
-                            Text("Build an experience first", fontWeight = FontWeight.SemiBold)
-                            Text("Scenic Path will then discover and rank locations around the complete journey.")
-                        }
-                    }
-                }
-            } else {
-                item(key = "summary") {
-                    Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.55f))) {
-                        Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(5.dp)) {
-                            Text(route.variantLabel ?: "Scenic experience", fontWeight = FontWeight.Bold)
+            LazyColumn(
+                modifier = Modifier.fillMaxSize(),
+                contentPadding = PaddingValues(start = 18.dp, end = 18.dp, top = 16.dp, bottom = 24.dp),
+                verticalArrangement = Arrangement.spacedBy(11.dp),
+            ) {
+                item(key = "header") {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(Icons.Default.AutoAwesome, null, tint = MaterialTheme.colorScheme.primary)
+                        Spacer(Modifier.width(10.dp))
+                        Column(Modifier.weight(1f)) {
+                            Text("Smart Stops", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
                             Text(
-                                "${included.size} automatic stops · ${route.dwellMinutes} min visiting · +${route.driveExtraMinutes.roundToInt()} min driving detour",
-                                style = MaterialTheme.typography.bodySmall,
-                            )
-                            val kinds = merged.map { it.kind }.distinct().size
-                            Text(
-                                "${merged.size} visible locations across $kinds scene categories",
-                                style = MaterialTheme.typography.bodySmall,
+                                "Included stops and worthwhile alternatives along this journey.",
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
                         }
+                        IconButton(onClick = onDismiss) { Icon(Icons.Default.Close, "Close Smart Stops") }
                     }
                 }
 
-                if (included.isNotEmpty()) {
-                    item(key = "included-title") {
-                        Text("Built into this route", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
-                    }
-                    itemsIndexed(included, key = { _, stop -> "included-${stop.id}" }) { index, stop ->
-                        IncludedStopRow(index + 1, stop)
+                if (route == null) {
+                    item(key = "empty-route") {
+                        Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow)) {
+                            Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(5.dp)) {
+                                Text("Build an experience first", fontWeight = FontWeight.SemiBold)
+                                Text("Scenic Path will then discover and rank locations around the complete journey.")
+                            }
+                        }
                     }
                 } else {
-                    item(key = "no-included") {
-                        Text("This variant has no automatic stop yet.", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    item(key = "summary") {
+                        Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.55f))) {
+                            Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(5.dp)) {
+                                Text(route.variantLabel ?: "Scenic experience", fontWeight = FontWeight.Bold)
+                                Text(
+                                    "${included.size} automatic stops · ${route.dwellMinutes} min visiting · +${route.driveExtraMinutes.roundToInt()} min driving detour",
+                                    style = MaterialTheme.typography.bodySmall,
+                                )
+                                val kinds = merged.map { it.kind }.distinct().size
+                                Text(
+                                    "${merged.size} visible locations across $kinds scene categories",
+                                    style = MaterialTheme.typography.bodySmall,
+                                )
+                            }
+                        }
                     }
-                }
 
-                if (enrichmentLoading) {
-                    item(key = "loading-more") {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
-                            Spacer(Modifier.width(8.dp))
-                            Text("Finding more culture, history, views and places…", style = MaterialTheme.typography.bodySmall)
+                    if (included.isNotEmpty()) {
+                        item(key = "included-title") {
+                            Text("Built into this route", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                        }
+                        itemsIndexed(included, key = { _, stop -> "included-${stop.id}" }) { index, stop ->
+                            IncludedStopRow(index + 1, stop)
+                        }
+                    } else {
+                        item(key = "no-included") {
+                            Text("This variant has no automatic stop yet.", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                    }
+
+                    if (enrichmentLoading) {
+                        item(key = "loading-more") {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
+                                Spacer(Modifier.width(8.dp))
+                                Text("Finding all enabled scene categories…", style = MaterialTheme.typography.bodySmall)
+                            }
+                        }
+                    }
+
+                    topFood?.let { food ->
+                        item(key = "top-food-divider") { HorizontalDivider() }
+                        item(key = "top-food-title") {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Icon(Icons.Default.Restaurant, null, tint = MaterialTheme.colorScheme.primary)
+                                Spacer(Modifier.width(7.dp))
+                                Text("Top Food pick", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                            }
+                        }
+                        item(key = "top-food-${food.id}") {
+                            TopFoodRow(food, onClick = { onAddAlternative(food) })
+                        }
+                    }
+
+                    if (alternatives.isNotEmpty()) {
+                        item(key = "alternatives-divider") { HorizontalDivider() }
+                        item(key = "alternatives-title") {
+                            Text("Good alternatives", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                        }
+                        itemsIndexed(alternatives.take(30), key = { _, stop -> "alt-${stop.id}" }) { _, stop ->
+                            AlternativeStopRow(stop, onClick = { onAddAlternative(stop) })
                         }
                     }
                 }
 
-                if (alternatives.isNotEmpty()) {
-                    item(key = "alternatives-divider") { HorizontalDivider() }
-                    item(key = "alternatives-title") {
-                        Text("Good alternatives", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
-                    }
-                    itemsIndexed(alternatives.take(28), key = { _, stop -> "alt-${stop.id}" }) { _, stop ->
-                        AlternativeStopRow(stop, onClick = { onAddAlternative(stop) })
+                item(key = "manual-divider") { HorizontalDivider() }
+                item(key = "manual-search") {
+                    OutlinedButton(onClick = onManualSearch, modifier = Modifier.fillMaxWidth()) {
+                        Icon(Icons.Default.Search, null)
+                        Spacer(Modifier.width(8.dp))
+                        Text("Search manually instead")
                     }
                 }
             }
+        }
+    }
+}
 
-            item(key = "manual-divider") { HorizontalDivider() }
-            item(key = "manual-search") {
-                OutlinedButton(onClick = onManualSearch, modifier = Modifier.fillMaxWidth()) {
-                    Icon(Icons.Default.Search, null)
-                    Spacer(Modifier.width(8.dp))
-                    Text("Search manually instead")
+private fun foodPickScore(stop: ScenePointUi): Double {
+    val rating = stop.rating
+    val reviews = stop.ratingCount ?: 0
+    val verified = if (rating != null) {
+        // Avoid a tiny-review 5.0 beating a heavily reviewed 4.8 restaurant.
+        rating * 20.0 + ln((reviews + 1).toDouble()) * 4.0
+    } else 0.0
+    val restaurantBonus = if (stop.subtype.equals("restaurant", ignoreCase = true)) 8.0 else 0.0
+    val detourPenalty = stop.distanceFromRouteMeters / 700.0
+    return verified + stop.suggestionScore + restaurantBonus - detourPenalty
+}
+
+@Composable
+private fun TopFoodRow(stop: ScenePointUi, onClick: () -> Unit) {
+    Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.65f))) {
+        Column(Modifier.padding(13.dp), verticalArrangement = Arrangement.spacedBy(7.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("🍽️", style = MaterialTheme.typography.headlineSmall)
+                Spacer(Modifier.width(9.dp))
+                Column(Modifier.weight(1f)) {
+                    Text(stop.name, fontWeight = FontWeight.Bold)
+                    Text(
+                        buildList {
+                            stop.rating?.let { rating ->
+                                add(String.format("%.1f★", rating))
+                                stop.ratingCount?.let { add("$it reviews") }
+                            }
+                            if (stop.distanceFromRouteMeters > 0) add(String.format("%.1f km from route", stop.distanceFromRouteMeters / 1000.0))
+                            add("${stop.suggestedDwellMinutes} min")
+                        }.joinToString(" · "),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSecondaryContainer,
+                    )
                 }
+            }
+            Text(
+                if (stop.rating != null) "Verified rating-based food candidate."
+                else "Best available route-food candidate from OSM metadata. Verified ratings require the configured food provider.",
+                style = MaterialTheme.typography.bodySmall,
+            )
+            Button(onClick = onClick, modifier = Modifier.fillMaxWidth()) {
+                Icon(Icons.Default.AddLocationAlt, null)
+                Spacer(Modifier.width(7.dp))
+                Text("Add Top Food to route")
             }
         }
     }
