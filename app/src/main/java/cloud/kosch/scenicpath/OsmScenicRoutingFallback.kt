@@ -123,7 +123,7 @@ object OsmScenicRoutingFallback {
             baselineDistanceMeters = baseline.distanceMeters,
             note = buildString {
                 append("OSM development route via Valhalla")
-                if (effective.avoidMotorways) append(" · motorway avoidance active")
+                if (effective.avoidMotorways) append(" · motorway-free route validated")
                 if (autoStops.isNotEmpty() && scenicWithStops != null) {
                     append(" · ${autoStops.size} scenic waypoint")
                     if (autoStops.size != 1) append("s")
@@ -165,15 +165,8 @@ object OsmScenicRoutingFallback {
             put("directions_options", JSONObject().put("units", "kilometers").put("language", "de-DE"))
         }
 
-        val connection = (URL("$VALHALLA_URL/route").openConnection() as HttpURLConnection).apply {
-            requestMethod = "POST"
-            connectTimeout = 5_000
-            readTimeout = 10_000
+        val connection = openValhalla("/route", 10_000).apply {
             doOutput = true
-            setRequestProperty("Accept", "application/json")
-            setRequestProperty("Content-Type", "application/json; charset=utf-8")
-            setRequestProperty("User-Agent", "ScenicPath-Android/${BuildConfig.VERSION_NAME} development")
-            setRequestProperty("X-Client-Id", CLIENT_ID)
             outputStream.bufferedWriter(Charsets.UTF_8).use { it.write(body.toString()) }
         }
 
@@ -194,6 +187,7 @@ object OsmScenicRoutingFallback {
                 }
             }
             if (points.size < 2) error("Valhalla route shape is empty")
+            if (avoidMotorways) validateMotorwayFree(points)
             return RawRoute(
                 distanceMeters = summary.optDouble("length", 0.0) * 1000.0,
                 durationSeconds = summary.optDouble("time", 0.0),
@@ -203,6 +197,59 @@ object OsmScenicRoutingFallback {
             connection.disconnect()
         }
     }
+
+    /**
+     * Hard policy guard. Valhalla's use_highways=0 is a costing preference, so a second
+     * trace_attributes pass verifies the actual routed road classes. If a motorway edge
+     * remains, the candidate is rejected instead of being mislabeled as motorway-free.
+     */
+    private fun validateMotorwayFree(points: List<GeoPoint>) {
+        val shape = routeSamples(points, 120)
+        val body = JSONObject().apply {
+            put("shape", JSONArray().apply {
+                shape.forEach { point ->
+                    put(JSONObject().put("lat", point.lat).put("lon", point.lon))
+                }
+            })
+            put("costing", "auto")
+            put("shape_match", "walk_or_snap")
+            put("filters", JSONObject().apply {
+                put("action", "include")
+                put("attributes", JSONArray(listOf("edge.road_class", "edge.length")))
+            })
+        }
+        val connection = openValhalla("/trace_attributes", 12_000).apply {
+            doOutput = true
+            outputStream.bufferedWriter(Charsets.UTF_8).use { it.write(body.toString()) }
+        }
+        try {
+            val response = JSONObject(connection.readTextOrThrow())
+            val edges = response.optJSONArray("edges") ?: error("Could not validate road classes")
+            var motorwayLengthKm = 0.0
+            for (index in 0 until edges.length()) {
+                val edge = edges.optJSONObject(index) ?: continue
+                if (edge.optString("road_class") == "motorway") {
+                    motorwayLengthKm += edge.optDouble("length", 0.0)
+                }
+            }
+            if (motorwayLengthKm > 0.001) {
+                error("No motorway-free route found for the selected constraints")
+            }
+        } finally {
+            connection.disconnect()
+        }
+    }
+
+    private fun openValhalla(path: String, timeoutMs: Int): HttpURLConnection =
+        (URL("$VALHALLA_URL$path").openConnection() as HttpURLConnection).apply {
+            requestMethod = "POST"
+            connectTimeout = 5_000
+            readTimeout = timeoutMs
+            setRequestProperty("Accept", "application/json")
+            setRequestProperty("Content-Type", "application/json; charset=utf-8")
+            setRequestProperty("User-Agent", "ScenicPath-Android/${BuildConfig.VERSION_NAME} development")
+            setRequestProperty("X-Client-Id", CLIENT_ID)
+        }
 
     private fun discoverScenePoints(
         route: List<GeoPoint>,
