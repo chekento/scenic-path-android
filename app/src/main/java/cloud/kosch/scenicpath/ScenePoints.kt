@@ -61,6 +61,10 @@ enum class SceneSubtype(val rawId: String, val parent: StopKind, val label: Stri
     CAPE("cape", StopKind.NATURE, "Cape"),
 
     CASTLE("castle", StopKind.MONUMENT, "Castle"),
+    DEFENSIVE_CASTLE("defensive_castle", StopKind.MONUMENT, "Castle / fortress"),
+    STATELY_HOME("stately", StopKind.MONUMENT, "Stately home / château"),
+    PALACE("palace", StopKind.MONUMENT, "Palace"),
+    MANOR("manor", StopKind.MONUMENT, "Manor house"),
     RUINS("ruins", StopKind.MONUMENT, "Ruins"),
     MEMORIAL("memorial", StopKind.MONUMENT, "Memorial"),
     HISTORIC("historic", StopKind.MONUMENT, "Historic site"),
@@ -102,7 +106,10 @@ fun sceneKindForRawType(type: String?): StopKind {
         listOf("waterfall", "beach", "water", "lake", "river").any(t::contains) -> StopKind.WATER
         listOf("peak", "natural", "landmark", "cape").any(t::contains) -> StopKind.NATURE
         "attraction" in t -> StopKind.SCENIC
-        listOf("monument", "castle", "ruins", "memorial", "historic").any(t::contains) -> StopKind.MONUMENT
+        listOf(
+            "monument", "castle", "defensive_castle", "stately", "palace", "manor",
+            "ruins", "memorial", "historic", "fort"
+        ).any(t::contains) -> StopKind.MONUMENT
         listOf("church", "worship", "cathedral", "mosque", "temple").any(t::contains) -> StopKind.WORSHIP
         listOf("food", "cafe", "restaurant").any(t::contains) -> StopKind.FOOD
         listOf("architecture", "tower", "lighthouse", "bridge").any(t::contains) -> StopKind.ARCHITECTURE
