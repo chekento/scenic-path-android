@@ -1,11 +1,11 @@
 package cloud.kosch.scenicpath
 
 /**
- * Scene-point taxonomy restored from the original Scenic Path WebSim prototype.
+ * Scene-point taxonomy for Scenic Path.
  *
- * The first level stays intentionally compact in the route-planning UI. Smart Stops and
- * the map expose the richer scene taxonomy below so castles, waterfalls, beaches, bridges,
- * reserves, ruins, galleries, etc. do not collapse into a handful of generic buckets.
+ * StopKind remains deliberately compact for route planning/provider selection. Smart Stops
+ * and map markers use the richer ScenicCategoryLane taxonomy so distinctive places do not
+ * disappear inside a handful of broad buckets.
  */
 enum class ScenePointGroup(val label: String) {
     VIEWS_NATURE("Views & nature"),
@@ -30,15 +30,12 @@ enum class StopKind(
     ART("Art & public art", "🎨", ScenePointGroup.CULTURE_HISTORY, 35),
     WORSHIP("Historic worship", "⛪", ScenePointGroup.CULTURE_HISTORY, 20),
     WATER("Water", "💧", ScenePointGroup.VIEWS_NATURE, 25),
-    FOOD("Top food", "🍽️", ScenePointGroup.FOOD, 45),
-    ARCHITECTURE("Towers & bridges", "🏗️", ScenePointGroup.PLACES_SPACES, 18),
-
-    // Internal fallback: automatically considered, but not another route-planner switch.
+    FOOD("Food", "🍽️", ScenePointGroup.FOOD, 45),
+    ARCHITECTURE("Architecture", "🏗️", ScenePointGroup.PLACES_SPACES, 18),
     SCENIC("Scenic highlight", "✨", ScenePointGroup.OTHER, 15, autoDiscoverable = true),
     CUSTOM("Custom", "📍", ScenePointGroup.OTHER, 30, autoDiscoverable = false),
 }
 
-/** Compact top-level category set used by the route planner and discovery providers. */
 val prototypeSelectableSceneKinds: Set<StopKind> = linkedSetOf(
     StopKind.VIEWPOINT,
     StopKind.MUSEUM,
@@ -54,12 +51,16 @@ val prototypeSelectableSceneKinds: Set<StopKind> = linkedSetOf(
 
 enum class SceneSubtype(val rawId: String, val parent: StopKind, val label: String) {
     VIEWPOINT("viewpoint", StopKind.VIEWPOINT, "Viewpoint"),
+    OBSERVATION_TOWER("observation_tower", StopKind.VIEWPOINT, "Observation tower"),
     MUSEUM("museum", StopKind.MUSEUM, "Museum"),
 
     PEAK("peak", StopKind.NATURE, "Peak"),
     NATURAL_LANDMARK("natural_landmark", StopKind.NATURE, "Natural landmark"),
     CAPE("cape", StopKind.NATURE, "Cape"),
     STONE("stone", StopKind.NATURE, "Natural stone"),
+    CAVE("cave", StopKind.NATURE, "Cave"),
+    GEOLOGICAL("geological", StopKind.NATURE, "Geological feature"),
+    FOREST("forest", StopKind.NATURE, "Forest"),
     NATURE_RESERVE("nature_reserve", StopKind.PARK, "Nature reserve"),
 
     CASTLE("castle", StopKind.MONUMENT, "Castle"),
@@ -68,9 +69,10 @@ enum class SceneSubtype(val rawId: String, val parent: StopKind, val label: Stri
     PALACE("palace", StopKind.MONUMENT, "Palace"),
     MANOR("manor", StopKind.MONUMENT, "Manor house"),
     RUINS("ruins", StopKind.MONUMENT, "Ruins"),
+    ARCHAEOLOGY("archaeological_site", StopKind.MONUMENT, "Archaeological site"),
+    BATTLEFIELD("battlefield", StopKind.MONUMENT, "Battlefield"),
     MEMORIAL("memorial", StopKind.MONUMENT, "Memorial"),
     HISTORIC("historic", StopKind.MONUMENT, "Historic site"),
-    ATTRACTION("attraction", StopKind.SCENIC, "Attraction"),
 
     PARK("park", StopKind.PARK, "Park"),
     GARDEN("garden", StopKind.PARK, "Garden"),
@@ -81,12 +83,14 @@ enum class SceneSubtype(val rawId: String, val parent: StopKind, val label: Stri
     CHURCH("church", StopKind.WORSHIP, "Church"),
     CATHEDRAL("cathedral", StopKind.WORSHIP, "Cathedral"),
     MOSQUE("mosque", StopKind.WORSHIP, "Mosque"),
+    SYNAGOGUE("synagogue", StopKind.WORSHIP, "Synagogue"),
     TEMPLE("temple", StopKind.WORSHIP, "Temple"),
 
     WATERFALL("waterfall", StopKind.WATER, "Waterfall"),
     BEACH("beach", StopKind.WATER, "Beach"),
     LAKE("lake", StopKind.WATER, "Lake"),
     RIVER("river", StopKind.WATER, "River"),
+    SPRING("spring", StopKind.WATER, "Spring"),
 
     RESTAURANT("restaurant", StopKind.FOOD, "Restaurant"),
     CAFE("cafe", StopKind.FOOD, "Cafe"),
@@ -94,28 +98,30 @@ enum class SceneSubtype(val rawId: String, val parent: StopKind, val label: Stri
     TOWER("tower", StopKind.ARCHITECTURE, "Tower"),
     LIGHTHOUSE("lighthouse", StopKind.ARCHITECTURE, "Lighthouse"),
     BRIDGE("bridge", StopKind.ARCHITECTURE, "Bridge"),
+    AQUEDUCT("aqueduct", StopKind.ARCHITECTURE, "Aqueduct"),
+    WINDMILL("windmill", StopKind.ARCHITECTURE, "Windmill"),
+    WATERMILL("watermill", StopKind.ARCHITECTURE, "Watermill"),
 
+    ZOO("zoo", StopKind.SCENIC, "Zoo / animal park"),
+    THEME_PARK("theme_park", StopKind.SCENIC, "Theme park"),
+    ATTRACTION("attraction", StopKind.SCENIC, "Attraction"),
     SCENIC("scenic", StopKind.SCENIC, "Scenic highlight"),
 }
 
-/**
- * Rich presentation taxonomy shared by Smart Stops and map markers.
- *
- * It intentionally has more lanes than the compact discovery switches. Provider data is
- * still fetched efficiently by StopKind, then split here by subtype for a much more useful
- * human-facing result set.
- */
 data class ScenicCategoryLane(
     val id: String,
     val label: String,
     val emoji: String,
 )
 
+/** Rich user-facing taxonomy shared by Smart Stops and the map. */
 val scenicCategoryLanes: List<ScenicCategoryLane> = listOf(
-    ScenicCategoryLane("viewpoints", "Viewpoints", "👁️"),
+    ScenicCategoryLane("viewpoints", "Viewpoints & observation points", "👁️"),
     ScenicCategoryLane("museums", "Museums", "🏛️"),
     ScenicCategoryLane("peaks-landmarks", "Peaks & natural landmarks", "⛰️"),
-    ScenicCategoryLane("nature-reserves", "Nature reserves", "🌲"),
+    ScenicCategoryLane("caves-geology", "Caves & geology", "🪨"),
+    ScenicCategoryLane("forests-woodland", "Forests & woodland", "🌲"),
+    ScenicCategoryLane("nature-reserves", "Nature reserves", "🌿"),
     ScenicCategoryLane("castles-fortresses", "Castles & fortresses", "🏰"),
     ScenicCategoryLane("palaces-manors", "Palaces & manor houses", "🏯"),
     ScenicCategoryLane("ruins-archaeology", "Ruins & archaeology", "🏺"),
@@ -125,10 +131,13 @@ val scenicCategoryLanes: List<ScenicCategoryLane> = listOf(
     ScenicCategoryLane("historic-worship", "Historic worship", "⛪"),
     ScenicCategoryLane("waterfalls", "Waterfalls", "🌊"),
     ScenicCategoryLane("beaches", "Beaches", "🏖️"),
-    ScenicCategoryLane("lakes-rivers", "Lakes & rivers", "💧"),
-    ScenicCategoryLane("top-food", "Top food", "🍽️"),
+    ScenicCategoryLane("lakes-rivers", "Lakes, rivers & springs", "💧"),
+    ScenicCategoryLane("restaurants-cafes", "Restaurants & cafés", "🍽️"),
     ScenicCategoryLane("towers-lighthouses", "Towers & lighthouses", "🗼"),
     ScenicCategoryLane("bridges-aqueducts", "Bridges & aqueducts", "🌉"),
+    ScenicCategoryLane("mills-industrial", "Mills & industrial heritage", "⚙️"),
+    ScenicCategoryLane("zoos-wildlife", "Zoos & animal parks", "🦒"),
+    ScenicCategoryLane("theme-parks", "Theme parks", "🎢"),
     ScenicCategoryLane("scenic-highlights", "Scenic attractions", "✨"),
 )
 
@@ -141,8 +150,12 @@ fun scenicCategoryLaneFor(point: ScenePointUi): ScenicCategoryLane {
     val id = when (kind) {
         StopKind.VIEWPOINT -> "viewpoints"
         StopKind.MUSEUM -> "museums"
-        StopKind.NATURE -> "peaks-landmarks"
-        StopKind.PARK -> if (subtype == "nature_reserve" || subtype == "protected_area") {
+        StopKind.NATURE -> when (subtype) {
+            "cave", "cave_entrance", "geological" -> "caves-geology"
+            "forest", "wood" -> "forests-woodland"
+            else -> "peaks-landmarks"
+        }
+        StopKind.PARK -> if (subtype in setOf("nature_reserve", "protected_area", "national_park")) {
             "nature-reserves"
         } else {
             "parks-gardens"
@@ -160,12 +173,17 @@ fun scenicCategoryLaneFor(point: ScenePointUi): ScenicCategoryLane {
             "beach" -> "beaches"
             else -> "lakes-rivers"
         }
-        StopKind.FOOD -> "top-food"
+        StopKind.FOOD -> "restaurants-cafes"
         StopKind.ARCHITECTURE -> when (subtype) {
             "bridge", "aqueduct" -> "bridges-aqueducts"
+            "windmill", "watermill" -> "mills-industrial"
             else -> "towers-lighthouses"
         }
-        StopKind.SCENIC, StopKind.CUSTOM -> "scenic-highlights"
+        StopKind.SCENIC, StopKind.CUSTOM -> when (subtype) {
+            "zoo" -> "zoos-wildlife"
+            "theme_park" -> "theme-parks"
+            else -> "scenic-highlights"
+        }
     }
     return scenicCategoryLaneById.getValue(id)
 }
@@ -173,21 +191,21 @@ fun scenicCategoryLaneFor(point: ScenePointUi): ScenicCategoryLane {
 fun sceneKindForRawType(type: String?): StopKind {
     val t = type.orEmpty().lowercase()
     return when {
-        "view" in t -> StopKind.VIEWPOINT
+        "viewpoint" in t || "observation_tower" in t -> StopKind.VIEWPOINT
         "museum" in t -> StopKind.MUSEUM
-        "nature_reserve" in t || "protected_area" in t -> StopKind.PARK
-        "park" in t || "garden" in t -> StopKind.PARK
+        "nature_reserve" in t || "protected_area" in t || "national_park" in t -> StopKind.PARK
+        t == "park" || t == "garden" -> StopKind.PARK
         "art" in t || "gallery" in t -> StopKind.ART
-        listOf("waterfall", "beach", "water", "lake", "river").any(t::contains) -> StopKind.WATER
-        listOf("peak", "natural", "landmark", "cape", "stone", "rock").any(t::contains) -> StopKind.NATURE
-        "attraction" in t || "scenic" in t -> StopKind.SCENIC
+        listOf("waterfall", "beach", "water", "lake", "river", "spring").any(t::contains) -> StopKind.WATER
+        listOf("peak", "natural", "landmark", "cape", "stone", "rock", "cave", "geological", "forest", "wood").any(t::contains) -> StopKind.NATURE
+        listOf("zoo", "theme_park", "attraction", "scenic").any(t::contains) -> StopKind.SCENIC
         listOf(
             "monument", "castle", "defensive_castle", "stately", "palace", "manor",
             "ruins", "memorial", "historic", "fort", "archaeological_site", "battlefield"
         ).any(t::contains) -> StopKind.MONUMENT
         listOf("church", "worship", "cathedral", "mosque", "synagogue", "temple", "chapel").any(t::contains) -> StopKind.WORSHIP
         listOf("food", "cafe", "restaurant").any(t::contains) -> StopKind.FOOD
-        listOf("architecture", "tower", "lighthouse", "bridge", "aqueduct").any(t::contains) -> StopKind.ARCHITECTURE
+        listOf("architecture", "tower", "lighthouse", "bridge", "aqueduct", "windmill", "watermill").any(t::contains) -> StopKind.ARCHITECTURE
         else -> StopKind.SCENIC
     }
 }
