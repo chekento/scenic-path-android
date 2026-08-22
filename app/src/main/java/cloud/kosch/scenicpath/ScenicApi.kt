@@ -91,11 +91,17 @@ object ScenicApi {
         preferences: ScenicPreferences,
     ): Result<RoutePlanUi> = withContext(Dispatchers.IO) {
         val effectivePreferences = preferences.forCharacter(plan.routeCharacter)
-        runCatching { planBackend(origin, destination, plan, effectivePreferences) }
-            .recoverCatching { backendError ->
-                if (!BuildConfig.DEBUG) throw backendError
+
+        // Physical-device/debug builds exercise the same v0.4 Journey Optimizer every
+        // time. This avoids first waiting for the emulator-only 10.0.2.2 backend and,
+        // more importantly, makes the next device test unambiguously test the new core.
+        if (BuildConfig.DEBUG) {
+            return@withContext runCatching {
                 ScenicJourneyOptimizer.plan(origin, destination, plan, effectivePreferences)
             }
+        }
+
+        runCatching { planBackend(origin, destination, plan, effectivePreferences) }
     }
 
     private fun searchBackend(query: String, bias: GeoPoint?): List<PlaceSuggestion> {
