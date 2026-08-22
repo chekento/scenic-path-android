@@ -45,7 +45,7 @@ fun RoutePlannerSheet(
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Column(Modifier.weight(1f)) {
                     Text("Plan the beautiful way", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
-                    Text("Simple first. Precise when you want it.", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text("Tell Scenic Path how much freedom it has — it should find the experiences for you.", color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
                 IconButton(onClick = onDismiss) { Icon(Icons.Default.Close, "Close planner") }
             }
@@ -110,12 +110,12 @@ fun RoutePlannerSheet(
                     }
                     EndpointRow(Icons.Default.Flag, "Destination", destination.ifBlank { "Choose destination" })
                     OutlinedButton(onClick = onRequestAddStop, Modifier.fillMaxWidth()) {
-                        Icon(Icons.Default.AddLocationAlt, null)
+                        Icon(Icons.Default.AutoAwesome, null)
                         Spacer(Modifier.width(8.dp))
-                        Text("Search & add stop")
+                        Text("Stops & auto suggestions")
                     }
                     Text(
-                        "Long-press the grip to reorder. Locked stops stay fixed when later route optimization is enabled.",
+                        "Scenic Path suggests stops automatically. Manual search remains available inside the suggestions view.",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
@@ -155,6 +155,7 @@ fun RoutePlannerSheet(
                                     preferences.maxExtraMinutes < 30 -> 30
                                     preferences.maxExtraMinutes < 60 -> 60
                                     preferences.maxExtraMinutes < 120 -> 120
+                                    preferences.maxExtraMinutes < 180 -> 180
                                     else -> 15
                                 }
                             )
@@ -164,6 +165,11 @@ fun RoutePlannerSheet(
                     leadingIcon = { Icon(Icons.Default.MoreTime, null, Modifier.size(18.dp)) },
                 )
             }
+            Text(
+                "Changing the time budget invalidates the previous route. Recalculate to let Scenic Path use the new freedom for different roads and stops.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
 
             Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.55f))) {
                 Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
@@ -178,7 +184,7 @@ fun RoutePlannerSheet(
                         )
                     }
                     Text(
-                        if (plan.autoSuggestStops) "Scenic Path may add exceptional nature, culture and top-food stops inside your time budget."
+                        if (plan.autoSuggestStops) "Scenic Path should automatically choose worthwhile nature, heritage and culture stops that fit your time budget."
                         else "Only your selected stops will be used.",
                         style = MaterialTheme.typography.bodySmall,
                     )
@@ -212,7 +218,7 @@ fun RoutePlannerSheet(
             ) {
                 Icon(Icons.Default.Route, null)
                 Spacer(Modifier.width(8.dp))
-                Text("Build route")
+                Text("Recalculate with +${preferences.maxExtraMinutes} min")
             }
         }
     }
@@ -264,7 +270,7 @@ private fun AdvancedPlanningControls(
             HorizontalDivider()
             Text("Scene points", fontWeight = FontWeight.SemiBold)
             Text(
-                "The original Scenic Path categories. Detailed subtypes such as castles, ruins, waterfalls, beaches, lighthouses and bridges are mapped automatically.",
+                "The original Scenic Path categories. Detailed subtypes such as castles, manor houses, stately homes, ruins, waterfalls, beaches, lighthouses and bridges are mapped automatically.",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
