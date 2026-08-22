@@ -33,7 +33,9 @@ fun JourneyStopsSheet(
     onDismiss: () -> Unit,
 ) {
     var enriched by remember(route?.id) { mutableStateOf<List<ScenePointUi>>(emptyList()) }
-    var enrichmentLoading by remember(route?.id) { mutableStateOf(false) }
+    var enrichmentLoading by remember(route?.id) {
+        mutableStateOf(route != null && route.points.size >= 2)
+    }
     var enrichmentFailed by remember(route?.id) { mutableStateOf(false) }
     var refreshToken by remember(route?.id) { mutableIntStateOf(0) }
 
@@ -42,6 +44,7 @@ fun JourneyStopsSheet(
         if (current == null || current.points.size < 2) {
             enriched = emptyList()
             enrichmentFailed = false
+            enrichmentLoading = false
             return@LaunchedEffect
         }
         enrichmentLoading = true
