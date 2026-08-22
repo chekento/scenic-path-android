@@ -3,11 +3,11 @@ package cloud.kosch.scenicpath
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
-import androidx.compose.runtime.Composable
+import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
@@ -23,75 +23,144 @@ fun JourneyStopsSheet(
     onManualSearch: () -> Unit,
     onDismiss: () -> Unit,
 ) {
-    val included = route?.scenePoints.orEmpty().filter { it.includedInRoute || it.id in route?.autoStopIds.orEmpty() }
-    val alternatives = route?.scenePoints.orEmpty().filterNot { point ->
-        point.id in included.map { it.id }.toSet() || point.id in manuallyAddedIds
+    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    var enriched by remember(route?.id) { mutableStateOf<List<ScenePointUi>>(emptyList()) }
+    var enrichmentLoading by remember(route?.id) { mutableStateOf(false) }
+
+    LaunchedEffect(route?.id) {
+        val current = route
+        if (current == null || current.points.size < 2) {
+            enriched = emptyList()
+            return@LaunchedEffect
+        }
+        enrichmentLoading = true
+        enriched = runCatching {
+            FastRoutePoiDiscovery.discover(
+                route = current.points,
+                enabledKinds = prototypeSelectableSceneKinds,
+                maxResults = 36,
+            )
+        }.getOrElse { emptyList() }
+        enrichmentLoading = false
     }
 
-    ModalBottomSheet(onDismissRequest = onDismiss) {
-        Column(
-            Modifier.fillMaxWidth().padding(horizontal = 18.dp).padding(bottom = 30.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp),
-        ) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Icon(Icons.Default.AutoAwesome, null, tint = MaterialTheme.colorScheme.primary)
-                Spacer(Modifier.width(10.dp))
-                Column(Modifier.weight(1f)) {
-                    Text("Smart Stops", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
-                    Text("The route is built around the best combination — alternatives stay one tap away.", color = MaterialTheme.colorScheme.onSurfaceVariant)
+    val routePoints = route?.scenePoints.orEmpty().map { point ->
+        if (point.includedInRoute || point.id in route?.autoStopIds.orEmpty()) {
+            point.copy(includedInRoute = true)
+        } else point
+    }
+    val merged = remember(routePoints, enriched) {
+        buildList {
+            addAll(routePoints)
+            enriched.forEach { candidate ->
+                val duplicate = any { existing ->
+                    existing.id == candidate.id || existing.name.equals(candidate.name, ignoreCase = true)
                 }
-                IconButton(onClick = onDismiss) { Icon(Icons.Default.Close, "Close Smart Stops") }
+                if (!duplicate) add(candidate)
+            }
+        }
+    }
+    val included = merged.filter { it.includedInRoute }
+    val includedIds = included.mapTo(mutableSetOf()) { it.id }
+    val alternatives = merged.filterNot { it.id in includedIds || it.id in manuallyAddedIds }
+
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        sheetState = sheetState,
+    ) {
+        // One single LazyColumn owns all vertical scrolling. The old nested LazyColumn inside
+        // a sheet Column could fight the sheet drag gesture at both scroll edges and caused
+        // the visible "dancing"/shaking after scrolling down and back up.
+        LazyColumn(
+            modifier = Modifier
+                .fillMaxWidth()
+                .heightIn(min = 320.dp, max = 690.dp),
+            contentPadding = PaddingValues(start = 18.dp, end = 18.dp, bottom = 30.dp),
+            verticalArrangement = Arrangement.spacedBy(11.dp),
+        ) {
+            item(key = "header") {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(Icons.Default.AutoAwesome, null, tint = MaterialTheme.colorScheme.primary)
+                    Spacer(Modifier.width(10.dp))
+                    Column(Modifier.weight(1f)) {
+                        Text("Smart Stops", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
+                        Text(
+                            "Included stops and worthwhile alternatives along this journey.",
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    IconButton(onClick = onDismiss) { Icon(Icons.Default.Close, "Close Smart Stops") }
+                }
             }
 
             if (route == null) {
-                Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow)) {
-                    Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(5.dp)) {
-                        Text("Build an experience first", fontWeight = FontWeight.SemiBold)
-                        Text("Scenic Path will search the complete time-budget corridor and automatically construct several stop combinations.")
+                item(key = "empty-route") {
+                    Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow)) {
+                        Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(5.dp)) {
+                            Text("Build an experience first", fontWeight = FontWeight.SemiBold)
+                            Text("Scenic Path will then discover and rank locations around the complete journey.")
+                        }
                     }
                 }
             } else {
-                Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.55f))) {
-                    Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(5.dp)) {
-                        Text(route.variantLabel ?: "Scenic experience", fontWeight = FontWeight.Bold)
-                        Text(
-                            "${route.autoStopIds.size} automatic stops · ${route.dwellMinutes} min visiting · +${route.driveExtraMinutes.roundToInt()} min driving detour",
-                            style = MaterialTheme.typography.bodySmall,
-                        )
-                        if (route.corridorRadiusKm > 0) {
-                            Text("Search space ~${route.corridorRadiusKm.roundToInt()} km around candidate corridors", style = MaterialTheme.typography.bodySmall)
+                item(key = "summary") {
+                    Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.55f))) {
+                        Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(5.dp)) {
+                            Text(route.variantLabel ?: "Scenic experience", fontWeight = FontWeight.Bold)
+                            Text(
+                                "${included.size} automatic stops · ${route.dwellMinutes} min visiting · +${route.driveExtraMinutes.roundToInt()} min driving detour",
+                                style = MaterialTheme.typography.bodySmall,
+                            )
+                            val kinds = merged.map { it.kind }.distinct().size
+                            Text(
+                                "${merged.size} visible locations across $kinds scene categories",
+                                style = MaterialTheme.typography.bodySmall,
+                            )
                         }
                     }
                 }
 
                 if (included.isNotEmpty()) {
-                    Text("Built into this route", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
-                    included.forEachIndexed { index, stop ->
+                    item(key = "included-title") {
+                        Text("Built into this route", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                    }
+                    itemsIndexed(included, key = { _, stop -> "included-${stop.id}" }) { index, stop ->
                         IncludedStopRow(index + 1, stop)
                     }
                 } else {
-                    Text("This variant has no automatic stop yet.", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    item(key = "no-included") {
+                        Text("This variant has no automatic stop yet.", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                }
+
+                if (enrichmentLoading) {
+                    item(key = "loading-more") {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
+                            Spacer(Modifier.width(8.dp))
+                            Text("Finding more culture, history, views and places…", style = MaterialTheme.typography.bodySmall)
+                        }
+                    }
                 }
 
                 if (alternatives.isNotEmpty()) {
-                    HorizontalDivider()
-                    Text("Good alternatives", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
-                    LazyColumn(
-                        Modifier.fillMaxWidth().heightIn(max = 330.dp),
-                        verticalArrangement = Arrangement.spacedBy(7.dp),
-                    ) {
-                        items(alternatives.take(14), key = { it.id }) { stop ->
-                            AlternativeStopRow(stop, onClick = { onAddAlternative(stop) })
-                        }
+                    item(key = "alternatives-divider") { HorizontalDivider() }
+                    item(key = "alternatives-title") {
+                        Text("Good alternatives", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                    }
+                    itemsIndexed(alternatives.take(28), key = { _, stop -> "alt-${stop.id}" }) { _, stop ->
+                        AlternativeStopRow(stop, onClick = { onAddAlternative(stop) })
                     }
                 }
             }
 
-            HorizontalDivider()
-            OutlinedButton(onClick = onManualSearch, modifier = Modifier.fillMaxWidth()) {
-                Icon(Icons.Default.Search, null)
-                Spacer(Modifier.width(8.dp))
-                Text("Search manually instead")
+            item(key = "manual-divider") { HorizontalDivider() }
+            item(key = "manual-search") {
+                OutlinedButton(onClick = onManualSearch, modifier = Modifier.fillMaxWidth()) {
+                    Icon(Icons.Default.Search, null)
+                    Spacer(Modifier.width(8.dp))
+                    Text("Search manually instead")
+                }
             }
         }
     }
@@ -142,7 +211,7 @@ private fun AlternativeStopRow(stop: ScenePointUi, onClick: () -> Unit) {
                 Text(
                     buildList {
                         stop.personalMatch?.let { add("${it.roundToInt()}% match") }
-                        if (stop.distanceFromRouteMeters > 0) add("${stop.distanceFromRouteMeters / 1000.0} km from route")
+                        if (stop.distanceFromRouteMeters > 0) add(String.format("%.1f km from route", stop.distanceFromRouteMeters / 1000.0))
                         add("${stop.suggestedDwellMinutes} min")
                     }.joinToString(" · "),
                     style = MaterialTheme.typography.bodySmall,
