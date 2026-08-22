@@ -26,6 +26,8 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.withContext
 import org.maplibre.android.annotations.IconFactory
 import org.maplibre.android.annotations.MarkerOptions
@@ -57,13 +59,14 @@ private const val ROUTE_SOURCE = "scenic-route-source"
 private const val ROUTE_LAYER = "scenic-route-layer"
 private const val STOP_SOURCE = "scenic-stop-source"
 private const val STOP_LAYER = "scenic-stop-layer"
+private const val MAX_SCENIC_MARKERS = 240
 
 /**
  * MapLibre host for Scenic Path.
  *
- * Scenic POIs use native Marker annotations as a reliability layer. They sit above the
- * style and therefore cannot silently disappear behind a vector-style layer. The route,
- * GPS and manually fixed stops remain efficient GeoJSON style layers.
+ * Scenic POIs use native marker annotations above the vector style. The map performs the
+ * same precision discovery as Smart Stops, so restaurants, museums, heritage, art,
+ * architecture and other rarer categories do not depend on opening the Smart Stops dialog.
  */
 @Suppress("DEPRECATION")
 @Composable
@@ -93,23 +96,22 @@ fun ScenicMap(
             addAll(highlights)
             sharedHighlights.forEach { candidate ->
                 val duplicate = any { existing ->
-                    existing.id == candidate.id || existing.name.equals(candidate.name, ignoreCase = true)
+                    existing.id == candidate.id ||
+                        (existing.name.equals(candidate.name, ignoreCase = true) && existing.kind == candidate.kind)
                 }
                 if (!duplicate) add(candidate)
             }
             localHighlights.forEach { candidate ->
                 val duplicate = any { existing ->
-                    existing.id == candidate.id || existing.name.equals(candidate.name, ignoreCase = true)
+                    existing.id == candidate.id ||
+                        (existing.name.equals(candidate.name, ignoreCase = true) && existing.kind == candidate.kind)
                 }
                 if (!duplicate) add(candidate)
             }
-        }.take(100)
+        }.take(MAX_SCENIC_MARKERS)
     }
     val latestVisibleHighlights by rememberUpdatedState(visibleHighlights)
 
-    // Enrich an already visible route in the background. This cannot delay or clear the
-    // route. It also runs in non-debug builds while this prototype still relies on public
-    // development POI services, so mapped Smart Stops do not disappear from release APKs.
     LaunchedEffect(routePoints) {
         selectedHighlight = null
         if (routePoints.size < 2) {
@@ -118,15 +120,36 @@ fun ScenicMap(
         }
         localHighlights = withContext(Dispatchers.IO) {
             runCatching {
-                FastRoutePoiDiscovery.discover(
-                    route = routePoints,
+                val (fast, precision) = coroutineScope {
+                    val fastJob = async(Dispatchers.IO) {
+                        FastRoutePoiDiscovery.discover(
+                            route = routePoints,
+                            enabledKinds = prototypeSelectableSceneKinds,
+                            maxResults = 150,
+                        )
+                    }
+                    val precisionJob = async(Dispatchers.IO) {
+                        PrecisionRoutePoiDiscovery.discover(
+                            route = routePoints,
+                            enabledKinds = prototypeSelectableSceneKinds,
+                            maxResults = MAX_SCENIC_MARKERS,
+                            radiusMeters = 15_000,
+                            maxSamples = 10,
+                        )
+                    }
+                    fastJob.await() to precisionJob.await()
+                }
+                FastRoutePoiDiscovery.mergeResults(
+                    first = fast,
+                    second = precision,
                     enabledKinds = prototypeSelectableSceneKinds,
-                    maxResults = 100,
+                    maxResults = MAX_SCENIC_MARKERS,
                 )
             }.getOrElse { emptyList() }
         }.filterNot { candidate ->
             highlights.any { existing ->
-                existing.id == candidate.id || existing.name.equals(candidate.name, ignoreCase = true)
+                existing.id == candidate.id ||
+                    (existing.name.equals(candidate.name, ignoreCase = true) && existing.kind == candidate.kind)
             }
         }
     }
@@ -284,9 +307,7 @@ fun ScenicMap(
     }
 
     LaunchedEffect(visibleHighlights, styleLoaded) {
-        if (styleLoaded) {
-            mapRef?.let { map -> syncScenicMarkers(map, context, visibleHighlights) }
-        }
+        if (styleLoaded) mapRef?.let { map -> syncScenicMarkers(map, context, visibleHighlights) }
     }
 
     LaunchedEffect(userLocation, routePoints, styleLoaded) {
@@ -395,8 +416,6 @@ private fun syncScenicMarkers(
     context: Context,
     highlights: List<ScenePointUi>,
 ) {
-    // Annotations are deliberately rebuilt atomically. At the current 100-marker cap this
-    // remains cheap enough for the prototype and prevents stale symbols between variants.
     map.removeAnnotations()
     if (highlights.isEmpty()) return
 
@@ -405,7 +424,7 @@ private fun syncScenicMarkers(
     val iconFactory = IconFactory.getInstance(context)
     val cache = mutableMapOf<String, org.maplibre.android.annotations.Icon>()
 
-    val options = highlights.take(100).map { highlight ->
+    val options = highlights.take(MAX_SCENIC_MARKERS).map { highlight ->
         val number = includedOrder[highlight.id]
         val symbol = number ?: mapSymbol(highlight)
         val includedStop = number != null
