@@ -48,8 +48,9 @@ fun ScenicPreferences.forCharacter(character: RouteCharacter): ScenicPreferences
         hilliness = 60,
     )
     RouteCharacter.BALANCED -> copy(
-        maxExtraMinutes = 30,
-        maxExtraPercent = 25,
+        // Character presets define a floor, not a replacement for the user's budget.
+        maxExtraMinutes = maxOf(maxExtraMinutes, 30),
+        maxExtraPercent = maxOf(maxExtraPercent, 25),
         windingness = 50,
         hilliness = 40,
     )
