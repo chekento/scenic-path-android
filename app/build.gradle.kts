@@ -18,8 +18,9 @@ android {
         applicationId = "cloud.kosch.scenicpath"
         minSdk = 26
         targetSdk = 36
-        versionCode = 1
-        versionName = "0.1.0"
+        versionCode = 2
+        versionName = "0.2.0"
+        manifestPlaceholders["usesCleartextTraffic"] = "false"
 
         buildConfigField(
             "String", "SCENIC_API_BASE_URL",
@@ -29,6 +30,16 @@ android {
             "String", "MAP_STYLE_URL",
             "\"${localProps.getProperty("MAP_STYLE_URL", "https://demotiles.maplibre.org/style.json")}\""
         )
+    }
+
+    buildTypes {
+        getByName("debug") {
+            manifestPlaceholders["usesCleartextTraffic"] = "true"
+        }
+        getByName("release") {
+            isMinifyEnabled = false
+            manifestPlaceholders["usesCleartextTraffic"] = "false"
+        }
     }
 
     buildFeatures {
@@ -61,6 +72,7 @@ dependencies {
 
     implementation("org.maplibre.gl:android-sdk:13.4.1")
     implementation("com.google.android.gms:play-services-location:21.3.0")
+    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.10.2")
 
     debugImplementation("androidx.compose.ui:ui-tooling")
 }
