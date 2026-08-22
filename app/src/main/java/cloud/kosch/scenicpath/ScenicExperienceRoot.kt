@@ -20,6 +20,10 @@ import kotlin.math.roundToInt
 
 /**
  * Single live shell for v0.4+. Map-first, experience-first, no duplicate UI path.
+ *
+ * A calculated route is a committed display state. Planner/filter edits are drafts until a
+ * replacement route has been calculated successfully, so opening menus, moving sliders or
+ * adding Smart Stops can never make the current route disappear.
  */
 @Composable
 fun ScenicExperienceRoot(
@@ -47,6 +51,7 @@ fun ScenicExperienceRoot(
     var routeError by remember { mutableStateOf<String?>(null) }
     var mapError by remember { mutableStateOf<String?>(null) }
     var topExpanded by remember { mutableStateOf(true) }
+    var routeDirty by remember { mutableStateOf(false) }
 
     val origin = startSelection?.point ?: location.point
     val destination = destinationSelection?.point
@@ -58,9 +63,10 @@ fun ScenicExperienceRoot(
     val destinationLabel = destinationSelection?.title.orEmpty()
     val activeRoute = routePlan?.candidates?.getOrNull(selectedCandidateIndex)
 
-    fun invalidateRoute() {
+    fun clearRouteForEndpointChange() {
         routePlan = null
         selectedCandidateIndex = 0
+        routeDirty = false
         topExpanded = true
     }
 
@@ -82,16 +88,30 @@ fun ScenicExperienceRoot(
         scope.launch {
             ScenicApi.planRoute(from, to, plan, preferences)
                 .onSuccess { result ->
-                    routePlan = result
-                    selectedCandidateIndex = 0
                     routeLoading = false
-                    topExpanded = result.candidates.isEmpty()
-                    if (result.candidates.isEmpty()) routeError = "No journey matched the selected time budget."
+                    if (result.candidates.isNotEmpty()) {
+                        routePlan = result
+                        selectedCandidateIndex = 0
+                        routeDirty = false
+                        topExpanded = false
+                    } else {
+                        // Never replace a valid displayed route with an empty calculation.
+                        topExpanded = routePlan == null
+                        routeError = if (routePlan != null) {
+                            "No replacement journey matched the selected time budget. Your previous route is still shown."
+                        } else {
+                            "No journey matched the selected time budget."
+                        }
+                    }
                 }
                 .onFailure { error ->
                     routeLoading = false
-                    topExpanded = true
-                    routeError = error.message ?: "Journey planning failed"
+                    topExpanded = routePlan == null
+                    routeError = if (routePlan != null) {
+                        "${error.message ?: "Journey planning failed"}. Your previous route is still shown."
+                    } else {
+                        error.message ?: "Journey planning failed"
+                    }
                 }
         }
     }
@@ -113,8 +133,8 @@ fun ScenicExperienceRoot(
                 subtype = stop.subtype,
             )
         )
+        routeDirty = true
         showStops = false
-        invalidateRoute()
         showPlanner = true
     }
 
@@ -147,6 +167,7 @@ fun ScenicExperienceRoot(
             routeLoading = routeLoading,
             hasDestination = destination != null,
             hasRoute = routePlan != null,
+            routeDirty = routeDirty,
             onStart = { showStartPicker = true },
             onDestination = { showDestinationPicker = true },
             onPlanner = { showPlanner = true },
@@ -227,11 +248,11 @@ fun ScenicExperienceRoot(
             hasRoute = routePlan != null,
             onPlanChange = {
                 plan = it
-                invalidateRoute()
+                if (routePlan != null) routeDirty = true
             },
             onPreferencesChange = {
                 preferences = it
-                invalidateRoute()
+                if (routePlan != null) routeDirty = true
             },
             onRequestSuggestions = {
                 showPlanner = false
@@ -264,7 +285,7 @@ fun ScenicExperienceRoot(
             onPick = {
                 startSelection = it
                 showStartPicker = false
-                invalidateRoute()
+                clearRouteForEndpointChange()
             },
         )
     }
@@ -278,7 +299,7 @@ fun ScenicExperienceRoot(
             onPick = {
                 destinationSelection = it
                 showDestinationPicker = false
-                invalidateRoute()
+                clearRouteForEndpointChange()
             },
         )
     }
@@ -317,8 +338,8 @@ fun ScenicExperienceRoot(
                         locked = true,
                     )
                 )
+                if (routePlan != null) routeDirty = true
                 showManualPlace = false
-                invalidateRoute()
                 showPlanner = true
             },
         )
@@ -338,6 +359,7 @@ private fun ExperienceTopPanel(
     routeLoading: Boolean,
     hasDestination: Boolean,
     hasRoute: Boolean,
+    routeDirty: Boolean,
     onStart: () -> Unit,
     onDestination: () -> Unit,
     onPlanner: () -> Unit,
@@ -369,7 +391,7 @@ private fun ExperienceTopPanel(
                         maxLines = 1,
                     )
                     Text(
-                        "${plan.routeCharacter.label} · +${preferences.maxExtraMinutes} min · ${if (plan.autoSuggestStops) "Smart Stops" else "roads only"}",
+                        "${plan.routeCharacter.label} · +${preferences.maxExtraMinutes} min · ${if (plan.autoSuggestStops) "Smart Stops" else "roads only"}${if (routeDirty) " · changes pending" else ""}",
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
@@ -395,6 +417,9 @@ private fun ExperienceTopPanel(
                 AssistChip(onClick = onPlanner, label = { Text(plan.routeCharacter.label) }, leadingIcon = { Icon(Icons.Default.AutoAwesome, null, Modifier.size(18.dp)) })
                 AssistChip(onClick = onPlanner, label = { Text("+${preferences.maxExtraMinutes} min") }, leadingIcon = { Icon(Icons.Default.MoreTime, null, Modifier.size(18.dp)) })
                 AssistChip(onClick = onStops, label = { Text("Smart Stops") }, leadingIcon = { Icon(Icons.Default.AddLocationAlt, null, Modifier.size(18.dp)) })
+                if (routeDirty) {
+                    AssistChip(onClick = onPlanner, label = { Text("Changes pending") }, leadingIcon = { Icon(Icons.Default.Update, null, Modifier.size(18.dp)) })
+                }
                 if (preferences.avoidMotorways) {
                     AssistChip(onClick = onPlanner, label = { Text("No motorway") }, leadingIcon = { Icon(Icons.Default.Block, null, Modifier.size(18.dp)) })
                 }
@@ -403,7 +428,13 @@ private fun ExperienceTopPanel(
             Button(onClick = onPlanner, modifier = Modifier.fillMaxWidth().height(50.dp), enabled = hasDestination && !routeLoading) {
                 Icon(Icons.Default.Route, null)
                 Spacer(Modifier.width(8.dp))
-                Text(if (hasRoute) "Edit this experience" else "Build scenic experiences")
+                Text(
+                    when {
+                        routeDirty && hasRoute -> "Rebuild with changes"
+                        hasRoute -> "Edit this experience"
+                        else -> "Build scenic experiences"
+                    }
+                )
             }
         }
     }
