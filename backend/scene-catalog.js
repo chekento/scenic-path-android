@@ -99,9 +99,8 @@ export function classifyTags(tags = {}) {
   }
 
   if (["restaurant", "cafe"].includes(amenity)) {
-    // OSM supplies discovery only. Rating thresholds are enforced separately by
-    // the licensed food provider before a stop becomes "Top food".
-    return baseObservation({ kind: "FOOD", subtype: amenity, tags, signals: { food: 0.4 }, relevance: 0.35 });
+    // Discovery signal only. OSM does not make a place a verified Top Food stop.
+    return baseObservation({ kind: undefined, subtype: amenity, tags, signals: { foodCandidate: 1 }, relevance: 0.2 });
   }
 
   if (["tower", "lighthouse", "bridge"].includes(manMade) || truthyTag(tags.bridge)) {
