@@ -13,13 +13,14 @@ import kotlin.math.*
 /**
  * Physical-device development fallback while the Scenic Path backend is not yet public.
  *
- * Uses the FOSSGIS Valhalla demo service for OSM-native routing and a deliberately small
+ * Uses the FOSSGIS Valhalla demo API for OSM-native routing and a deliberately small
  * Overpass query for scene-point discovery. Public services are development-only; the
  * production app will use Scenic Path controlled/contracted endpoints.
  */
 object OsmScenicRoutingFallback {
-    private const val VALHALLA_URL = "https://valhalla.openstreetmap.de"
+    private const val VALHALLA_URL = "https://valhalla1.openstreetmap.de"
     private const val OVERPASS_URL = "https://overpass-api.de/api/interpreter"
+    private const val CLIENT_ID = "scenic-path-android-dev"
 
     suspend fun plan(
         origin: GeoPoint,
@@ -147,11 +148,11 @@ object OsmScenicRoutingFallback {
     ): RawRoute {
         val body = JSONObject().apply {
             put("locations", JSONArray().apply {
-                locations.forEachIndexed { index, point ->
+                locations.forEach { point ->
                     put(JSONObject().apply {
                         put("lat", point.lat)
                         put("lon", point.lon)
-                        put("type", if (index == 0 || index == locations.lastIndex) "break" else "break")
+                        put("type", "break")
                     })
                 }
             })
@@ -172,6 +173,7 @@ object OsmScenicRoutingFallback {
             setRequestProperty("Accept", "application/json")
             setRequestProperty("Content-Type", "application/json; charset=utf-8")
             setRequestProperty("User-Agent", "ScenicPath-Android/${BuildConfig.VERSION_NAME} development")
+            setRequestProperty("X-Client-Id", CLIENT_ID)
             outputStream.bufferedWriter(Charsets.UTF_8).use { it.write(body.toString()) }
         }
 
