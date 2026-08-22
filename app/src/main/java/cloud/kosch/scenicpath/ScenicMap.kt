@@ -61,13 +61,7 @@ private const val STOP_SOURCE = "scenic-stop-source"
 private const val STOP_LAYER = "scenic-stop-layer"
 private const val MAX_SCENIC_MARKERS = 240
 
-/**
- * MapLibre host for Scenic Path.
- *
- * Scenic POIs use native marker annotations above the vector style. The map performs the
- * same precision discovery as Smart Stops, so restaurants, museums, heritage, art,
- * architecture and other rarer categories do not depend on opening the Smart Stops dialog.
- */
+/** MapLibre host. The map performs the same precision discovery as Smart Stops. */
 @Suppress("DEPRECATION")
 @Composable
 fun ScenicMap(
@@ -92,23 +86,11 @@ fun ScenicMap(
     val sharedHighlights = ScenicPoiSharedState.pointsFor(routePoints)
 
     val visibleHighlights = remember(highlights, sharedHighlights, localHighlights) {
-        buildList {
-            addAll(highlights)
-            sharedHighlights.forEach { candidate ->
-                val duplicate = any { existing ->
-                    existing.id == candidate.id ||
-                        (existing.name.equals(candidate.name, ignoreCase = true) && existing.kind == candidate.kind)
-                }
-                if (!duplicate) add(candidate)
-            }
-            localHighlights.forEach { candidate ->
-                val duplicate = any { existing ->
-                    existing.id == candidate.id ||
-                        (existing.name.equals(candidate.name, ignoreCase = true) && existing.kind == candidate.kind)
-                }
-                if (!duplicate) add(candidate)
-            }
-        }.take(MAX_SCENIC_MARKERS)
+        PrecisionRoutePoiDiscovery.mergeForDisplay(
+            first = highlights + sharedHighlights,
+            second = localHighlights,
+            maxResults = MAX_SCENIC_MARKERS,
+        )
     }
     val latestVisibleHighlights by rememberUpdatedState(visibleHighlights)
 
@@ -139,18 +121,12 @@ fun ScenicMap(
                     }
                     fastJob.await() to precisionJob.await()
                 }
-                FastRoutePoiDiscovery.mergeResults(
-                    first = fast,
-                    second = precision,
-                    enabledKinds = prototypeSelectableSceneKinds,
+                PrecisionRoutePoiDiscovery.mergeForDisplay(
+                    first = precision,
+                    second = fast,
                     maxResults = MAX_SCENIC_MARKERS,
                 )
             }.getOrElse { emptyList() }
-        }.filterNot { candidate ->
-            highlights.any { existing ->
-                existing.id == candidate.id ||
-                    (existing.name.equals(candidate.name, ignoreCase = true) && existing.kind == candidate.kind)
-            }
         }
     }
 
@@ -277,9 +253,7 @@ fun ScenicMap(
             },
         )
 
-        if (!styleLoaded && mapError == null) {
-            CircularProgressIndicator(Modifier.align(Alignment.Center))
-        }
+        if (!styleLoaded && mapError == null) CircularProgressIndicator(Modifier.align(Alignment.Center))
         mapError?.let { MapStatusBadge(it, Modifier.align(Alignment.BottomStart).padding(12.dp)) }
 
         selectedHighlight?.let { highlight ->
@@ -293,11 +267,7 @@ fun ScenicMap(
                         "https://www.openstreetmap.org/?mlat=${highlight.point.lat}&mlon=${highlight.point.lon}#map=17/${highlight.point.lat}/${highlight.point.lon}",
                     )
                 },
-                modifier = Modifier
-                    .align(Alignment.Center)
-                    .padding(horizontal = 18.dp)
-                    .fillMaxWidth()
-                    .widthIn(max = 420.dp),
+                modifier = Modifier.align(Alignment.Center).padding(horizontal = 18.dp).fillMaxWidth().widthIn(max = 420.dp),
             )
         }
     }
@@ -305,11 +275,9 @@ fun ScenicMap(
     LaunchedEffect(userLocation, routePoints, stops, styleLoaded) {
         if (styleLoaded) mapRef?.let { updateBaseMapData(it, userLocation, routePoints, stops) }
     }
-
     LaunchedEffect(visibleHighlights, styleLoaded) {
-        if (styleLoaded) mapRef?.let { map -> syncScenicMarkers(map, context, visibleHighlights) }
+        if (styleLoaded) mapRef?.let { syncScenicMarkers(it, context, visibleHighlights) }
     }
-
     LaunchedEffect(userLocation, routePoints, styleLoaded) {
         if (styleLoaded && routePoints.size < 2 && !initialLocationFocused) {
             userLocation?.let { point ->
@@ -318,18 +286,14 @@ fun ScenicMap(
             }
         }
     }
-
     LaunchedEffect(routePoints, styleLoaded) {
         if (styleLoaded && routePoints.size >= 2) {
             runCatching {
-                val bounds = LatLngBounds.Builder().apply {
-                    routePoints.forEach { include(LatLng(it.lat, it.lon)) }
-                }.build()
+                val bounds = LatLngBounds.Builder().apply { routePoints.forEach { include(LatLng(it.lat, it.lon)) } }.build()
                 mapRef?.animateCamera(CameraUpdateFactory.newLatLngBounds(bounds, 96), 650)
             }.onFailure { onMapError(it.message ?: "Route overview failed") }
         }
     }
-
     LaunchedEffect(recenterToken, styleLoaded) {
         if (styleLoaded && recenterToken > lastHandledRecenterToken) {
             latestUserLocation?.let { point ->
@@ -342,101 +306,57 @@ fun ScenicMap(
 
 private fun ensureBaseLayers(style: Style) {
     val empty = FeatureCollection.fromFeatures(emptyArray<Feature>())
-
     if (style.getSource(USER_SOURCE) == null) style.addSource(GeoJsonSource(USER_SOURCE, empty))
     if (style.getLayer(USER_LAYER) == null) {
-        style.addLayer(
-            CircleLayer(USER_LAYER, USER_SOURCE).withProperties(
-                circleRadius(8f),
-                circleColor("#1769E0"),
-                circleStrokeColor("#FFFFFF"),
-                circleStrokeWidth(3f),
-            )
-        )
+        style.addLayer(CircleLayer(USER_LAYER, USER_SOURCE).withProperties(
+            circleRadius(8f), circleColor("#1769E0"), circleStrokeColor("#FFFFFF"), circleStrokeWidth(3f)
+        ))
     }
-
     if (style.getSource(ROUTE_SOURCE) == null) style.addSource(GeoJsonSource(ROUTE_SOURCE, empty))
     if (style.getLayer(ROUTE_LAYER) == null) {
-        style.addLayer(
-            LineLayer(ROUTE_LAYER, ROUTE_SOURCE).withProperties(
-                lineColor("#1769E0"),
-                lineWidth(6f),
-                lineOpacity(0.92f),
-            )
-        )
+        style.addLayer(LineLayer(ROUTE_LAYER, ROUTE_SOURCE).withProperties(
+            lineColor("#1769E0"), lineWidth(6f), lineOpacity(0.92f)
+        ))
     }
-
     if (style.getSource(STOP_SOURCE) == null) style.addSource(GeoJsonSource(STOP_SOURCE, empty))
     if (style.getLayer(STOP_LAYER) == null) {
-        style.addLayer(
-            CircleLayer(STOP_LAYER, STOP_SOURCE).withProperties(
-                circleRadius(9f),
-                circleColor("#F59E0B"),
-                circleStrokeColor("#FFFFFF"),
-                circleStrokeWidth(2.5f),
-            )
-        )
+        style.addLayer(CircleLayer(STOP_LAYER, STOP_SOURCE).withProperties(
+            circleRadius(9f), circleColor("#F59E0B"), circleStrokeColor("#FFFFFF"), circleStrokeWidth(2.5f)
+        ))
     }
 }
 
-private fun updateBaseMapData(
-    map: MapLibreMap,
-    userLocation: GeoPoint?,
-    routePoints: List<GeoPoint>,
-    stops: List<PlannedStop>,
-) {
+private fun updateBaseMapData(map: MapLibreMap, userLocation: GeoPoint?, routePoints: List<GeoPoint>, stops: List<PlannedStop>) {
     val style = map.style ?: return
     ensureBaseLayers(style)
-
     val userSource = style.getSourceAs<GeoJsonSource>(USER_SOURCE)
-    if (userLocation != null) {
-        userSource?.setGeoJson(Feature.fromGeometry(Point.fromLngLat(userLocation.lon, userLocation.lat)))
-    } else {
-        userSource?.setGeoJson(FeatureCollection.fromFeatures(emptyArray<Feature>()))
-    }
+    if (userLocation != null) userSource?.setGeoJson(Feature.fromGeometry(Point.fromLngLat(userLocation.lon, userLocation.lat)))
+    else userSource?.setGeoJson(FeatureCollection.fromFeatures(emptyArray<Feature>()))
 
     val routeSource = style.getSourceAs<GeoJsonSource>(ROUTE_SOURCE)
     if (routePoints.size >= 2) {
-        routeSource?.setGeoJson(
-            Feature.fromGeometry(LineString.fromLngLats(routePoints.map { Point.fromLngLat(it.lon, it.lat) }))
-        )
-    } else {
-        routeSource?.setGeoJson(FeatureCollection.fromFeatures(emptyArray<Feature>()))
-    }
+        routeSource?.setGeoJson(Feature.fromGeometry(LineString.fromLngLats(routePoints.map { Point.fromLngLat(it.lon, it.lat) })))
+    } else routeSource?.setGeoJson(FeatureCollection.fromFeatures(emptyArray<Feature>()))
 
-    val stopFeatures = stops.mapNotNull { stop ->
-        stop.point?.let { point -> Feature.fromGeometry(Point.fromLngLat(point.lon, point.lat)) }
-    }
+    val stopFeatures = stops.mapNotNull { stop -> stop.point?.let { Feature.fromGeometry(Point.fromLngLat(it.lon, it.lat)) } }
     style.getSourceAs<GeoJsonSource>(STOP_SOURCE)?.setGeoJson(FeatureCollection.fromFeatures(stopFeatures))
 }
 
 @Suppress("DEPRECATION")
-private fun syncScenicMarkers(
-    map: MapLibreMap,
-    context: Context,
-    highlights: List<ScenePointUi>,
-) {
+private fun syncScenicMarkers(map: MapLibreMap, context: Context, highlights: List<ScenePointUi>) {
     map.removeAnnotations()
     if (highlights.isEmpty()) return
-
     val included = highlights.filter { it.includedInRoute }
     val includedOrder = included.mapIndexed { index, point -> point.id to (index + 1).toString() }.toMap()
     val iconFactory = IconFactory.getInstance(context)
     val cache = mutableMapOf<String, org.maplibre.android.annotations.Icon>()
-
     val options = highlights.take(MAX_SCENIC_MARKERS).map { highlight ->
         val number = includedOrder[highlight.id]
-        val symbol = number ?: mapSymbol(highlight)
+        val symbol = number ?: scenicCategoryLaneFor(highlight).emoji
         val includedStop = number != null
         val cacheKey = "$symbol:$includedStop"
-        val icon = cache.getOrPut(cacheKey) {
-            iconFactory.fromBitmap(createMarkerBitmap(symbol, includedStop))
-        }
-        MarkerOptions()
-            .position(LatLng(highlight.point.lat, highlight.point.lon))
-            .title(highlight.name)
-            .snippet(highlight.id)
-            .icon(icon)
+        val icon = cache.getOrPut(cacheKey) { iconFactory.fromBitmap(createMarkerBitmap(symbol, includedStop)) }
+        MarkerOptions().position(LatLng(highlight.point.lat, highlight.point.lon)).title(highlight.name).snippet(highlight.id).icon(icon)
     }
     map.addMarkers(options)
 }
@@ -446,7 +366,6 @@ private fun createMarkerBitmap(symbol: String, included: Boolean): Bitmap {
     val bitmap = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
     val canvas = Canvas(bitmap)
     val center = size / 2f
-
     val fill = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         color = if (included) Color.rgb(245, 158, 11) else Color.WHITE
         style = Paint.Style.FILL
@@ -458,25 +377,19 @@ private fun createMarkerBitmap(symbol: String, included: Boolean): Bitmap {
     }
     canvas.drawCircle(center, center, center - 5f, fill)
     canvas.drawCircle(center, center, center - 5f, stroke)
-
     val text = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         color = if (included) Color.WHITE else Color.rgb(20, 92, 65)
         textAlign = Paint.Align.CENTER
         typeface = if (included) Typeface.DEFAULT_BOLD else Typeface.DEFAULT
         textSize = if (included) size * 0.42f else size * 0.50f
     }
-    val y = center - (text.ascent() + text.descent()) / 2f
-    canvas.drawText(symbol, center, y, text)
+    canvas.drawText(symbol, center, center - (text.ascent() + text.descent()) / 2f, text)
     return bitmap
 }
 
-private fun mapSymbol(highlight: ScenePointUi): String = scenicCategoryLaneFor(highlight).emoji
-
 private fun sceneTypeLabel(highlight: ScenePointUi): String {
     val category = scenicCategoryLaneFor(highlight).label
-    val subtype = highlight.subtype
-        ?.replace('_', ' ')
-        ?.replaceFirstChar { it.uppercase() }
+    val subtype = highlight.subtype?.replace('_', ' ')?.replaceFirstChar { it.uppercase() }
         ?.takeIf { it.isNotBlank() && !category.contains(it, ignoreCase = true) }
     return listOfNotNull(category, subtype).joinToString(" · ")
 }
@@ -500,11 +413,7 @@ private fun ScenicLocationCard(
                     shape = MaterialTheme.shapes.large,
                     color = if (highlight.includedInRoute) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.secondaryContainer,
                 ) {
-                    Text(
-                        mapSymbol(highlight),
-                        modifier = Modifier.padding(horizontal = 11.dp, vertical = 7.dp),
-                        fontWeight = FontWeight.Bold,
-                    )
+                    Text(scenicCategoryLaneFor(highlight).emoji, modifier = Modifier.padding(horizontal = 11.dp, vertical = 7.dp), fontWeight = FontWeight.Bold)
                 }
                 Spacer(Modifier.width(10.dp))
                 Column(Modifier.weight(1f)) {
@@ -513,11 +422,7 @@ private fun ScenicLocationCard(
                 }
                 IconButton(onClick = onClose) { Icon(Icons.Default.Close, "Close location info") }
             }
-
-            if (highlight.includedInRoute) {
-                Text("✓ Automatically included in this journey", fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.primary)
-            }
-
+            if (highlight.includedInRoute) Text("✓ Automatically included in this journey", fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.primary)
             val details = buildList {
                 if (highlight.distanceFromRouteMeters > 0) add("${highlight.distanceFromRouteMeters} m from route")
                 add("Suggested stop ${highlight.suggestedDwellMinutes} min")
@@ -528,21 +433,14 @@ private fun ScenicLocationCard(
             highlight.rationale?.takeIf { it.isNotBlank() }?.let {
                 Text("Why here: $it", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
-            if (!highlight.attribution.isNullOrBlank()) {
-                Text(highlight.attribution, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-            }
-
+            if (!highlight.attribution.isNullOrBlank()) Text(highlight.attribution, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 OutlinedButton(onClick = onOpenOsm, modifier = Modifier.weight(1f)) {
-                    Icon(Icons.Default.Map, null, Modifier.size(18.dp))
-                    Spacer(Modifier.width(6.dp))
-                    Text("OpenStreetMap")
+                    Icon(Icons.Default.Map, null, Modifier.size(18.dp)); Spacer(Modifier.width(6.dp)); Text("OpenStreetMap")
                 }
                 if (onOpenWebsite != null) {
                     Button(onClick = onOpenWebsite, modifier = Modifier.weight(1f)) {
-                        Icon(Icons.Default.OpenInNew, null, Modifier.size(18.dp))
-                        Spacer(Modifier.width(6.dp))
-                        Text("Website")
+                        Icon(Icons.Default.OpenInNew, null, Modifier.size(18.dp)); Spacer(Modifier.width(6.dp)); Text("Website")
                     }
                 }
             }
@@ -551,17 +449,14 @@ private fun ScenicLocationCard(
 }
 
 private fun openExternal(context: Context, url: String) {
-    runCatching {
-        context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
-    }
+    runCatching { context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) }
 }
 
 @Composable
 private fun MapFallback(modifier: Modifier, message: String) {
     Box(modifier.background(MaterialTheme.colorScheme.surfaceVariant), contentAlignment = Alignment.Center) {
         Column(horizontalAlignment = Alignment.CenterHorizontally) {
-            Icon(Icons.Default.Map, null, Modifier.size(42.dp))
-            Spacer(Modifier.height(8.dp))
+            Icon(Icons.Default.Map, null, Modifier.size(42.dp)); Spacer(Modifier.height(8.dp))
             Text("Map temporarily unavailable", style = MaterialTheme.typography.titleMedium)
             Text(message, style = MaterialTheme.typography.bodySmall)
         }
