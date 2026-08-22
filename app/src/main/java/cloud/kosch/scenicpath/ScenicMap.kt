@@ -26,6 +26,7 @@ import org.maplibre.android.maps.MapView
 import org.maplibre.android.style.layers.CircleLayer
 import org.maplibre.android.style.layers.LineLayer
 import org.maplibre.android.style.layers.PropertyFactory.circleColor
+import org.maplibre.android.style.layers.PropertyFactory.circleOpacity
 import org.maplibre.android.style.layers.PropertyFactory.circleRadius
 import org.maplibre.android.style.layers.PropertyFactory.circleStrokeColor
 import org.maplibre.android.style.layers.PropertyFactory.circleStrokeWidth
@@ -44,6 +45,8 @@ private const val ROUTE_SOURCE = "scenic-route-source"
 private const val ROUTE_LAYER = "scenic-route-layer"
 private const val STOP_SOURCE = "scenic-stop-source"
 private const val STOP_LAYER = "scenic-stop-layer"
+private const val HIGHLIGHT_SOURCE = "scenic-highlight-source"
+private const val HIGHLIGHT_LAYER = "scenic-highlight-layer"
 
 /**
  * MapLibre host with deliberately boring lifecycle management.
@@ -56,6 +59,7 @@ fun ScenicMap(
     userLocation: GeoPoint? = null,
     routePoints: List<GeoPoint> = emptyList(),
     stops: List<PlannedStop> = emptyList(),
+    highlights: List<ScenePointUi> = emptyList(),
     recenterToken: Int = 0,
     onMapError: (String) -> Unit = {},
 ) {
@@ -147,7 +151,7 @@ fun ScenicMap(
                             runCatching {
                                 map.setStyle(BuildConfig.MAP_STYLE_URL) {
                                     styleLoaded = true
-                                    updateMapData(map, userLocation, routePoints, stops)
+                                    updateMapData(map, userLocation, routePoints, stops, highlights)
                                 }
                             }.onFailure { error ->
                                 mapError = error.message ?: "Map style failed"
@@ -170,8 +174,8 @@ fun ScenicMap(
         }
     }
 
-    LaunchedEffect(userLocation, routePoints, stops, styleLoaded) {
-        if (styleLoaded) mapRef?.let { updateMapData(it, userLocation, routePoints, stops) }
+    LaunchedEffect(userLocation, routePoints, stops, highlights, styleLoaded) {
+        if (styleLoaded) mapRef?.let { updateMapData(it, userLocation, routePoints, stops, highlights) }
     }
 
     // A newly calculated route should immediately make visual sense: show the whole
@@ -204,6 +208,7 @@ private fun updateMapData(
     userLocation: GeoPoint?,
     routePoints: List<GeoPoint>,
     stops: List<PlannedStop>,
+    highlights: List<ScenePointUi>,
 ) {
     val style = map.style ?: return
 
@@ -224,7 +229,7 @@ private fun updateMapData(
     } else if (userFeature != null) {
         userSource?.setGeoJson(userFeature)
     } else {
-        userSource?.setGeoJson(FeatureCollection.fromFeatures(emptyArray()))
+        userSource?.setGeoJson(FeatureCollection.fromFeatures(emptyArray<Feature>()))
     }
 
     val routeSource = style.getSourceAs<GeoJsonSource>(ROUTE_SOURCE)
@@ -243,9 +248,37 @@ private fun updateMapData(
             routeSource.setGeoJson(Feature.fromGeometry(line))
         }
     } else {
-        routeSource?.setGeoJson(FeatureCollection.fromFeatures(emptyArray()))
+        routeSource?.setGeoJson(FeatureCollection.fromFeatures(emptyArray<Feature>()))
     }
 
+    val highlightFeatures = highlights.map { highlight ->
+        Feature.fromGeometry(Point.fromLngLat(highlight.point.lon, highlight.point.lat)).also {
+            it.addStringProperty("name", highlight.name)
+            it.addStringProperty("kind", highlight.kind)
+        }
+    }
+    val highlightSource = style.getSourceAs<GeoJsonSource>(HIGHLIGHT_SOURCE)
+    if (highlightFeatures.isNotEmpty()) {
+        val collection = FeatureCollection.fromFeatures(highlightFeatures)
+        if (highlightSource == null) {
+            style.addSource(GeoJsonSource(HIGHLIGHT_SOURCE, collection))
+            style.addLayer(
+                CircleLayer(HIGHLIGHT_LAYER, HIGHLIGHT_SOURCE).withProperties(
+                    circleRadius(5f),
+                    circleColor("#2E7D32"),
+                    circleOpacity(0.78f),
+                    circleStrokeColor("#FFFFFF"),
+                    circleStrokeWidth(1.5f),
+                )
+            )
+        } else {
+            highlightSource.setGeoJson(collection)
+        }
+    } else {
+        highlightSource?.setGeoJson(FeatureCollection.fromFeatures(emptyArray<Feature>()))
+    }
+
+    // Fixed journey stops stay visually stronger than optional discoveries.
     val stopFeatures = stops.mapNotNull { stop ->
         val point = stop.point ?: return@mapNotNull null
         Feature.fromGeometry(Point.fromLngLat(point.lon, point.lat)).also {
@@ -270,7 +303,7 @@ private fun updateMapData(
             stopSource.setGeoJson(collection)
         }
     } else {
-        stopSource?.setGeoJson(FeatureCollection.fromFeatures(emptyArray()))
+        stopSource?.setGeoJson(FeatureCollection.fromFeatures(emptyArray<Feature>()))
     }
 }
 
