@@ -59,6 +59,8 @@ enum class SceneSubtype(val rawId: String, val parent: StopKind, val label: Stri
     PEAK("peak", StopKind.NATURE, "Peak"),
     NATURAL_LANDMARK("natural_landmark", StopKind.NATURE, "Natural landmark"),
     CAPE("cape", StopKind.NATURE, "Cape"),
+    STONE("stone", StopKind.NATURE, "Natural stone"),
+    NATURE_RESERVE("nature_reserve", StopKind.PARK, "Nature reserve"),
 
     CASTLE("castle", StopKind.MONUMENT, "Castle"),
     DEFENSIVE_CASTLE("defensive_castle", StopKind.MONUMENT, "Castle / fortress"),
@@ -101,14 +103,15 @@ fun sceneKindForRawType(type: String?): StopKind {
     return when {
         "view" in t -> StopKind.VIEWPOINT
         "museum" in t -> StopKind.MUSEUM
+        "nature_reserve" in t -> StopKind.PARK
         "park" in t || "garden" in t -> StopKind.PARK
         "art" in t || "gallery" in t -> StopKind.ART
         listOf("waterfall", "beach", "water", "lake", "river").any(t::contains) -> StopKind.WATER
-        listOf("peak", "natural", "landmark", "cape").any(t::contains) -> StopKind.NATURE
+        listOf("peak", "natural", "landmark", "cape", "stone").any(t::contains) -> StopKind.NATURE
         "attraction" in t -> StopKind.SCENIC
         listOf(
             "monument", "castle", "defensive_castle", "stately", "palace", "manor",
-            "ruins", "memorial", "historic", "fort"
+            "ruins", "memorial", "historic", "fort", "archaeological_site"
         ).any(t::contains) -> StopKind.MONUMENT
         listOf("church", "worship", "cathedral", "mosque", "temple").any(t::contains) -> StopKind.WORSHIP
         listOf("food", "cafe", "restaurant").any(t::contains) -> StopKind.FOOD
