@@ -25,6 +25,14 @@ data class ScenePointUi(
     val subtype: String?,
     val point: GeoPoint,
     val relevance: Double,
+    val suggestionScore: Double = relevance,
+    val distanceFromRouteMeters: Int = 0,
+    val suggestedDwellMinutes: Int = 20,
+    val rating: Double? = null,
+    val ratingCount: Int? = null,
+    val openNow: Boolean? = null,
+    val url: String? = null,
+    val attribution: String? = null,
 )
 
 data class RouteCandidateUi(
@@ -142,6 +150,7 @@ object ScenicApi {
             put("destination", destination.toJson())
             put("mode", plan.mode.name)
             put("routeCharacter", plan.routeCharacter.name)
+            put("autoSuggestStops", plan.autoSuggestStops)
             put("preserveScenicIntentOnReroute", plan.preserveScenicIntentOnReroute)
             put("flexibleStopOrder", plan.flexibleStopOrder)
             put("enabledSceneKinds", JSONArray(plan.enabledSceneKinds.map { it.name }))
@@ -195,6 +204,14 @@ object ScenicApi {
                                 subtype = highlight.optString("subtype").takeIf { it.isNotBlank() },
                                 point = GeoPoint(lat, lon),
                                 relevance = highlight.optDouble("relevance", 0.5),
+                                suggestionScore = highlight.optDouble("suggestionScore", highlight.optDouble("relevance", 0.5)),
+                                distanceFromRouteMeters = highlight.optInt("distanceFromRouteMeters", 0),
+                                suggestedDwellMinutes = highlight.optInt("suggestedDwellMinutes", 20),
+                                rating = highlight.optDoubleOrNull("rating"),
+                                ratingCount = highlight.optIntOrNull("ratingCount"),
+                                openNow = if (highlight.has("openNow") && !highlight.isNull("openNow")) highlight.optBoolean("openNow") else null,
+                                url = highlight.optString("url").takeIf { it.isNotBlank() },
+                                attribution = highlight.optString("attribution").takeIf { it.isNotBlank() },
                             )
                         )
                     }
@@ -204,7 +221,8 @@ object ScenicApi {
                         ?.optJSONObject("diagnostics")
                         ?.optJSONArray("strongestSignals") ?: JSONArray()
                     for (signalIndex in 0 until signals.length()) {
-                        signals.optString(signalIndex).takeIf { it.isNotBlank() }?.let(::add)
+                        val signal = signals.optString(signalIndex)
+                        if (signal.isNotBlank()) add(signal)
                     }
                 }
                 add(
@@ -308,6 +326,12 @@ object ScenicApi {
         }
     }
 }
+
+private fun JSONObject.optDoubleOrNull(key: String): Double? =
+    if (has(key) && !isNull(key)) optDouble(key, Double.NaN).takeIf { it.isFinite() } else null
+
+private fun JSONObject.optIntOrNull(key: String): Int? =
+    if (has(key) && !isNull(key)) optInt(key) else null
 
 private fun GeoPoint.toJson() = JSONObject().apply {
     put("lat", lat)
