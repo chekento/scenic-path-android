@@ -21,11 +21,13 @@ import kotlin.math.sqrt
  * Physical-device development fallback while the Scenic Path backend is not yet public.
  *
  * Uses the FOSSGIS Valhalla demo API for OSM-native routing. Scene discovery is delegated
- * to OsmSceneDiscovery, which has small-window Overpass queries and endpoint failover.
+ * to OsmSceneDiscovery, which has Overpass + Photon fallback for development.
  */
 object OsmScenicRoutingFallback {
     private const val VALHALLA_URL = "https://valhalla1.openstreetmap.de"
     private const val CLIENT_ID = "scenic-path-android-dev"
+
+    private enum class RoadMode { FASTEST, SCENIC_SHORTER }
 
     suspend fun plan(
         origin: GeoPoint,
@@ -35,37 +37,36 @@ object OsmScenicRoutingFallback {
     ): RoutePlanUi = withContext(Dispatchers.IO) {
         val effective = preferences.forCharacter(plan.routeCharacter)
         val fixedStops = plan.stops.mapNotNull { it.point }
+        val scenicRoadMode = if (
+            plan.routeCharacter != RouteCharacter.DIRECT && effective.maxExtraMinutes >= 90
+        ) RoadMode.SCENIC_SHORTER else RoadMode.FASTEST
 
         val baseline = requestValhalla(
             locations = listOf(origin) + fixedStops + destination,
             avoidMotorways = false,
             avoidTolls = effective.avoidTolls,
+            roadMode = RoadMode.FASTEST,
         )
 
         val initialScenic = requestValhalla(
             locations = listOf(origin) + fixedStops + destination,
             avoidMotorways = effective.avoidMotorways,
             avoidTolls = effective.avoidTolls,
+            roadMode = scenicRoadMode,
         )
 
         val discovered = if (plan.autoSuggestStops) {
-            try {
+            runCatching {
                 OsmSceneDiscovery.discover(
                     route = initialScenic.points,
                     enabledKinds = plan.enabledSceneKinds,
                     maxResults = 24,
                 )
-            } catch (_: Throwable) {
-                emptyList()
-            }
+            }.getOrElse { emptyList() }
         } else {
             emptyList()
         }
 
-        // Smart planning is intentionally incremental. The previous all-or-nothing
-        // approach could select several attractive POIs and then discard every stop if
-        // the combined route exceeded the budget. We now test candidates one by one,
-        // keep every feasible addition and order accepted stops along the route.
         val autoResult = buildAutoStopRoute(
             origin = origin,
             destination = destination,
@@ -75,6 +76,7 @@ object OsmScenicRoutingFallback {
             suggestions = discovered,
             plan = plan,
             preferences = effective,
+            roadMode = scenicRoadMode,
         )
         val acceptedAutoStops = autoResult.stops
         val selectedScenic = autoResult.route
@@ -87,6 +89,7 @@ object OsmScenicRoutingFallback {
         )
         val signals = buildList {
             if (effective.avoidMotorways) add("motorwayAvoidance")
+            if (scenicRoadMode == RoadMode.SCENIC_SHORTER) add("budgetRoadFreedom")
             if (acceptedAutoStops.isNotEmpty()) add("autoHighlights")
             if (discovered.any { it.kind == StopKind.VIEWPOINT.name }) add("viewpoints")
             if (discovered.any { it.kind == StopKind.WATER.name }) add("water")
@@ -94,8 +97,6 @@ object OsmScenicRoutingFallback {
             if (discovered.any { it.kind == StopKind.MONUMENT.name }) add("monuments")
         }
 
-        // Auto-included stops are surfaced first so the compact route bar immediately
-        // explains why the route bends through them. Remaining discoveries stay optional.
         val acceptedIds = acceptedAutoStops.mapTo(mutableSetOf()) { it.id }
         val surfacedScenePoints = buildList {
             addAll(acceptedAutoStops)
@@ -138,19 +139,19 @@ object OsmScenicRoutingFallback {
             baselineDurationSeconds = baseline.durationSeconds,
             baselineDistanceMeters = baseline.distanceMeters,
             note = buildString {
-                append("OSM development route via Valhalla")
+                append("OSM development route via Valhalla · +${effective.maxExtraMinutes} min budget")
                 if (effective.avoidMotorways) append(" · motorway-free route validated")
+                if (scenicRoadMode == RoadMode.SCENIC_SHORTER) append(" · expanded scenic-road freedom")
                 when {
                     acceptedAutoStops.isNotEmpty() -> {
                         append(" · ${acceptedAutoStops.size} scenic stop")
                         if (acceptedAutoStops.size != 1) append("s")
-                        append(" automatically included")
-                        append(": ")
+                        append(" automatically included: ")
                         append(acceptedAutoStops.take(3).joinToString { it.name })
                         if (acceptedAutoStops.size > 3) append(" +${acceptedAutoStops.size - 3}")
                     }
-                    discovered.isNotEmpty() -> append(" · ${discovered.size} scenic locations found, none fit the current time budget")
-                    plan.autoSuggestStops -> append(" · no scene data returned by public discovery services")
+                    discovered.isNotEmpty() -> append(" · ${discovered.size} stop suggestions found; none fit the current exact time budget")
+                    plan.autoSuggestStops -> append(" · no scene data returned by development discovery services")
                 }
             },
         )
@@ -171,6 +172,7 @@ object OsmScenicRoutingFallback {
         locations: List<GeoPoint>,
         avoidMotorways: Boolean,
         avoidTolls: Boolean,
+        roadMode: RoadMode,
     ): RawRoute {
         val body = JSONObject().apply {
             put("locations", JSONArray().apply {
@@ -187,6 +189,12 @@ object OsmScenicRoutingFallback {
                 put("use_highways", if (avoidMotorways) 0.0 else 1.0)
                 put("use_tolls", if (avoidTolls) 0.0 else 0.5)
                 put("use_ferry", 0.35)
+                put("use_tracks", 0.0)
+                put("exclude_unpaved", true)
+                // At higher scenic budgets we allow Valhalla to favor a shorter-distance
+                // path rather than remaining tied to the same fastest-time path. The
+                // explicit motorway guard is still applied afterwards.
+                put("shortest", roadMode == RoadMode.SCENIC_SHORTER)
             }))
             put("directions_options", JSONObject().put("units", "kilometers").put("language", "de-DE"))
         }
@@ -286,6 +294,7 @@ object OsmScenicRoutingFallback {
         suggestions: List<ScenePointUi>,
         plan: TripPlan,
         preferences: ScenicPreferences,
+        roadMode: RoadMode,
     ): AutoStopRouteResult {
         if (!plan.autoSuggestStops || suggestions.isEmpty()) {
             return AutoStopRouteResult(initialScenic, emptyList())
@@ -303,7 +312,7 @@ object OsmScenicRoutingFallback {
 
         val rankedCandidates = suggestions
             .sortedByDescending { autoStopUtility(it) }
-            .take(12)
+            .take(14)
 
         var accepted = emptyList<ScenePointUi>()
         var currentRoute = initialScenic
@@ -313,8 +322,6 @@ object OsmScenicRoutingFallback {
             if (candidate.distanceFromRouteMeters > 12_000) continue
             if (accepted.any { it.id == candidate.id }) continue
 
-            // Prefer variety, but do not make it a hard rule. A route through two truly
-            // exceptional castles can still be better than forcing in a weak category.
             val sameKindCount = accepted.count { it.kind == candidate.kind }
             if (sameKindCount >= 2) continue
 
@@ -333,6 +340,7 @@ object OsmScenicRoutingFallback {
                     locations = listOf(origin) + fixedStops + trialStops.map { it.point } + destination,
                     avoidMotorways = preferences.avoidMotorways,
                     avoidTolls = preferences.avoidTolls,
+                    roadMode = roadMode,
                 )
             }.getOrNull() ?: continue
 
