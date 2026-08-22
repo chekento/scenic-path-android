@@ -4,9 +4,11 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlin.math.asin
 import kotlin.math.ceil
 import kotlin.math.cos
+import kotlin.math.ln
 import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.pow
@@ -100,16 +102,27 @@ object SegmentedJourneyOptimizer {
             )
         }
 
-        // Phase 2: one discovery pass over the complete stitched journey. Photon is used
-        // intentionally here: predictable few samples are much faster than running many
-        // Overpass windows independently for every 100 km segment.
-        val discoveries = runCatching {
-            PhotonSceneFallback.discover(
-                route = scenic.points,
-                enabledKinds = plan.enabledSceneKinds,
-                maxResults = 24,
-            )
-        }.getOrElse { emptyList() }
+        // Phase 2: one capped diverse discovery pass over the complete stitched journey.
+        // If targeted OSM enrichment is slow, fall back to the quicker Photon pool. The
+        // already-valid road route is never sacrificed for POI discovery.
+        val diverseDiscoveries = withTimeoutOrNull(12_000) {
+            runCatching {
+                FastRoutePoiDiscovery.discover(
+                    route = scenic.points,
+                    enabledKinds = plan.enabledSceneKinds,
+                    maxResults = 36,
+                )
+            }.getOrElse { emptyList() }
+        }.orEmpty()
+        val discoveries = diverseDiscoveries.ifEmpty {
+            runCatching {
+                PhotonSceneFallback.discover(
+                    route = scenic.points,
+                    enabledKinds = plan.enabledSceneKinds,
+                    maxResults = 28,
+                )
+            }.getOrElse { emptyList() }
+        }
 
         if (discoveries.isEmpty()) {
             return guaranteedPlan(
@@ -124,9 +137,9 @@ object SegmentedJourneyOptimizer {
         var selected = chooseGlobalStops(discoveries, effective, totalBudget)
         var includedIds = emptySet<String>()
 
-        // Exact validation. Usually one pass for +45 min. If the real detour is more
-        // expensive than the estimate, remove the weakest stop and retry. At every point
-        // we still have a complete base scenic route and Direct fallback available.
+        // Exact validation. If the real detour is more expensive than the estimate,
+        // remove the weakest stop and retry. At every point we still have a complete base
+        // scenic route and Direct fallback available.
         while (selected.isNotEmpty()) {
             val rerouted = rerouteSelectedStops(
                 anchors = anchors,
@@ -182,14 +195,13 @@ object SegmentedJourneyOptimizer {
                         if (included.any { it.kind == StopKind.MONUMENT.name }) add("heritage")
                         if (included.any { it.kind == StopKind.VIEWPOINT.name }) add("viewpoints")
                         if (included.any { it.kind == StopKind.WATER.name }) add("water")
+                        if (included.any { it.kind == StopKind.FOOD.name }) add("topFood")
                     }.take(6),
                 )
                 break
             }
 
-            selected = selected
-                .sortedByDescending { stopUtility(it, effective) }
-                .dropLast(1)
+            selected = dropWeakestPreservingFood(selected, effective)
         }
 
         if (includedIds.isEmpty()) {
@@ -217,6 +229,7 @@ object SegmentedJourneyOptimizer {
                 append(" · shared +$totalBudget min budget")
                 if (includedIds.isNotEmpty()) append(" · ${includedIds.size} Smart Stop${if (includedIds.size == 1) "" else "s"} included")
                 else append(" · ${discoveries.size} automatic suggestions")
+                if (includedIds.any { id -> discoveries.any { it.id == id && it.kind == StopKind.FOOD.name } }) append(" · Top Food included")
                 if (effective.avoidMotorways) append(" · motorway avoidance preserved")
             },
         )
@@ -350,30 +363,69 @@ object SegmentedJourneyOptimizer {
         val selected = mutableListOf<ScenePointUi>()
         val ranked = discoveries.sortedByDescending { stopUtility(it, preferences) }
 
-        for (candidate in ranked) {
-            if (selected.size >= maxStops) break
-            if (candidate.distanceFromRouteMeters > 12_000) continue
-            if (selected.any { it.kind == candidate.kind } && ranked.any { it.kind != candidate.kind }) continue
+        fun tryAdd(candidate: ScenePointUi): Boolean {
+            if (selected.size >= maxStops) return false
+            if (candidate.distanceFromRouteMeters > 12_000) return false
             val estimatedDetour = candidate.distanceFromRouteMeters / 500.0
             val estimatedCost = candidate.suggestedDwellMinutes + estimatedDetour
-            if (used + estimatedCost > usableBudget) continue
+            if (used + estimatedCost > usableBudget) return false
             selected += candidate
             used += estimatedCost
+            return true
+        }
+
+        // Top Food is an explicit product category. With enough budget, reserve one slot
+        // for the strongest route-adjacent restaurant instead of letting common nature or
+        // heritage POIs crowd food out completely.
+        if (budgetMinutes >= 60) {
+            discoveries
+                .filter { it.kind == StopKind.FOOD.name }
+                .maxByOrNull { topFoodUtility(it, preferences) }
+                ?.let(::tryAdd)
+        }
+
+        for (candidate in ranked) {
+            if (selected.size >= maxStops) break
+            if (selected.any { it.id == candidate.id }) continue
+            if (selected.any { it.kind == candidate.kind } && ranked.any { it.kind != candidate.kind }) continue
+            tryAdd(candidate)
         }
         return selected
     }
 
+    private fun dropWeakestPreservingFood(
+        selected: List<ScenePointUi>,
+        preferences: ScenicPreferences,
+    ): List<ScenePointUi> {
+        if (selected.size <= 1) return emptyList()
+        val nonFood = selected.filterNot { it.kind == StopKind.FOOD.name }
+        val removable = (if (nonFood.isNotEmpty()) nonFood else selected)
+            .minByOrNull { stopUtility(it, preferences) }
+            ?: return selected.dropLast(1)
+        return selected.filterNot { it.id == removable.id }
+    }
+
+    private fun topFoodUtility(point: ScenePointUi, preferences: ScenicPreferences): Double {
+        val rating = point.rating
+        val reviews = point.ratingCount ?: 0
+        val verified = if (rating != null) rating * 18.0 + ln((reviews + 1).toDouble()) * 4.0 else 0.0
+        val restaurantBonus = if (point.subtype.equals("restaurant", ignoreCase = true)) 10.0 else 2.0
+        return stopUtility(point, preferences) + verified + restaurantBonus
+    }
+
     private fun stopUtility(point: ScenePointUi, preferences: ScenicPreferences): Double {
         val match = personalMatch(point, preferences)
-        val heritage = when (point.subtype.orEmpty().lowercase()) {
+        val special = when (point.subtype.orEmpty().lowercase()) {
             "castle", "defensive_castle", "stately", "palace", "manor" -> 24.0
             "fort", "ruins" -> 16.0
             "waterfall", "viewpoint", "lighthouse" -> 12.0
+            "restaurant" -> 8.0
+            "cafe" -> 3.0
             else -> 0.0
         }
         val detourPenalty = point.distanceFromRouteMeters / 420.0
         val dwellPenalty = point.suggestedDwellMinutes * 0.18
-        return match + heritage - detourPenalty - dwellPenalty
+        return match + special - detourPenalty - dwellPenalty
     }
 
     private fun personalMatch(point: ScenePointUi, preferences: ScenicPreferences): Double {
@@ -403,6 +455,9 @@ object SegmentedJourneyOptimizer {
             if (point.kind == StopKind.VIEWPOINT.name) add("viewpoint")
             if (point.kind == StopKind.WATER.name) add("water experience")
             if (point.kind == StopKind.NATURE.name || point.kind == StopKind.PARK.name) add("nature")
+            if (point.kind == StopKind.FOOD.name) {
+                if (point.rating != null) add("verified Top Food") else add("best available route-food candidate")
+            }
             if (point.distanceFromRouteMeters <= 2500) add("small detour")
         }
         return reasons.ifEmpty { listOf("good fit for this journey") }.joinToString(" · ")
