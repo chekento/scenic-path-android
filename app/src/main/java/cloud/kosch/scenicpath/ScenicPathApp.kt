@@ -20,7 +20,10 @@ import kotlinx.coroutines.launch
 import java.util.Locale
 
 @Composable
-fun ScenicPathApp(locationPermissionGranted: Boolean) {
+fun ScenicPathApp(
+    locationPermissionGranted: Boolean,
+    requestLocationPermission: () -> Unit,
+) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val location = rememberLocationUiState(locationPermissionGranted)
@@ -45,7 +48,11 @@ fun ScenicPathApp(locationPermissionGranted: Boolean) {
 
     val origin = startSelection?.point ?: location.point
     val destination = destinationSelection?.point
-    val startLabel = startSelection?.title ?: if (location.point != null) "Current location" else "Waiting for GPS"
+    val startLabel = startSelection?.title ?: when {
+        location.point != null -> "Current location"
+        locationPermissionGranted -> "Waiting for GPS"
+        else -> "Choose start or enable GPS"
+    }
     val destinationLabel = destinationSelection?.title.orEmpty()
     val activeRoute = routePlan?.candidates?.getOrNull(selectedCandidateIndex)
 
@@ -53,7 +60,7 @@ fun ScenicPathApp(locationPermissionGranted: Boolean) {
         val from = origin
         val to = destination
         if (from == null) {
-            routeError = "Current location is not ready. Choose a start place or wait for GPS."
+            routeError = "Choose a start place or enable live GPS first."
             return
         }
         if (to == null) {
@@ -119,6 +126,7 @@ fun ScenicPathApp(locationPermissionGranted: Boolean) {
                 supporting = when {
                     startSelection != null -> startSelection?.subtitle
                     location.accuracyMeters != null -> "GPS ±${location.accuracyMeters!!.toInt()} m"
+                    !locationPermissionGranted -> "Live GPS is off"
                     location.error != null -> location.error
                     else -> "Using live GPS"
                 },
@@ -136,6 +144,13 @@ fun ScenicPathApp(locationPermissionGranted: Boolean) {
                 modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
+                if (!locationPermissionGranted) {
+                    AssistChip(
+                        onClick = requestLocationPermission,
+                        label = { Text("Enable live GPS") },
+                        leadingIcon = { Icon(Icons.Default.GpsFixed, null, Modifier.size(18.dp)) },
+                    )
+                }
                 AssistChip(
                     onClick = { showPlanner = true },
                     label = { Text(plan.routeCharacter.label) },
