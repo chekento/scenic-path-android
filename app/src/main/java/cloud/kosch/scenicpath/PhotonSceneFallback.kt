@@ -20,12 +20,12 @@ import kotlin.math.sin
 import kotlin.math.sqrt
 
 /**
- * Development fallback when public Overpass discovery is unavailable or sparse.
- * Photon is OSM-backed. Production must use controlled/self-hosted infrastructure.
+ * Fast OSM-backed route discovery used by the long-route planner.
  *
- * Fast mode deliberately does not depend on a specific Photon installation having the
- * exact category index configured. It requests nearby `other` features and filters the
- * returned principal OSM tags locally. Normal mode can still use category filtering.
+ * Photon remains the cheap first pass. When enabled, a small targeted Overpass rescue is
+ * run only for categories Photon missed. That keeps long-route generation bounded while
+ * still allowing castles, museums, monuments, worship, architecture and FOOD to enter the
+ * actual auto-stop candidate pool.
  */
 object PhotonSceneFallback {
     private const val ENDPOINT = "https://photon.komoot.io/reverse"
@@ -35,6 +35,7 @@ object PhotonSceneFallback {
         enabledKinds: Set<StopKind>,
         maxResults: Int = 18,
         fast: Boolean = true,
+        includeTargetedBackfill: Boolean = true,
     ): List<ScenePointUi> = withContext(Dispatchers.IO) {
         if (route.size < 2) return@withContext emptyList()
         val categories = categoriesFor(enabledKinds)
@@ -51,8 +52,6 @@ object PhotonSceneFallback {
         val routeForDistance = routeSamples(route, 120)
         val found = linkedMapOf<String, ScenePointUi>()
 
-        // Two lookups at a time keeps the public development service load modest while
-        // avoiding a route-length × timeout chain on the user's phone.
         for (batch in samples.chunked(2)) {
             val resultSets = coroutineScope {
                 batch.map { sample ->
@@ -74,15 +73,16 @@ object PhotonSceneFallback {
                     if (!lat.isFinite() || !lon.isFinite()) continue
 
                     val properties = feature.optJSONObject("properties") ?: JSONObject()
-                    val osmKey = properties.optString("osm_key")
-                    val osmValue = properties.optString("osm_value")
-                    val rawType = photonRawType(osmKey, osmValue) ?: continue
+                    val rawType = photonRawType(
+                        properties.optString("osm_key"),
+                        properties.optString("osm_value"),
+                    ) ?: continue
                     val kind = sceneKindForRawType(rawType)
                     if (kind != StopKind.SCENIC && kind !in enabledKinds) continue
 
                     val point = GeoPoint(lat, lon)
                     val distance = routeForDistance.minOfOrNull { haversineMeters(point, it) } ?: continue
-                    if (distance > 12_000) continue
+                    if (distance > 13_000) continue
 
                     val name = properties.optString("name").ifBlank {
                         rawType.replace('_', ' ').replaceFirstChar { it.uppercase() }
@@ -91,41 +91,77 @@ object PhotonSceneFallback {
                     val osmId = properties.optLong("osm_id", -1L)
                     val id = if (osmId >= 0) "photon-$osmType-$osmId" else "photon-${lat}-${lon}-${name.hashCode()}"
                     val relevance = relevance(kind, rawType)
-                    val restaurantBonus = if (rawType == "restaurant") 8.0 else 0.0
-                    val score = (relevance * 100.0 + restaurantBonus - distance / 260.0).coerceAtLeast(1.0)
-                    val candidate = ScenePointUi(
-                        id = id,
-                        name = name,
-                        kind = kind.name,
-                        subtype = rawType,
-                        point = point,
-                        relevance = relevance,
-                        suggestionScore = score,
-                        distanceFromRouteMeters = distance.roundToInt(),
-                        suggestedDwellMinutes = dwellMinutes(kind, rawType),
-                        attribution = "© OpenStreetMap contributors · Photon",
-                        rationale = if (kind == StopKind.FOOD) {
-                            "Route food candidate · verified ratings require the configured food provider"
-                        } else null,
+                    val restaurantBonus = if (rawType == "restaurant") 9.0 else 0.0
+                    val score = (relevance * 100.0 + restaurantBonus - distance / 280.0).coerceAtLeast(1.0)
+
+                    found.putIfAbsent(
+                        id,
+                        ScenePointUi(
+                            id = id,
+                            name = name,
+                            kind = kind.name,
+                            subtype = rawType,
+                            point = point,
+                            relevance = relevance,
+                            suggestionScore = score,
+                            distanceFromRouteMeters = distance.roundToInt(),
+                            suggestedDwellMinutes = dwellMinutes(kind, rawType),
+                            attribution = "© OpenStreetMap contributors · Photon",
+                            rationale = if (kind == StopKind.FOOD) {
+                                "Route food candidate · verified ratings require the configured food provider"
+                            } else null,
+                        )
                     )
-                    found.putIfAbsent(id, candidate)
                 }
             }
         }
 
-        // Keep at least one candidate per enabled kind before globally filling. This makes
-        // the long-route optimizer see FOOD/culture instead of only common nature POIs.
-        val values = found.values
+        val photon = coverageSelect(found.values.toList(), enabledKinds, maxResults)
+        if (!includeTargetedBackfill) return@withContext photon
+
+        // Rescue only categories that Photon missed. Three broad route anchors are enough
+        // for this planning-time pass; the post-route UI enrichment performs the deeper
+        // 8-10 anchor search after the road is already visible.
+        val missingKinds = enabledKinds
+            .filter { kind -> kind.autoDiscoverable && photon.none { it.kind == kind.name } }
+            .toSet()
+        if (missingKinds.isEmpty()) return@withContext photon
+
+        val rescue = runCatching {
+            FastRoutePoiDiscovery.discoverTargetedOnly(
+                route = route,
+                enabledKinds = missingKinds,
+                maxResults = maxOf(12, missingKinds.size * 3),
+                radiusMeters = 22_000,
+                maxSamples = 3,
+                allowBackfill = false,
+            )
+        }.getOrElse { emptyList() }
+
+        FastRoutePoiDiscovery.mergeResults(photon, rescue, enabledKinds, maxResults)
+    }
+
+    private fun coverageSelect(
+        values: List<ScenePointUi>,
+        enabledKinds: Set<StopKind>,
+        maxResults: Int,
+    ): List<ScenePointUi> {
+        val deduped = values
             .distinctBy { "${it.name.lowercase(Locale.ROOT)}:${it.kind}" }
-        val grouped = values.groupBy { it.kind }.mapValues { (_, v) -> v.sortedByDescending { it.suggestionScore } }
+        val grouped = deduped
+            .groupBy { it.kind }
+            .mapValues { (_, value) -> value.sortedByDescending { it.suggestionScore } }
         val selected = mutableListOf<ScenePointUi>()
+
         prototypeSelectableSceneKinds.filter { it in enabledKinds }.forEach { kind ->
-            grouped[kind.name]?.firstOrNull()?.let { selected += it }
+            grouped[kind.name]?.firstOrNull()?.let { candidate ->
+                if (selected.size < maxResults) selected += candidate
+            }
         }
-        values.sortedByDescending { it.suggestionScore }.forEach { candidate ->
+        deduped.sortedByDescending { it.suggestionScore }.forEach { candidate ->
             if (selected.size < maxResults && selected.none { it.id == candidate.id }) selected += candidate
         }
-        selected.take(maxResults)
+        return selected.take(maxResults)
     }
 
     private fun query(
@@ -134,8 +170,6 @@ object PhotonSceneFallback {
         fast: Boolean,
     ): org.json.JSONArray {
         val url = if (fast) {
-            // `other` keeps houses/streets from crowding out POIs while avoiding a hard
-            // dependency on installation-specific category indexes.
             "$ENDPOINT?lon=${sample.lon}&lat=${sample.lat}&radius=20&limit=60&lang=de&layer=other"
         } else {
             val include = URLEncoder.encode(categories.joinToString(","), Charsets.UTF_8.name())
@@ -175,6 +209,7 @@ object PhotonSceneFallback {
             add("osm.historic.ruins")
             add("osm.historic.monument")
             add("osm.historic.memorial")
+            add("osm.historic.archaeological_site")
         }
         if (StopKind.NATURE in enabledKinds) {
             add("osm.natural.peak")
@@ -200,6 +235,7 @@ object PhotonSceneFallback {
         if (StopKind.ARCHITECTURE in enabledKinds) {
             add("osm.man_made.lighthouse")
             add("osm.man_made.tower")
+            add("osm.man_made.water_tower")
             add("osm.bridge.yes")
         }
         add("osm.tourism.attraction")
@@ -211,13 +247,14 @@ object PhotonSceneFallback {
         key == "amenity" && value == "place_of_worship" -> "worship"
         key == "amenity" && value == "restaurant" -> "restaurant"
         key == "amenity" && value == "cafe" -> "cafe"
-        key == "historic" && value in setOf("castle", "manor", "palace", "fort", "ruins", "monument", "memorial") -> value
-        key == "natural" && value in setOf("peak", "cape", "stone", "beach") -> value
-        key == "natural" && value == "water" -> "water"
+        key == "historic" && value in setOf("castle", "manor", "palace", "fort", "ruins", "monument", "memorial", "archaeological_site") -> value
+        key == "natural" && value in setOf("peak", "cape", "stone", "rock", "beach") -> value
+        key == "natural" && value == "water" -> "lake"
         key == "waterway" && value == "waterfall" -> "waterfall"
         key == "waterway" && value == "river" -> "river"
         key == "leisure" && value in setOf("park", "garden", "nature_reserve") -> value
         key == "man_made" && value in setOf("lighthouse", "tower") -> value
+        key == "man_made" && value == "water_tower" -> "tower"
         key == "bridge" && value == "yes" -> "bridge"
         else -> null
     }
@@ -225,19 +262,19 @@ object PhotonSceneFallback {
     private fun relevance(kind: StopKind, rawType: String): Double {
         var score = when (kind) {
             StopKind.VIEWPOINT -> 1.0
-            StopKind.MONUMENT -> 0.96
-            StopKind.WATER -> 0.94
-            StopKind.NATURE -> 0.90
-            StopKind.MUSEUM -> 0.84
+            StopKind.MONUMENT -> 0.98
+            StopKind.WATER -> 0.92
+            StopKind.NATURE -> 0.88
+            StopKind.MUSEUM -> 0.90
             StopKind.FOOD -> 0.86
             StopKind.PARK -> 0.78
-            StopKind.ARCHITECTURE -> 0.76
-            StopKind.ART -> 0.72
-            StopKind.WORSHIP -> 0.68
+            StopKind.ARCHITECTURE -> 0.80
+            StopKind.ART -> 0.76
+            StopKind.WORSHIP -> 0.72
             StopKind.SCENIC -> 0.65
             else -> 0.55
         }
-        if (rawType in setOf("castle", "manor", "palace", "waterfall", "lighthouse")) score += 0.12
+        if (rawType in setOf("castle", "manor", "palace")) score += 0.14
         if (rawType == "restaurant") score += 0.07
         return score.coerceAtMost(1.2)
     }
