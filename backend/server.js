@@ -4,6 +4,7 @@ import { analyzeCorridor } from "./corridor-analyzer.js";
 import { enrichRouteFromOsm } from "./osm-enrichment.js";
 import { enrichTopFoodAlongRoute } from "./food-enrichment.js";
 import { selectSceneSuggestions } from "./scene-suggestions.js";
+import { orderRoutesForCharacter } from "./route-selection.js";
 import { tomTomRoute } from "./tomtom.js";
 import { tomTomSearch } from "./tomtom-search.js";
 
@@ -166,6 +167,9 @@ const server = http.createServer(async (req, res) => {
         .filter((stop) => stop.position && Number.isFinite(stop.position.lat) && Number.isFinite(stop.position.lon));
       const waypoints = orderedStops.map((stop) => stop.position);
       const enabledSceneKinds = Array.isArray(body.enabledSceneKinds) ? body.enabledSceneKinds : [];
+      const requestedCharacter = ["BEAUTIFUL", "BALANCED", "DIRECT", "CUSTOM"].includes(body.routeCharacter)
+        ? body.routeCharacter
+        : "BEAUTIFUL";
 
       const fastestRaw = await tomTomRoute({
         apiKey: process.env.TOMTOM_API_KEY,
@@ -201,7 +205,7 @@ const server = http.createServer(async (req, res) => {
       const rawCandidates = [
         normalizeRoute(fastestRoute, 0, fastestSeconds, "DIRECT"),
         ...(balancedRaw.routes ?? []).map((route, index) => normalizeRoute(route, index, fastestSeconds, "BALANCED")),
-        ...(beautifulRaw.routes ?? []).map((route, index) => normalizeRoute(route, index, fastestSeconds, body.routeCharacter === "CUSTOM" ? "CUSTOM" : "BEAUTIFUL")),
+        ...(beautifulRaw.routes ?? []).map((route, index) => normalizeRoute(route, index, fastestSeconds, requestedCharacter === "CUSTOM" ? "CUSTOM" : "BEAUTIFUL")),
       ];
 
       const enriched = await Promise.all(
@@ -209,7 +213,13 @@ const server = http.createServer(async (req, res) => {
           enrichCandidate(candidate, enabledSceneKinds, body.preferences, body.autoSuggestStops)
         )
       );
-      const ranked = rankRoutes(enriched, body.preferences);
+      const scenicRanked = rankRoutes(enriched, body.preferences);
+      const ranked = orderRoutesForCharacter(
+        scenicRanked,
+        requestedCharacter,
+        body.preferences,
+        fastestSeconds,
+      );
 
       return json(res, 200, {
         baseline: {
@@ -221,7 +231,7 @@ const server = http.createServer(async (req, res) => {
         stops: orderedStops,
         plan: {
           mode: body.mode ?? "QUICK",
-          routeCharacter: body.routeCharacter ?? "BEAUTIFUL",
+          routeCharacter: requestedCharacter,
           enabledSceneKinds,
           autoSuggestStops: body.autoSuggestStops !== false,
           preserveScenicIntentOnReroute: body.preserveScenicIntentOnReroute !== false
