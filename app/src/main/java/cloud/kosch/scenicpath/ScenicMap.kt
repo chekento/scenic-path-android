@@ -87,12 +87,9 @@ fun ScenicMap(
     var selectedHighlight by remember { mutableStateOf<ScenePointUi?>(null) }
     val latestUserLocation by rememberUpdatedState(userLocation)
 
-    val normalizedRouteHighlights = remember(highlights) {
-        highlights
-    }
-    val visibleHighlights = remember(normalizedRouteHighlights, localHighlights) {
+    val visibleHighlights = remember(highlights, localHighlights) {
         buildList {
-            addAll(normalizedRouteHighlights)
+            addAll(highlights)
             localHighlights.forEach { candidate ->
                 val duplicate = any { existing ->
                     existing.id == candidate.id || existing.name.equals(candidate.name, ignoreCase = true)
@@ -363,10 +360,11 @@ private fun updateBaseMapData(
     ensureBaseLayers(style)
 
     val userSource = style.getSourceAs<GeoJsonSource>(USER_SOURCE)
-    userSource?.setGeoJson(
-        userLocation?.let { Feature.fromGeometry(Point.fromLngLat(it.lon, it.lat)) }
-            ?: FeatureCollection.fromFeatures(emptyArray<Feature>())
-    )
+    if (userLocation != null) {
+        userSource?.setGeoJson(Feature.fromGeometry(Point.fromLngLat(userLocation.lon, userLocation.lat)))
+    } else {
+        userSource?.setGeoJson(FeatureCollection.fromFeatures(emptyArray<Feature>()))
+    }
 
     val routeSource = style.getSourceAs<GeoJsonSource>(ROUTE_SOURCE)
     if (routePoints.size >= 2) {
