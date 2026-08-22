@@ -35,8 +35,9 @@ fun JourneyStopsSheet(
     var enriched by remember(route?.id) { mutableStateOf<List<ScenePointUi>>(emptyList()) }
     var enrichmentLoading by remember(route?.id) { mutableStateOf(false) }
     var enrichmentFailed by remember(route?.id) { mutableStateOf(false) }
+    var refreshToken by remember(route?.id) { mutableIntStateOf(0) }
 
-    LaunchedEffect(route?.id) {
+    LaunchedEffect(route?.id, refreshToken) {
         val current = route
         if (current == null || current.points.size < 2) {
             enriched = emptyList()
@@ -46,11 +47,32 @@ fun JourneyStopsSheet(
         enrichmentLoading = true
         enrichmentFailed = false
         val result = runCatching {
-            FastRoutePoiDiscovery.discover(
+            val normal = FastRoutePoiDiscovery.discover(
                 route = current.points,
                 enabledKinds = prototypeSelectableSceneKinds,
-                maxResults = 50,
+                maxResults = 90,
             )
+            if (refreshToken == 0) {
+                normal
+            } else {
+                // A user-triggered refresh deliberately searches a wider corridor and more
+                // route anchors than the fast automatic pass. This is opt-in so public
+                // development endpoints remain bounded during normal interaction.
+                val deep = FastRoutePoiDiscovery.discoverTargetedOnly(
+                    route = current.points,
+                    enabledKinds = prototypeSelectableSceneKinds,
+                    maxResults = 140,
+                    radiusMeters = 30_000,
+                    maxSamples = 12,
+                    allowBackfill = true,
+                )
+                FastRoutePoiDiscovery.mergeResults(
+                    first = normal,
+                    second = deep,
+                    enabledKinds = prototypeSelectableSceneKinds,
+                    maxResults = 140,
+                )
+            }
         }
         enriched = result.getOrElse { emptyList() }
         enrichmentFailed = result.isFailure
@@ -76,6 +98,13 @@ fun JourneyStopsSheet(
         }
     }
 
+    LaunchedEffect(route?.id, merged) {
+        val current = route
+        if (current != null && current.points.size >= 2) {
+            ScenicPoiSharedState.publish(current.points, merged)
+        }
+    }
+
     val included = merged.filter { it.includedInRoute }
     val includedIds = included.mapTo(mutableSetOf()) { it.id }
     val topFood = merged
@@ -86,22 +115,24 @@ fun JourneyStopsSheet(
         }
         .maxByOrNull(::foodPickScore)
 
-    val availableByKind = remember(merged, includedIds, manuallyAddedIds, topFood?.id) {
+    val availableByCategory = remember(merged, includedIds, manuallyAddedIds, topFood?.id) {
         merged
             .filterNot {
                 it.id in includedIds ||
                     it.id in manuallyAddedIds ||
                     it.id == topFood?.id
             }
-            .groupBy { it.kind }
+            .groupBy { scenicCategoryLaneFor(it).id }
             .mapValues { (_, values) -> values.sortedByDescending { it.suggestionScore } }
     }
 
-    val coveredKinds = remember(merged) {
-        prototypeSelectableSceneKinds.filter { kind -> merged.any { it.kind == kind.name } }
+    val coveredCategories = remember(merged) {
+        scenicCategoryLanes.filter { lane ->
+            merged.any { point -> scenicCategoryLaneFor(point).id == lane.id }
+        }
     }
-    val missingKinds = remember(coveredKinds) {
-        prototypeSelectableSceneKinds.filterNot { it in coveredKinds }
+    val missingCategories = remember(coveredCategories) {
+        scenicCategoryLanes.filterNot { it in coveredCategories }
     }
 
     Dialog(
@@ -132,7 +163,7 @@ fun JourneyStopsSheet(
                         Column(Modifier.weight(1f)) {
                             Text("Smart Stops", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
                             Text(
-                                "Every enabled Scenic Category gets its own result lane.",
+                                "Every Scenic Category gets its own result lane.",
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
                         }
@@ -152,25 +183,55 @@ fun JourneyStopsSheet(
                 } else {
                     item(key = "summary") {
                         Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.55f))) {
-                            Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(5.dp)) {
+                            Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(7.dp)) {
                                 Text(route.variantLabel ?: "Scenic experience", fontWeight = FontWeight.Bold)
                                 Text(
                                     "${included.size} automatic stops · ${route.dwellMinutes} min visiting · +${route.driveExtraMinutes.roundToInt()} min driving detour",
                                     style = MaterialTheme.typography.bodySmall,
                                 )
-                                Text(
-                                    "${merged.size} locations · ${coveredKinds.size}/${prototypeSelectableSceneKinds.size} Scenic Categories covered",
-                                    style = MaterialTheme.typography.bodySmall,
-                                    fontWeight = FontWeight.SemiBold,
-                                )
-                                if (!enrichmentLoading && missingKinds.isNotEmpty()) {
+                                if (enrichmentLoading) {
                                     Text(
-                                        "Still missing in this corridor: ${missingKinds.joinToString { "${it.emoji} ${it.label}" }}",
+                                        "Searching all ${scenicCategoryLanes.size} Scenic Categories… ${merged.size} route candidates available",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        fontWeight = FontWeight.SemiBold,
+                                    )
+                                } else {
+                                    Text(
+                                        "${merged.size} locations · ${coveredCategories.size}/${scenicCategoryLanes.size} Scenic Categories covered",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        fontWeight = FontWeight.SemiBold,
+                                    )
+                                }
+                                if (!enrichmentLoading && missingCategories.isNotEmpty()) {
+                                    val preview = missingCategories.take(8)
+                                    val rest = missingCategories.size - preview.size
+                                    Text(
+                                        buildString {
+                                            append("Still missing in this corridor: ")
+                                            append(preview.joinToString { "${it.emoji} ${it.label}" })
+                                            if (rest > 0) append(" · +$rest more")
+                                        },
                                         style = MaterialTheme.typography.labelSmall,
                                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                                     )
                                 }
                             }
+                        }
+                    }
+
+                    item(key = "refresh") {
+                        FilledTonalButton(
+                            onClick = { refreshToken++ },
+                            modifier = Modifier.fillMaxWidth(),
+                            enabled = !enrichmentLoading,
+                        ) {
+                            if (enrichmentLoading) {
+                                CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
+                            } else {
+                                Icon(Icons.Default.Refresh, null)
+                            }
+                            Spacer(Modifier.width(8.dp))
+                            Text(if (enrichmentLoading) "Refreshing Smart Stops…" else "Refresh Smart Stops")
                         }
                     }
 
@@ -188,7 +249,11 @@ fun JourneyStopsSheet(
                             Row(verticalAlignment = Alignment.CenterVertically) {
                                 CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
                                 Spacer(Modifier.width(8.dp))
-                                Text("Searching the full corridor for missing categories…", style = MaterialTheme.typography.bodySmall)
+                                Text(
+                                    if (refreshToken > 0) "Deep-scanning the full route corridor…"
+                                    else "Searching the full corridor for missing categories…",
+                                    style = MaterialTheme.typography.bodySmall,
+                                )
                             }
                         }
                     }
@@ -197,7 +262,7 @@ fun JourneyStopsSheet(
                         item(key = "enrichment-failed") {
                             Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer)) {
                                 Text(
-                                    "Some public development POI services did not answer. Existing route results are still shown.",
+                                    "Some public development POI services did not answer. Existing route results are still shown; use Refresh Smart Stops to try again.",
                                     modifier = Modifier.padding(12.dp),
                                     style = MaterialTheme.typography.bodySmall,
                                     color = MaterialTheme.colorScheme.onErrorContainer,
@@ -210,7 +275,7 @@ fun JourneyStopsSheet(
                         item(key = "top-food-divider") { HorizontalDivider() }
                         item(key = "top-food-title") {
                             Row(verticalAlignment = Alignment.CenterVertically) {
-                                Icon(Icons.Default.Restaurant, null, tint = MaterialTheme.colorScheme.primary)
+                                Text("🍽️", style = MaterialTheme.typography.titleLarge)
                                 Spacer(Modifier.width(7.dp))
                                 Text("Top Food pick", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
                             }
@@ -225,13 +290,14 @@ fun JourneyStopsSheet(
                         Text("Recommendations by Scenic Category", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
                     }
 
-                    prototypeSelectableSceneKinds.forEach { kind ->
-                        item(key = "kind-title-${kind.name}") {
-                            CategoryHeader(kind, count = merged.count { it.kind == kind.name })
+                    scenicCategoryLanes.forEach { lane ->
+                        val laneCount = merged.count { scenicCategoryLaneFor(it).id == lane.id }
+                        item(key = "lane-title-${lane.id}") {
+                            CategoryHeader(lane, count = laneCount)
                         }
 
-                        if (kind == StopKind.FOOD && topFood != null) {
-                            item(key = "kind-food-note") {
+                        if (lane.id == "top-food" && topFood != null) {
+                            item(key = "lane-food-note") {
                                 Text(
                                     "The strongest food candidate is highlighted above.",
                                     style = MaterialTheme.typography.bodySmall,
@@ -239,9 +305,9 @@ fun JourneyStopsSheet(
                                 )
                             }
                         } else {
-                            val candidates = availableByKind[kind.name].orEmpty().take(3)
+                            val candidates = availableByCategory[lane.id].orEmpty().take(3)
                             if (candidates.isEmpty()) {
-                                item(key = "kind-empty-${kind.name}") {
+                                item(key = "lane-empty-${lane.id}") {
                                     Text(
                                         if (enrichmentLoading) "Searching…" else "No mapped candidate found in the current search corridor.",
                                         style = MaterialTheme.typography.bodySmall,
@@ -249,7 +315,7 @@ fun JourneyStopsSheet(
                                     )
                                 }
                             } else {
-                                items(candidates, key = { "kind-${kind.name}-${it.id}" }) { stop ->
+                                items(candidates, key = { "lane-${lane.id}-${it.id}" }) { stop ->
                                     AlternativeStopRow(stop, onClick = { onAddAlternative(stop) })
                                 }
                             }
@@ -271,14 +337,14 @@ fun JourneyStopsSheet(
 }
 
 @Composable
-private fun CategoryHeader(kind: StopKind, count: Int) {
+private fun CategoryHeader(lane: ScenicCategoryLane, count: Int) {
     Row(
         modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Text(kind.emoji, style = MaterialTheme.typography.titleLarge)
+        Text(lane.emoji, style = MaterialTheme.typography.titleLarge)
         Spacer(Modifier.width(8.dp))
-        Text(kind.label, modifier = Modifier.weight(1f), fontWeight = FontWeight.SemiBold)
+        Text(lane.label, modifier = Modifier.weight(1f), fontWeight = FontWeight.SemiBold)
         Surface(
             shape = MaterialTheme.shapes.extraLarge,
             color = if (count > 0) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceContainerHighest,
@@ -351,7 +417,7 @@ private fun IncludedStopRow(number: Int, stop: ScenePointUi) {
             }
             Spacer(Modifier.width(10.dp))
             Column(Modifier.weight(1f)) {
-                Text("${journeyStopEmoji(stop.kind)} ${stop.name}", fontWeight = FontWeight.SemiBold)
+                Text("${scenicCategoryLaneFor(stop).emoji} ${stop.name}", fontWeight = FontWeight.SemiBold)
                 Text(
                     buildList {
                         stop.personalMatch?.let { add("${it.roundToInt()}% match") }
@@ -378,7 +444,7 @@ private fun AlternativeStopRow(stop: ScenePointUi, onClick: () -> Unit) {
         modifier = Modifier.fillMaxWidth().clickable(onClick = onClick),
     ) {
         Row(Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
-            Text(journeyStopEmoji(stop.kind), style = MaterialTheme.typography.titleLarge)
+            Text(scenicCategoryLaneFor(stop).emoji, style = MaterialTheme.typography.titleLarge)
             Spacer(Modifier.width(10.dp))
             Column(Modifier.weight(1f)) {
                 Text(stop.name, fontWeight = FontWeight.SemiBold, maxLines = 1)
@@ -397,18 +463,4 @@ private fun AlternativeStopRow(stop: ScenePointUi, onClick: () -> Unit) {
             Icon(Icons.Default.AddCircleOutline, "Add ${stop.name}")
         }
     }
-}
-
-private fun journeyStopEmoji(kind: String): String = when (kind) {
-    StopKind.VIEWPOINT.name -> "👁️"
-    StopKind.MUSEUM.name -> "🏛️"
-    StopKind.NATURE.name -> "⛰️"
-    StopKind.MONUMENT.name -> "🏰"
-    StopKind.PARK.name -> "🌳"
-    StopKind.ART.name -> "🎨"
-    StopKind.WORSHIP.name -> "⛪"
-    StopKind.WATER.name -> "💧"
-    StopKind.FOOD.name -> "🍽️"
-    StopKind.ARCHITECTURE.name -> "🏗️"
-    else -> "⭐"
 }
