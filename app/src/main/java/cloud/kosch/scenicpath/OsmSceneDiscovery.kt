@@ -17,7 +17,7 @@ import kotlin.math.sin
 import kotlin.math.sqrt
 
 /**
- * Development-only OSM scene discovery with endpoint failover.
+ * Development-only OSM scene discovery with endpoint and provider failover.
  *
  * The production app should point the same concept at controlled/cached infrastructure.
  */
@@ -44,9 +44,13 @@ object OsmSceneDiscovery {
         val samples = routeSamples(route, sampleCount)
         val routeForDistance = routeSamples(route, 110)
         val collected = linkedMapOf<String, JSONObject>()
+        var failedWindows = 0
 
         for (sample in samples) {
-            val elements = queryOneWindow(sample, enabledKinds)
+            val elements = runCatching { queryOneWindow(sample, enabledKinds) }
+                .onFailure { failedWindows++ }
+                .getOrNull()
+                ?: continue
             for (index in 0 until elements.length()) {
                 val element = elements.optJSONObject(index) ?: continue
                 val type = element.optString("type")
@@ -55,6 +59,9 @@ object OsmSceneDiscovery {
                 collected.putIfAbsent("$type:$id", element)
             }
             if (collected.size >= 110) break
+            // Do not spend the whole planning request waiting on an unhealthy public
+            // Overpass service. Photon becomes the second OSM-backed discovery source.
+            if (failedWindows >= 2 && collected.isEmpty()) break
         }
 
         val parsed = buildList {
@@ -104,7 +111,25 @@ object OsmSceneDiscovery {
                 if (!duplicateCluster) selected += candidate
             }
 
-        selected.take(maxResults)
+        // A sparse/failed Overpass response must not result in a blank product experience.
+        // Photon uses the same OSM base and can provide principal POI categories by reverse
+        // search. It is only a development fallback; production will use our own service.
+        if (selected.size < minOf(8, maxResults)) {
+            val photon = runCatching {
+                PhotonSceneFallback.discover(route, enabledKinds, maxResults)
+            }.getOrElse { emptyList() }
+            photon.forEach { candidate ->
+                val duplicate = selected.any {
+                    it.name.equals(candidate.name, ignoreCase = true) ||
+                        haversineMeters(it.point, candidate.point) < 180
+                }
+                if (!duplicate) selected += candidate
+            }
+        }
+
+        selected
+            .sortedByDescending { it.suggestionScore }
+            .take(maxResults)
     }
 
     private fun queryOneWindow(sample: GeoPoint, enabledKinds: Set<StopKind>): JSONArray {
@@ -117,8 +142,6 @@ object OsmSceneDiscovery {
                 add("nwr(around:$radius,${sample.lat},${sample.lon})[amenity=arts_centre];")
             }
             if (StopKind.MONUMENT in enabledKinds || StopKind.WORSHIP in enabledKinds) {
-                // Broad historic query deliberately includes castles, palaces, stately homes,
-                // manor houses, forts, ruins, memorials and historic religious buildings.
                 add("nwr(around:$radius,${sample.lat},${sample.lon})[historic];")
                 add("nwr(around:$radius,${sample.lat},${sample.lon})[castle_type];")
             }
@@ -139,7 +162,6 @@ object OsmSceneDiscovery {
                 add("nwr(around:$radius,${sample.lat},${sample.lon})[man_made~\"^(tower|lighthouse)$\"];")
                 add("nwr(around:$radius,${sample.lat},${sample.lon})[bridge=yes][name];")
             }
-            // Generic attractions remain useful as a fallback scene category.
             add("nwr(around:$radius,${sample.lat},${sample.lon})[tourism=attraction];")
         }
 
@@ -151,8 +173,8 @@ object OsmSceneDiscovery {
         for (endpoint in endpoints) {
             val connection = (URL(endpoint).openConnection() as HttpURLConnection).apply {
                 requestMethod = "POST"
-                connectTimeout = 4_500
-                readTimeout = 11_000
+                connectTimeout = 3_500
+                readTimeout = 8_500
                 doOutput = true
                 setRequestProperty("Content-Type", "application/x-www-form-urlencoded; charset=utf-8")
                 setRequestProperty("Accept", "application/json")
