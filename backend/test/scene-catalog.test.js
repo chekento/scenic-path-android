@@ -31,3 +31,9 @@ test("unnamed forest contributes corridor signal without becoming a stop", () =>
   assert.equal(result.kind, undefined);
   assert.equal(result.signals.forest, 1);
 });
+
+test("OSM restaurant is discovery only, never verified Top Food", () => {
+  const result = classifyTags({ amenity: "restaurant", name: "Any Restaurant" });
+  assert.equal(result.kind, undefined);
+  assert.equal(result.signals.foodCandidate, 1);
+});
