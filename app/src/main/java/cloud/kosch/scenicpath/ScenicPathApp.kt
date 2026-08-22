@@ -13,7 +13,6 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.launch
@@ -24,7 +23,6 @@ fun ScenicPathApp(
     locationPermissionGranted: Boolean,
     requestLocationPermission: () -> Unit,
 ) {
-    val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val location = rememberLocationUiState(locationPermissionGranted)
 
@@ -32,11 +30,13 @@ fun ScenicPathApp(
     var destinationSelection by remember { mutableStateOf<PlaceSuggestion?>(null) }
     var showStartPicker by remember { mutableStateOf(false) }
     var showDestinationPicker by remember { mutableStateOf(false) }
+    var showStopIdeas by remember { mutableStateOf(false) }
     var showStopPicker by remember { mutableStateOf(false) }
     var showStopKindPicker by remember { mutableStateOf(false) }
     var pendingStopKind by remember { mutableStateOf(StopKind.CUSTOM) }
     var showScenicDNA by remember { mutableStateOf(false) }
     var showPlanner by remember { mutableStateOf(false) }
+    var topPanelExpanded by remember { mutableStateOf(true) }
     var preferences by remember { mutableStateOf(ScenicPreferences()) }
     var plan by remember { mutableStateOf(TripPlan()) }
     var recenterToken by remember { mutableIntStateOf(0) }
@@ -55,6 +55,11 @@ fun ScenicPathApp(
     }
     val destinationLabel = destinationSelection?.title.orEmpty()
     val activeRoute = routePlan?.candidates?.getOrNull(selectedCandidateIndex)
+
+    fun invalidateRoute() {
+        routePlan = null
+        selectedCandidateIndex = 0
+    }
 
     fun buildRoute() {
         val from = origin
@@ -76,6 +81,7 @@ fun ScenicPathApp(
                     routePlan = result
                     selectedCandidateIndex = 0
                     routeLoading = false
+                    topPanelExpanded = false
                     if (result.candidates.isEmpty()) routeError = "No route matched the current detour budget."
                 }
                 .onFailure { error ->
@@ -102,7 +108,8 @@ fun ScenicPathApp(
                 subtype = highlight.subtype,
             )
         )
-        routePlan = null
+        invalidateRoute()
+        showStopIdeas = false
         showPlanner = true
     }
 
@@ -124,87 +131,118 @@ fun ScenicPathApp(
                 .fillMaxWidth()
                 .clip(MaterialTheme.shapes.extraLarge)
                 .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.96f))
-                .padding(14.dp),
+                .padding(if (topPanelExpanded) 14.dp else 8.dp),
             verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Icon(Icons.Default.Landscape, null, tint = MaterialTheme.colorScheme.primary)
                 Spacer(Modifier.width(8.dp))
-                Column {
-                    Text("Scenic Path", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
-                    Text("The beautiful way", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                if (topPanelExpanded) {
+                    Column(Modifier.weight(1f)) {
+                        Text("Scenic Path", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+                        Text("The beautiful way", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                } else {
+                    Column(Modifier.weight(1f)) {
+                        Text(
+                            "$startLabel  →  ${destinationLabel.ifBlank { "Choose destination" }}",
+                            fontWeight = FontWeight.SemiBold,
+                            maxLines = 1,
+                        )
+                        Text(
+                            "${plan.routeCharacter.label} · +${preferences.maxExtraMinutes} min" +
+                                if (plan.autoSuggestStops) " · Smart stops" else "",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1,
+                        )
+                    }
                 }
-                Spacer(Modifier.weight(1f))
-                if (routeLoading) CircularProgressIndicator(Modifier.size(24.dp), strokeWidth = 2.dp)
-                IconButton(onClick = { showScenicDNA = true }) {
-                    Icon(Icons.Default.Tune, "Scenic DNA")
+                if (routeLoading) CircularProgressIndicator(Modifier.size(22.dp), strokeWidth = 2.dp)
+                if (topPanelExpanded) {
+                    IconButton(onClick = { showScenicDNA = true }) {
+                        Icon(Icons.Default.Tune, "Scenic DNA")
+                    }
                 }
-            }
-
-            PlaceField(
-                label = "Start",
-                value = startLabel,
-                icon = Icons.Default.MyLocation,
-                supporting = when {
-                    startSelection != null -> startSelection?.subtitle
-                    location.accuracyMeters != null -> "GPS ±${location.accuracyMeters!!.toInt()} m"
-                    !locationPermissionGranted -> "Live GPS is off"
-                    location.error != null -> location.error
-                    else -> "Using live GPS"
-                },
-                onClick = { showStartPicker = true },
-            )
-            PlaceField(
-                label = "Destination",
-                value = destinationLabel.ifBlank { "Where do you want to go?" },
-                icon = Icons.Default.Flag,
-                supporting = destinationSelection?.subtitle,
-                onClick = { showDestinationPicker = true },
-            )
-
-            Row(
-                modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
-                if (!locationPermissionGranted) {
-                    AssistChip(
-                        onClick = requestLocationPermission,
-                        label = { Text("Enable live GPS") },
-                        leadingIcon = { Icon(Icons.Default.GpsFixed, null, Modifier.size(18.dp)) },
-                    )
-                }
-                AssistChip(
-                    onClick = { showPlanner = true },
-                    label = { Text(plan.routeCharacter.label) },
-                    leadingIcon = { Icon(Icons.Default.AutoAwesome, null, Modifier.size(18.dp)) },
-                )
-                AssistChip(
-                    onClick = { showPlanner = true },
-                    label = { Text(if (plan.stops.isEmpty()) "No fixed stops" else "${plan.stops.size} stops") },
-                    leadingIcon = { Icon(Icons.Default.LocationOn, null, Modifier.size(18.dp)) },
-                )
-                AssistChip(
-                    onClick = { showPlanner = true },
-                    label = { Text("+${preferences.maxExtraMinutes} min") },
-                    leadingIcon = { Icon(Icons.Default.MoreTime, null, Modifier.size(18.dp)) },
-                )
-                if (startSelection != null && location.point != null) {
-                    AssistChip(
-                        onClick = { startSelection = null },
-                        label = { Text("Use GPS start") },
-                        leadingIcon = { Icon(Icons.Default.GpsFixed, null, Modifier.size(18.dp)) },
+                IconButton(onClick = { topPanelExpanded = !topPanelExpanded }) {
+                    Icon(
+                        if (topPanelExpanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
+                        if (topPanelExpanded) "Minimize trip panel" else "Expand trip panel",
                     )
                 }
             }
 
-            Button(
-                onClick = { showPlanner = true },
-                modifier = Modifier.fillMaxWidth().height(52.dp),
-                enabled = destination != null && !routeLoading,
-            ) {
-                Icon(Icons.Default.Route, null)
-                Spacer(Modifier.width(8.dp))
-                Text(if (routePlan == null) "Plan the beautiful route" else "Edit journey plan")
+            if (topPanelExpanded) {
+                PlaceField(
+                    label = "Start",
+                    value = startLabel,
+                    icon = Icons.Default.MyLocation,
+                    supporting = when {
+                        startSelection != null -> startSelection?.subtitle
+                        location.accuracyMeters != null -> "GPS ±${location.accuracyMeters!!.toInt()} m"
+                        !locationPermissionGranted -> "Live GPS is off"
+                        location.error != null -> location.error
+                        else -> "Using live GPS"
+                    },
+                    onClick = { showStartPicker = true },
+                )
+                PlaceField(
+                    label = "Destination",
+                    value = destinationLabel.ifBlank { "Where do you want to go?" },
+                    icon = Icons.Default.Flag,
+                    supporting = destinationSelection?.subtitle,
+                    onClick = { showDestinationPicker = true },
+                )
+
+                Row(
+                    modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    if (!locationPermissionGranted) {
+                        AssistChip(
+                            onClick = requestLocationPermission,
+                            label = { Text("Enable live GPS") },
+                            leadingIcon = { Icon(Icons.Default.GpsFixed, null, Modifier.size(18.dp)) },
+                        )
+                    }
+                    AssistChip(
+                        onClick = { showPlanner = true },
+                        label = { Text(plan.routeCharacter.label) },
+                        leadingIcon = { Icon(Icons.Default.AutoAwesome, null, Modifier.size(18.dp)) },
+                    )
+                    AssistChip(
+                        onClick = {
+                            if (activeRoute != null) showStopIdeas = true else showPlanner = true
+                        },
+                        label = { Text(if (activeRoute?.scenePoints.isNullOrEmpty()) "Stop ideas" else "${activeRoute!!.scenePoints.size} ideas") },
+                        leadingIcon = { Icon(Icons.Default.Explore, null, Modifier.size(18.dp)) },
+                    )
+                    AssistChip(
+                        onClick = { showPlanner = true },
+                        label = { Text("+${preferences.maxExtraMinutes} min") },
+                        leadingIcon = { Icon(Icons.Default.MoreTime, null, Modifier.size(18.dp)) },
+                    )
+                    if (startSelection != null && location.point != null) {
+                        AssistChip(
+                            onClick = {
+                                startSelection = null
+                                invalidateRoute()
+                            },
+                            label = { Text("Use GPS start") },
+                            leadingIcon = { Icon(Icons.Default.GpsFixed, null, Modifier.size(18.dp)) },
+                        )
+                    }
+                }
+
+                Button(
+                    onClick = { showPlanner = true },
+                    modifier = Modifier.fillMaxWidth().height(52.dp),
+                    enabled = destination != null && !routeLoading,
+                ) {
+                    Icon(Icons.Default.Route, null)
+                    Spacer(Modifier.width(8.dp))
+                    Text(if (routePlan == null) "Plan the beautiful route" else "Edit journey plan")
+                }
             }
         }
 
@@ -231,6 +269,7 @@ fun ScenicPathApp(
                         if (count > 0) selectedCandidateIndex = (selectedCandidateIndex + 1) % count
                     },
                     onAddHighlight = ::addSuggestedStop,
+                    onShowSuggestions = { showStopIdeas = true },
                     onRebuild = { showPlanner = true },
                 )
             }
@@ -260,14 +299,42 @@ fun ScenicPathApp(
             destination = destinationLabel,
             plan = plan,
             preferences = preferences,
-            onPlanChange = { plan = it },
-            onPreferencesChange = { preferences = it },
+            onPlanChange = { updated ->
+                if (updated != plan) {
+                    plan = updated
+                    invalidateRoute()
+                }
+            },
+            onPreferencesChange = { updated ->
+                if (updated != preferences) {
+                    preferences = updated
+                    invalidateRoute()
+                }
+            },
             onRequestAddStop = {
                 showPlanner = false
-                showStopKindPicker = true
+                showStopIdeas = true
             },
             onBuildRoute = ::buildRoute,
             onDismiss = { showPlanner = false },
+        )
+    }
+
+    if (showStopIdeas) {
+        StopIdeasSheet(
+            routePoints = activeRoute?.points.orEmpty(),
+            initialSuggestions = activeRoute?.scenePoints.orEmpty(),
+            enabledKinds = plan.enabledSceneKinds,
+            alreadyAddedIds = plan.stops.mapTo(mutableSetOf()) { it.id },
+            onAddSuggestion = ::addSuggestedStop,
+            onManualSearch = {
+                showStopIdeas = false
+                showStopKindPicker = true
+            },
+            onDismiss = {
+                showStopIdeas = false
+                if (routePlan == null) showPlanner = true
+            },
         )
     }
 
@@ -280,7 +347,7 @@ fun ScenicPathApp(
             onPick = {
                 startSelection = it
                 showStartPicker = false
-                routePlan = null
+                invalidateRoute()
             },
         )
     }
@@ -294,7 +361,7 @@ fun ScenicPathApp(
             onPick = {
                 destinationSelection = it
                 showDestinationPicker = false
-                routePlan = null
+                invalidateRoute()
             },
         )
     }
@@ -316,7 +383,7 @@ fun ScenicPathApp(
 
     if (showStopPicker) {
         PlacePickerSheet(
-            title = "Add ${pendingStopKind.label.lowercase()} stop",
+            title = "Manual ${pendingStopKind.label.lowercase()} stop",
             bias = origin,
             onDismiss = {
                 showStopPicker = false
@@ -334,7 +401,7 @@ fun ScenicPathApp(
                 )
                 showStopPicker = false
                 showPlanner = true
-                routePlan = null
+                invalidateRoute()
             },
         )
     }
@@ -345,7 +412,7 @@ fun ScenicPathApp(
             onChange = {
                 preferences = it
                 plan = plan.copy(routeCharacter = RouteCharacter.CUSTOM)
-                routePlan = null
+                invalidateRoute()
             },
             onDismiss = { showScenicDNA = false },
         )
@@ -392,6 +459,7 @@ private fun RouteResultCard(
     onPrevious: () -> Unit,
     onNext: () -> Unit,
     onAddHighlight: (ScenePointUi) -> Unit,
+    onShowSuggestions: () -> Unit,
     onRebuild: () -> Unit,
 ) {
     Card(
@@ -432,7 +500,11 @@ private fun RouteResultCard(
 
             if (route.scenePoints.isNotEmpty()) {
                 HorizontalDivider()
-                Text("Along this route", style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.SemiBold)
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text("Suggested stops", style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.SemiBold)
+                    Spacer(Modifier.weight(1f))
+                    TextButton(onClick = onShowSuggestions) { Text("Show all") }
+                }
                 route.scenePoints.take(3).forEach { highlight ->
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Text(sceneEmoji(highlight.kind), style = MaterialTheme.typography.titleMedium)
@@ -456,10 +528,16 @@ private fun RouteResultCard(
                 }
                 if (route.scenePoints.size > 3) {
                     Text(
-                        "+${route.scenePoints.size - 3} more optional highlights along this route",
+                        "+${route.scenePoints.size - 3} more automatic suggestions",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
+                }
+            } else if (!route.isPreviewFallback) {
+                OutlinedButton(onClick = onShowSuggestions, modifier = Modifier.fillMaxWidth()) {
+                    Icon(Icons.Default.AutoAwesome, null, Modifier.size(18.dp))
+                    Spacer(Modifier.width(8.dp))
+                    Text("Find scenic stop suggestions")
                 }
             }
 
@@ -511,7 +589,7 @@ private fun StopKindDialog(
     val manualKinds = prototypeSelectableSceneKinds + StopKind.CUSTOM
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("What kind of stop?") },
+        title = { Text("Manual stop type") },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                 manualKinds.forEach { kind ->
@@ -553,6 +631,8 @@ private fun signalLabel(signal: String): String = when (signal) {
     "parks" -> "Parks"
     "food" -> "Top food"
     "scenicHighlights" -> "Highlights"
+    "autoHighlights" -> "Auto stops"
+    "motorwayAvoidance" -> "No motorway"
     else -> signal.replaceFirstChar { it.uppercase() }
 }
 
