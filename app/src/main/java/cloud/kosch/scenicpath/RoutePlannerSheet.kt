@@ -182,6 +182,11 @@ fun RoutePlannerSheet(
                         else "Only your selected stops will be used.",
                         style = MaterialTheme.typography.bodySmall,
                     )
+                    Text(
+                        "${plan.enabledSceneKinds.size}/${prototypeSelectableSceneKinds.size} scene-point categories active",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.onSecondaryContainer,
+                    )
                 }
             }
 
@@ -257,6 +262,34 @@ private fun AdvancedPlanningControls(
             ) { onPreferencesChange(preferences.copy(avoidTolls = it)) }
 
             HorizontalDivider()
+            Text("Scene points", fontWeight = FontWeight.SemiBold)
+            Text(
+                "The original Scenic Path categories. Detailed subtypes such as castles, ruins, waterfalls, beaches, lighthouses and bridges are mapped automatically.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            prototypeSelectableSceneKinds.groupBy { it.group }.forEach { (group, kinds) ->
+                Text(group.label, style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.SemiBold)
+                Row(
+                    Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    kinds.forEach { kind ->
+                        val selected = kind in plan.enabledSceneKinds
+                        FilterChip(
+                            selected = selected,
+                            onClick = {
+                                val next = plan.enabledSceneKinds.toMutableSet()
+                                if (selected) next.remove(kind) else next.add(kind)
+                                onPlanChange(plan.copy(enabledSceneKinds = next))
+                            },
+                            label = { Text("${kind.emoji} ${kind.label}") },
+                        )
+                    }
+                }
+            }
+
+            HorizontalDivider()
             Text("Food quality", fontWeight = FontWeight.SemiBold)
             Text("Minimum ${"%.1f".format(preferences.minimumFoodRating)}★ · ${preferences.minimumFoodReviewCount}+ reviews")
             Slider(
@@ -323,7 +356,7 @@ private fun DraggableStopRow(
                 Text(stop.name, fontWeight = FontWeight.SemiBold)
                 val resolved = if (stop.point != null) "located" else "location needed"
                 Text(
-                    "${stop.kind.label} · ${stop.dwellMinutes} min · $resolved",
+                    "${stop.kind.emoji} ${stop.kind.label} · ${stop.dwellMinutes} min · $resolved",
                     style = MaterialTheme.typography.bodySmall,
                     color = if (stop.point != null) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.error,
                 )
