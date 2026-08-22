@@ -72,10 +72,9 @@ fun JourneyStopsSheet(
                 fastJob.await() to precisionJob.await()
             }
 
-            var combined = FastRoutePoiDiscovery.mergeResults(
-                first = fast,
-                second = precision,
-                enabledKinds = prototypeSelectableSceneKinds,
+            var combined = PrecisionRoutePoiDiscovery.mergeForDisplay(
+                first = precision,
+                second = fast,
                 maxResults = 240,
             )
 
@@ -87,10 +86,9 @@ fun JourneyStopsSheet(
                     radiusMeters = 30_000,
                     maxSamples = 14,
                 )
-                combined = FastRoutePoiDiscovery.mergeResults(
-                    first = combined,
-                    second = deep,
-                    enabledKinds = prototypeSelectableSceneKinds,
+                combined = PrecisionRoutePoiDiscovery.mergeForDisplay(
+                    first = deep,
+                    second = combined,
                     maxResults = 340,
                 )
             }
@@ -109,22 +107,16 @@ fun JourneyStopsSheet(
     }
 
     val merged = remember(routePoints, enriched) {
-        buildList {
-            addAll(routePoints)
-            enriched.forEach { candidate ->
-                val duplicate = any { existing ->
-                    existing.id == candidate.id ||
-                        (existing.name.equals(candidate.name, ignoreCase = true) && existing.kind == candidate.kind)
-                }
-                if (!duplicate) add(candidate)
-            }
-        }
+        PrecisionRoutePoiDiscovery.mergeForDisplay(
+            first = routePoints,
+            second = enriched,
+            maxResults = 360,
+        )
     }
 
     LaunchedEffect(route?.id, merged) {
         val current = route
         if (current != null && current.points.size >= 2) {
-            // The exact Smart Stops result set is the map result set as well.
             ScenicPoiSharedState.publish(current.points, merged)
         }
     }
@@ -186,10 +178,7 @@ fun JourneyStopsSheet(
                         Spacer(Modifier.width(10.dp))
                         Column(Modifier.weight(1f)) {
                             Text("Smart Stops", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
-                            Text(
-                                "Precision search across the complete route corridor.",
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
+                            Text("Precision search across the complete route corridor.", color = MaterialTheme.colorScheme.onSurfaceVariant)
                         }
                         IconButton(onClick = onDismiss) { Icon(Icons.Default.Close, "Close Smart Stops") }
                     }
@@ -249,11 +238,8 @@ fun JourneyStopsSheet(
                             modifier = Modifier.fillMaxWidth(),
                             enabled = !enrichmentLoading,
                         ) {
-                            if (enrichmentLoading) {
-                                CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
-                            } else {
-                                Icon(Icons.Default.Refresh, null)
-                            }
+                            if (enrichmentLoading) CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
+                            else Icon(Icons.Default.Refresh, null)
                             Spacer(Modifier.width(8.dp))
                             Text(if (enrichmentLoading) "Searching route corridor…" else "Deep refresh Smart Stops")
                         }
@@ -304,9 +290,7 @@ fun JourneyStopsSheet(
                                 Text("Best restaurant / café candidate", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
                             }
                         }
-                        item(key = "top-food-${food.id}") {
-                            TopFoodRow(food, onClick = { onAddAlternative(food) })
-                        }
+                        item(key = "top-food-${food.id}") { TopFoodRow(food, onClick = { onAddAlternative(food) }) }
                     }
 
                     item(key = "categories-divider") { HorizontalDivider() }
@@ -316,9 +300,7 @@ fun JourneyStopsSheet(
 
                     scenicCategoryLanes.forEach { lane ->
                         val laneCount = merged.count { scenicCategoryLaneFor(it).id == lane.id }
-                        item(key = "lane-title-${lane.id}") {
-                            CategoryHeader(lane, count = laneCount)
-                        }
+                        item(key = "lane-title-${lane.id}") { CategoryHeader(lane, count = laneCount) }
                         if (lane.id == "restaurants-cafes" && topFood != null) {
                             item(key = "lane-food-note") {
                                 Text(
@@ -328,7 +310,6 @@ fun JourneyStopsSheet(
                                 )
                             }
                         }
-
                         val candidates = availableByCategory[lane.id].orEmpty().take(6)
                         if (candidates.isEmpty()) {
                             item(key = "lane-empty-${lane.id}") {
@@ -361,10 +342,7 @@ fun JourneyStopsSheet(
 
 @Composable
 private fun CategoryHeader(lane: ScenicCategoryLane, count: Int) {
-    Row(
-        modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
+    Row(Modifier.fillMaxWidth().padding(top = 4.dp), verticalAlignment = Alignment.CenterVertically) {
         Text(lane.emoji, style = MaterialTheme.typography.titleLarge)
         Spacer(Modifier.width(8.dp))
         Text(lane.label, modifier = Modifier.weight(1f), fontWeight = FontWeight.SemiBold)
@@ -372,11 +350,7 @@ private fun CategoryHeader(lane: ScenicCategoryLane, count: Int) {
             shape = MaterialTheme.shapes.extraLarge,
             color = if (count > 0) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceContainerHighest,
         ) {
-            Text(
-                count.toString(),
-                modifier = Modifier.padding(horizontal = 9.dp, vertical = 3.dp),
-                style = MaterialTheme.typography.labelMedium,
-            )
+            Text(count.toString(), modifier = Modifier.padding(horizontal = 9.dp, vertical = 3.dp), style = MaterialTheme.typography.labelMedium)
         }
     }
 }
@@ -386,8 +360,7 @@ private fun foodPickScore(stop: ScenePointUi): Double {
     val reviews = stop.ratingCount ?: 0
     val verified = if (rating != null) rating * 20.0 + ln((reviews + 1).toDouble()) * 4.0 else 0.0
     val restaurantBonus = if (stop.subtype.equals("restaurant", ignoreCase = true)) 12.0 else 0.0
-    val detourPenalty = stop.distanceFromRouteMeters / 800.0
-    return verified + stop.suggestionScore + restaurantBonus - detourPenalty
+    return verified + stop.suggestionScore + restaurantBonus - stop.distanceFromRouteMeters / 800.0
 }
 
 @Composable
@@ -448,9 +421,7 @@ private fun IncludedStopRow(number: Int, stop: ScenePointUi) {
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
-                stop.rationale?.let {
-                    Text(it, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary)
-                }
+                stop.rationale?.let { Text(it, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary) }
             }
             Icon(Icons.Default.CheckCircle, "Included", tint = MaterialTheme.colorScheme.primary)
         }
