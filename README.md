@@ -4,7 +4,7 @@ Native Android prototype for an experience-first scenic route planner.
 
 Scenic Path does not only ask “how do I get from A to B?”. It asks how to turn the user's available extra time into a more beautiful journey: alternative road corridors, automatically selected scenic stops, heritage, views, water, parks, architecture, culture and food.
 
-## Current development milestone — v0.4.5
+## Current development milestone — v0.4.7
 
 - Kotlin + Jetpack Compose native Android app
 - MapLibre + OpenStreetMap/OpenFreeMap map stack
@@ -12,10 +12,13 @@ Scenic Path does not only ask “how do I get from A to B?”. It asks how to tu
 - time-budget-aware Journey Optimizer
 - long-route segmentation below public development-provider distance limits
 - automatic Smart Stops with exact detour/budget validation
-- numbered included-stop markers and category markers on the map
 - stable non-draggable Smart Stops dialog
-- category coverage: every enabled scene category gets a reserved result slot whenever a usable candidate exists in the search corridor
-- targeted discovery for viewpoints, museums, nature, heritage, parks, art, worship, water, food and architecture
+- Smart Stops now expose 18 richer human-facing scene lanes instead of collapsing all results into ten broad buckets
+- route POIs found by Smart Stops are immediately shared with the map, so the exact same discovered locations can be seen geographically
+- map POIs use the same category emojis as Smart Stops; automatically included route stops remain clearly numbered
+- manual `Refresh Smart Stops` performs an opt-in deeper route-corridor scan with a wider search radius and more route samples
+- while POI enrichment is running, Smart Stops show a searching state instead of misleading intermediate coverage such as `2/18` followed by `3/18`
+- targeted discovery covers viewpoints, museums, natural landmarks, reserves, castles, palaces/manors, ruins/archaeology, monuments, parks/gardens, art, worship, waterfalls, beaches, lakes/rivers, food, towers/lighthouses, bridges/aqueducts and scenic attractions
 - Top Food participates in long-route automatic stop selection; the development-device fallback uses OSM metadata without inventing ratings
 - production backend supports Google Places Top Food with real ratings/review counts and review-confidence ranking when `GOOGLE_PLACES_API_KEY` is configured
 
@@ -27,7 +30,7 @@ Provider secrets such as Google Places or routing keys belong in backend/deploym
 
 ## Still planned
 
-- one persistent shared journey/POI state for planner, map, Smart Stops and navigation
+- replace the temporary in-memory POI bridge with one persistent shared journey state used by planner, map, Smart Stops and navigation
 - richer POI information from Wikipedia/Wikidata/Wikimedia
 - ETA-aware opening hours
 - marker clustering for dense areas
