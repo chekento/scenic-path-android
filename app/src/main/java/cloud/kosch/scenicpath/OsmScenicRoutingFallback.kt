@@ -6,20 +6,25 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.net.HttpURLConnection
 import java.net.URL
-import java.net.URLEncoder
-import java.util.Locale
-import kotlin.math.*
+import kotlin.math.abs
+import kotlin.math.asin
+import kotlin.math.atan2
+import kotlin.math.cos
+import kotlin.math.max
+import kotlin.math.min
+import kotlin.math.pow
+import kotlin.math.roundToInt
+import kotlin.math.sin
+import kotlin.math.sqrt
 
 /**
  * Physical-device development fallback while the Scenic Path backend is not yet public.
  *
- * Uses the FOSSGIS Valhalla demo API for OSM-native routing and a deliberately small
- * Overpass query for scene-point discovery. Public services are development-only; the
- * production app will use Scenic Path controlled/contracted endpoints.
+ * Uses the FOSSGIS Valhalla demo API for OSM-native routing. Scene discovery is delegated
+ * to OsmSceneDiscovery, which has small-window Overpass queries and endpoint failover.
  */
 object OsmScenicRoutingFallback {
     private const val VALHALLA_URL = "https://valhalla1.openstreetmap.de"
-    private const val OVERPASS_URL = "https://overpass-api.de/api/interpreter"
     private const val CLIENT_ID = "scenic-path-android-dev"
 
     suspend fun plan(
@@ -44,13 +49,18 @@ object OsmScenicRoutingFallback {
         )
 
         val discovered = if (plan.autoSuggestStops) {
-            runCatching {
-                discoverScenePoints(
+            try {
+                OsmSceneDiscovery.discover(
                     route = initialScenic.points,
                     enabledKinds = plan.enabledSceneKinds,
+                    maxResults = 24,
                 )
-            }.getOrElse { emptyList() }
-        } else emptyList()
+            } catch (_: Throwable) {
+                emptyList()
+            }
+        } else {
+            emptyList()
+        }
 
         val autoStops = selectAutoStops(discovered, plan, effective)
         val scenicWithStops = if (autoStops.isNotEmpty()) {
@@ -61,16 +71,19 @@ object OsmScenicRoutingFallback {
                     avoidTolls = effective.avoidTolls,
                 )
             }.getOrNull()
-        } else null
+        } else {
+            null
+        }
 
-        val selectedScenic = scenicWithStops
-            ?.takeIf { candidate ->
-                val travelExtraMinutes = max(0.0, (candidate.durationSeconds - baseline.durationSeconds) / 60.0)
-                val dwellMinutes = autoStops.sumOf { it.suggestedDwellMinutes }
-                travelExtraMinutes + dwellMinutes <= effective.maxExtraMinutes + 1.0
-            }
-            ?: initialScenic
+        val acceptedAutoStops = if (scenicWithStops != null) {
+            val travelExtraMinutes = max(0.0, (scenicWithStops.durationSeconds - baseline.durationSeconds) / 60.0)
+            val dwellMinutes = autoStops.sumOf { it.suggestedDwellMinutes }
+            if (travelExtraMinutes + dwellMinutes <= effective.maxExtraMinutes + 1.0) autoStops else emptyList()
+        } else {
+            emptyList()
+        }
 
+        val selectedScenic = if (acceptedAutoStops.isNotEmpty()) scenicWithStops!! else initialScenic
         val extraMinutes = max(0.0, (selectedScenic.durationSeconds - baseline.durationSeconds) / 60.0)
         val scenicScore = debugScenicScore(
             avoidMotorways = effective.avoidMotorways,
@@ -79,7 +92,7 @@ object OsmScenicRoutingFallback {
         )
         val signals = buildList {
             if (effective.avoidMotorways) add("motorwayAvoidance")
-            if (autoStops.isNotEmpty() && scenicWithStops != null) add("autoHighlights")
+            if (acceptedAutoStops.isNotEmpty()) add("autoHighlights")
             if (discovered.any { it.kind == StopKind.VIEWPOINT.name }) add("viewpoints")
             if (discovered.any { it.kind == StopKind.WATER.name }) add("water")
             if (discovered.any { it.kind == StopKind.NATURE.name || it.kind == StopKind.PARK.name }) add("forest")
@@ -95,7 +108,7 @@ object OsmScenicRoutingFallback {
             extraMinutes = extraMinutes,
             points = selectedScenic.points,
             provider = "Valhalla · OpenStreetMap development",
-            scenePoints = discovered.take(maxOf(6, plan.preferencesDisplayLimit())),
+            scenePoints = discovered.take(18),
             strongestSignals = signals.take(4),
             isPreviewFallback = false,
         )
@@ -113,8 +126,8 @@ object OsmScenicRoutingFallback {
         )
 
         val candidates = when (plan.routeCharacter) {
-            RouteCharacter.DIRECT -> listOf(directCandidate, scenicCandidate).distinctBy { routeKey(it) }
-            else -> listOf(scenicCandidate, directCandidate).distinctBy { routeKey(it) }
+            RouteCharacter.DIRECT -> listOf(directCandidate, scenicCandidate).distinctBy(::routeKey)
+            else -> listOf(scenicCandidate, directCandidate).distinctBy(::routeKey)
         }
 
         RoutePlanUi(
@@ -124,12 +137,14 @@ object OsmScenicRoutingFallback {
             note = buildString {
                 append("OSM development route via Valhalla")
                 if (effective.avoidMotorways) append(" · motorway-free route validated")
-                if (autoStops.isNotEmpty() && scenicWithStops != null) {
-                    append(" · ${autoStops.size} scenic waypoint")
-                    if (autoStops.size != 1) append("s")
-                    append(" included")
-                } else if (discovered.isNotEmpty()) {
-                    append(" · ${discovered.size} optional highlights found")
+                when {
+                    acceptedAutoStops.isNotEmpty() -> {
+                        append(" · ${acceptedAutoStops.size} scenic waypoint")
+                        if (acceptedAutoStops.size != 1) append("s")
+                        append(" included")
+                    }
+                    discovered.isNotEmpty() -> append(" · ${discovered.size} scenic locations found")
+                    plan.autoSuggestStops -> append(" · no scene data returned by public discovery services")
                 }
             },
         )
@@ -171,8 +186,7 @@ object OsmScenicRoutingFallback {
         }
 
         try {
-            val text = connection.readTextOrThrow()
-            val response = JSONObject(text)
+            val response = JSONObject(connection.readTextOrThrow())
             val trip = response.optJSONObject("trip") ?: error("Valhalla returned no trip")
             val summary = trip.optJSONObject("summary") ?: error("Valhalla returned no summary")
             val legs = trip.optJSONArray("legs") ?: JSONArray()
@@ -183,7 +197,9 @@ object OsmScenicRoutingFallback {
                     val decoded = decodePolyline6(encoded)
                     if (isNotEmpty() && decoded.isNotEmpty() && last() == decoded.first()) {
                         addAll(decoded.drop(1))
-                    } else addAll(decoded)
+                    } else {
+                        addAll(decoded)
+                    }
                 }
             }
             if (points.size < 2) error("Valhalla route shape is empty")
@@ -199,9 +215,8 @@ object OsmScenicRoutingFallback {
     }
 
     /**
-     * Hard policy guard. Valhalla's use_highways=0 is a costing preference, so a second
-     * trace_attributes pass verifies the actual routed road classes. If a motorway edge
-     * remains, the candidate is rejected instead of being mislabeled as motorway-free.
+     * Hard guard: a costing preference is not enough for an explicit motorway ban.
+     * The actual routed edges are checked and the route is rejected if any motorway remains.
      */
     private fun validateMotorwayFree(points: List<GeoPoint>) {
         val shape = routeSamples(points, 120)
@@ -251,89 +266,6 @@ object OsmScenicRoutingFallback {
             setRequestProperty("X-Client-Id", CLIENT_ID)
         }
 
-    private fun discoverScenePoints(
-        route: List<GeoPoint>,
-        enabledKinds: Set<StopKind>,
-    ): List<ScenePointUi> {
-        if (route.size < 2) return emptyList()
-        val samples = routeSamples(route, 4)
-        val aroundBlocks = samples.joinToString("\n") { p ->
-            """
-            nwr(around:7000,${p.lat},${p.lon})[tourism=viewpoint];
-            nwr(around:7000,${p.lat},${p.lon})[tourism=museum];
-            nwr(around:7000,${p.lat},${p.lon})[tourism=artwork];
-            nwr(around:7000,${p.lat},${p.lon})[tourism=attraction];
-            nwr(around:7000,${p.lat},${p.lon})[historic];
-            nwr(around:7000,${p.lat},${p.lon})[natural~"^(peak|cape|waterfall|beach)$"];
-            nwr(around:7000,${p.lat},${p.lon})[leisure~"^(park|garden)$"];
-            nwr(around:7000,${p.lat},${p.lon})[amenity=place_of_worship][historic];
-            nwr(around:7000,${p.lat},${p.lon})[man_made~"^(tower|lighthouse)$"];
-            nwr(around:7000,${p.lat},${p.lon})[bridge=yes][name];
-            """.trimIndent()
-        }
-        val query = "[out:json][timeout:12];(\n$aroundBlocks\n);out center tags 100;"
-        val encoded = "data=" + URLEncoder.encode(query, Charsets.UTF_8.name())
-        val connection = (URL(OVERPASS_URL).openConnection() as HttpURLConnection).apply {
-            requestMethod = "POST"
-            connectTimeout = 5_000
-            readTimeout = 12_000
-            doOutput = true
-            setRequestProperty("Content-Type", "application/x-www-form-urlencoded; charset=utf-8")
-            setRequestProperty("Accept", "application/json")
-            setRequestProperty("User-Agent", "ScenicPath-Android/${BuildConfig.VERSION_NAME} development")
-            outputStream.bufferedWriter(Charsets.UTF_8).use { it.write(encoded) }
-        }
-
-        try {
-            val response = JSONObject(connection.readTextOrThrow())
-            val elements = response.optJSONArray("elements") ?: JSONArray()
-            val routeForDistance = routeSamples(route, 70)
-            val parsed = buildList {
-                for (index in 0 until elements.length()) {
-                    val element = elements.optJSONObject(index) ?: continue
-                    val tags = element.optJSONObject("tags") ?: JSONObject()
-                    val point = elementPoint(element) ?: continue
-                    val rawType = rawSceneType(tags) ?: continue
-                    val kind = sceneKindForRawType(rawType)
-                    if (kind == StopKind.FOOD || (kind != StopKind.SCENIC && kind !in enabledKinds)) continue
-                    val name = tags.optString("name").ifBlank { fallbackName(rawType) }
-                    val distance = routeForDistance.minOfOrNull { haversineMeters(point, it) } ?: continue
-                    if (distance > 8_000) continue
-                    val relevance = sceneRelevance(kind, rawType, tags)
-                    add(
-                        ScenePointUi(
-                            id = "osm-${element.optString("type")}-${element.optLong("id")}",
-                            name = name,
-                            kind = kind.name,
-                            subtype = rawType,
-                            point = point,
-                            relevance = relevance,
-                            suggestionScore = (relevance * 100.0 - distance / 180.0).coerceAtLeast(1.0),
-                            distanceFromRouteMeters = distance.roundToInt(),
-                            suggestedDwellMinutes = kind.defaultDwellMinutes,
-                            url = tags.optString("website").takeIf { it.isNotBlank() },
-                            attribution = "© OpenStreetMap contributors",
-                        )
-                    )
-                }
-            }
-
-            val selected = mutableListOf<ScenePointUi>()
-            parsed
-                .distinctBy { it.name.lowercase(Locale.ROOT) }
-                .sortedByDescending { it.suggestionScore }
-                .forEach { candidate ->
-                    val tooClose = selected.any {
-                        it.kind == candidate.kind && haversineMeters(it.point, candidate.point) < 1_200
-                    }
-                    if (!tooClose) selected += candidate
-                }
-            return selected.take(18)
-        } finally {
-            connection.disconnect()
-        }
-    }
-
     private fun selectAutoStops(
         suggestions: List<ScenePointUi>,
         plan: TripPlan,
@@ -363,43 +295,6 @@ object OsmScenicRoutingFallback {
         return picked
     }
 
-    private fun rawSceneType(tags: JSONObject): String? = when {
-        tags.optString("amenity") == "place_of_worship" -> "worship"
-        tags.optString("tourism") == "viewpoint" -> "viewpoint"
-        tags.optString("tourism") == "museum" -> "museum"
-        tags.optString("tourism") == "artwork" -> "artwork"
-        tags.optString("tourism") == "attraction" -> "attraction"
-        tags.optString("historic").isNotBlank() -> tags.optString("historic")
-        tags.optString("natural").isNotBlank() -> tags.optString("natural")
-        tags.optString("leisure").isNotBlank() -> tags.optString("leisure")
-        tags.optString("man_made").isNotBlank() -> tags.optString("man_made")
-        tags.optString("bridge") == "yes" -> "bridge"
-        else -> null
-    }
-
-    private fun fallbackName(rawType: String): String = rawType
-        .replace('_', ' ')
-        .replaceFirstChar { it.uppercase() }
-
-    private fun sceneRelevance(kind: StopKind, rawType: String, tags: JSONObject): Double {
-        var score = when (kind) {
-            StopKind.VIEWPOINT -> 1.00
-            StopKind.WATER -> 0.94
-            StopKind.NATURE -> 0.91
-            StopKind.MONUMENT -> 0.88
-            StopKind.MUSEUM -> 0.82
-            StopKind.PARK -> 0.78
-            StopKind.ARCHITECTURE -> 0.76
-            StopKind.ART -> 0.73
-            StopKind.WORSHIP -> 0.68
-            StopKind.SCENIC -> 0.66
-            else -> 0.55
-        }
-        if (rawType == "castle" || rawType == "waterfall") score += 0.10
-        if (tags.optString("wikipedia").isNotBlank() || tags.optString("wikidata").isNotBlank()) score += 0.10
-        return score.coerceIn(0.0, 1.2)
-    }
-
     private fun debugScenicScore(
         avoidMotorways: Boolean,
         route: List<GeoPoint>,
@@ -416,7 +311,9 @@ object OsmScenicRoutingFallback {
                 turns += min(delta, 90.0) / 90.0
             }
             (turns / max(1, samples.size - 2)).coerceIn(0.0, 1.0)
-        } else 0.0
+        } else {
+            0.0
+        }
         val poiScore = (scenePoints.take(6).sumOf { it.relevance } / 6.0).coerceIn(0.0, 1.0)
         return (35 + bendScore * 30 + poiScore * 25 + if (avoidMotorways) 10 else 0).coerceIn(0.0, 100.0)
     }
@@ -424,17 +321,9 @@ object OsmScenicRoutingFallback {
     private fun routeSamples(route: List<GeoPoint>, maxSamples: Int): List<GeoPoint> {
         if (route.size <= maxSamples) return route
         val step = (route.size - 1).toDouble() / (maxSamples - 1).coerceAtLeast(1)
-        return (0 until maxSamples).map { index -> route[(index * step).roundToInt().coerceIn(0, route.lastIndex)] }
-    }
-
-    private fun elementPoint(element: JSONObject): GeoPoint? {
-        val lat = element.optDouble("lat", Double.NaN)
-        val lon = element.optDouble("lon", Double.NaN)
-        if (lat.isFinite() && lon.isFinite()) return GeoPoint(lat, lon)
-        val center = element.optJSONObject("center") ?: return null
-        val centerLat = center.optDouble("lat", Double.NaN)
-        val centerLon = center.optDouble("lon", Double.NaN)
-        return if (centerLat.isFinite() && centerLon.isFinite()) GeoPoint(centerLat, centerLon) else null
+        return (0 until maxSamples).map { index ->
+            route[(index * step).roundToInt().coerceIn(0, route.lastIndex)]
+        }
     }
 
     private fun decodePolyline6(encoded: String): List<GeoPoint> {
@@ -472,9 +361,16 @@ object OsmScenicRoutingFallback {
     private fun routeKey(route: RouteCandidateUi): String =
         "${(route.distanceMeters / 250).roundToInt()}:${(route.durationSeconds / 60).roundToInt()}"
 
-    private fun TripPlan.preferencesDisplayLimit(): Int = maxOf(6, maxStopsSafe())
-    private fun TripPlan.maxStopsSafe(): Int = 6
+    private fun bearing(a: GeoPoint, b: GeoPoint): Double {
+        val lat1 = Math.toRadians(a.lat)
+        val lat2 = Math.toRadians(b.lat)
+        val dLon = Math.toRadians(b.lon - a.lon)
+        val y = sin(dLon) * cos(lat2)
+        val x = cos(lat1) * sin(lat2) - sin(lat1) * cos(lat2) * cos(dLon)
+        return (Math.toDegrees(atan2(y, x)) + 360) % 360
+    }
 
+    @Suppress("unused")
     private fun haversineMeters(a: GeoPoint, b: GeoPoint): Double {
         val earth = 6_371_000.0
         val dLat = Math.toRadians(b.lat - a.lat)
@@ -483,14 +379,5 @@ object OsmScenicRoutingFallback {
         val lat2 = Math.toRadians(b.lat)
         val h = sin(dLat / 2).pow(2) + cos(lat1) * cos(lat2) * sin(dLon / 2).pow(2)
         return 2 * earth * asin(sqrt(h.coerceIn(0.0, 1.0)))
-    }
-
-    private fun bearing(a: GeoPoint, b: GeoPoint): Double {
-        val lat1 = Math.toRadians(a.lat)
-        val lat2 = Math.toRadians(b.lat)
-        val dLon = Math.toRadians(b.lon - a.lon)
-        val y = sin(dLon) * cos(lat2)
-        val x = cos(lat1) * sin(lat2) - sin(lat1) * cos(lat2) * cos(dLon)
-        return (Math.toDegrees(atan2(y, x)) + 360) % 360
     }
 }
