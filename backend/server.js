@@ -2,6 +2,7 @@ import http from "node:http";
 import { rankRoutes } from "./scenic-score.js";
 import { analyzeCorridor } from "./corridor-analyzer.js";
 import { enrichRouteFromOsm } from "./osm-enrichment.js";
+import { enrichTopFoodAlongRoute } from "./food-enrichment.js";
 import { tomTomRoute } from "./tomtom.js";
 import { tomTomSearch } from "./tomtom-search.js";
 
@@ -54,7 +55,7 @@ function dedupeCandidates(candidates) {
   });
 }
 
-async function enrichCandidate(candidate, enabledSceneKinds) {
+async function enrichCandidate(candidate, enabledSceneKinds, preferences) {
   let enrichment = { observations: [], source: "geometry-only" };
   if (process.env.OSM_ENRICHMENT_URL) {
     try {
@@ -68,9 +69,17 @@ async function enrichCandidate(candidate, enabledSceneKinds) {
     }
   }
 
+  const topFood = await enrichTopFoodAlongRoute({
+    points: candidate.points,
+    apiKey: process.env.GOOGLE_PLACES_API_KEY,
+    preferences,
+    enabledSceneKinds,
+  });
+
+  const observations = [...enrichment.observations, ...topFood];
   const analysis = analyzeCorridor({
     points: candidate.points,
-    observations: enrichment.observations,
+    observations,
     enabledSceneKinds,
   });
 
@@ -82,6 +91,7 @@ async function enrichCandidate(candidate, enabledSceneKinds) {
     scenePoints: analysis.scenePoints,
     corridor: {
       source: enrichment.source,
+      verifiedTopFoodCount: topFood.length,
       diagnostics: analysis.diagnostics,
       degradedReason: enrichment.reason,
     },
@@ -113,7 +123,8 @@ const server = http.createServer(async (req, res) => {
       ok: true,
       service: "scenic-path-backend",
       version: "0.3.0",
-      corridorEnrichment: process.env.OSM_ENRICHMENT_URL ? "configured" : "geometry-only"
+      corridorEnrichment: process.env.OSM_ENRICHMENT_URL ? "configured" : "geometry-only",
+      verifiedFood: process.env.GOOGLE_PLACES_API_KEY ? "configured" : "disabled"
     });
   }
 
@@ -187,7 +198,7 @@ const server = http.createServer(async (req, res) => {
       ];
 
       const enriched = await Promise.all(
-        dedupeCandidates(rawCandidates).map(candidate => enrichCandidate(candidate, enabledSceneKinds))
+        dedupeCandidates(rawCandidates).map(candidate => enrichCandidate(candidate, enabledSceneKinds, body.preferences))
       );
       const ranked = rankRoutes(enriched, body.preferences);
 
