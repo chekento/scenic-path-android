@@ -7,7 +7,6 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
-import androidx.compose.material.icons.filled.Language
 import androidx.compose.material.icons.filled.Map
 import androidx.compose.material.icons.filled.OpenInNew
 import androidx.compose.material3.*
@@ -21,6 +20,7 @@ import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
+import kotlin.math.hypot
 import org.maplibre.android.camera.CameraUpdateFactory
 import org.maplibre.android.geometry.LatLng
 import org.maplibre.android.geometry.LatLngBounds
@@ -180,15 +180,22 @@ fun ScenicMap(
                             map.uiSettings.isAttributionEnabled = true
                             map.uiSettings.isLogoEnabled = true
                             map.addOnMapClickListener { latLng ->
-                                val screenPoint = map.projection.toScreenLocation(latLng)
-                                val features = map.queryRenderedFeatures(
-                                    screenPoint,
-                                    arrayOf(HIGHLIGHT_SYMBOL_LAYER, HIGHLIGHT_LAYER),
-                                )
-                                val id = features.firstOrNull()
-                                    ?.takeIf { it.hasProperty("id") }
-                                    ?.getStringProperty("id")
-                                val hit = latestVisibleHighlights.firstOrNull { it.id == id }
+                                // Resolve a marker by screen-space distance rather than relying on
+                                // GeoJSON convenience methods that differ across MapLibre versions.
+                                val tap = map.projection.toScreenLocation(latLng)
+                                val hit = latestVisibleHighlights
+                                    .mapNotNull { highlight ->
+                                        val marker = map.projection.toScreenLocation(
+                                            LatLng(highlight.point.lat, highlight.point.lon)
+                                        )
+                                        val distance = hypot(
+                                            (marker.x - tap.x).toDouble(),
+                                            (marker.y - tap.y).toDouble(),
+                                        )
+                                        if (distance <= 44.0) highlight to distance else null
+                                    }
+                                    .minByOrNull { it.second }
+                                    ?.first
                                 if (hit != null) {
                                     selectedHighlight = hit
                                     true
