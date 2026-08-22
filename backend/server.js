@@ -3,6 +3,7 @@ import { rankRoutes } from "./scenic-score.js";
 import { analyzeCorridor } from "./corridor-analyzer.js";
 import { enrichRouteFromOsm } from "./osm-enrichment.js";
 import { enrichTopFoodAlongRoute } from "./food-enrichment.js";
+import { selectSceneSuggestions } from "./scene-suggestions.js";
 import { tomTomRoute } from "./tomtom.js";
 import { tomTomSearch } from "./tomtom-search.js";
 
@@ -55,7 +56,7 @@ function dedupeCandidates(candidates) {
   });
 }
 
-async function enrichCandidate(candidate, enabledSceneKinds, preferences) {
+async function enrichCandidate(candidate, enabledSceneKinds, preferences, autoSuggestStops) {
   let enrichment = { observations: [], source: "geometry-only" };
   if (process.env.OSM_ENRICHMENT_URL) {
     try {
@@ -69,7 +70,7 @@ async function enrichCandidate(candidate, enabledSceneKinds, preferences) {
     }
   }
 
-  const topFood = await enrichTopFoodAlongRoute({
+  const topFood = candidate.character === "DIRECT" ? [] : await enrichTopFoodAlongRoute({
     points: candidate.points,
     apiKey: process.env.GOOGLE_PLACES_API_KEY,
     preferences,
@@ -82,13 +83,19 @@ async function enrichCandidate(candidate, enabledSceneKinds, preferences) {
     observations,
     enabledSceneKinds,
   });
+  const scenePoints = autoSuggestStops === false ? [] : selectSceneSuggestions({
+    points: candidate.points,
+    observations,
+    enabledSceneKinds,
+    maxStops: preferences.maxStops ?? 5,
+  });
 
   return {
     ...candidate,
     factors: analysis.factors,
     motorwayShare: analysis.motorwayShare,
     industrialShare: analysis.industrialShare,
-    scenePoints: analysis.scenePoints,
+    scenePoints,
     corridor: {
       source: enrichment.source,
       verifiedTopFoodCount: topFood.length,
@@ -198,7 +205,9 @@ const server = http.createServer(async (req, res) => {
       ];
 
       const enriched = await Promise.all(
-        dedupeCandidates(rawCandidates).map(candidate => enrichCandidate(candidate, enabledSceneKinds, body.preferences))
+        dedupeCandidates(rawCandidates).map(candidate =>
+          enrichCandidate(candidate, enabledSceneKinds, body.preferences, body.autoSuggestStops)
+        )
       );
       const ranked = rankRoutes(enriched, body.preferences);
 
@@ -214,6 +223,7 @@ const server = http.createServer(async (req, res) => {
           mode: body.mode ?? "QUICK",
           routeCharacter: body.routeCharacter ?? "BEAUTIFUL",
           enabledSceneKinds,
+          autoSuggestStops: body.autoSuggestStops !== false,
           preserveScenicIntentOnReroute: body.preserveScenicIntentOnReroute !== false
         },
         note: process.env.OSM_ENRICHMENT_URL
