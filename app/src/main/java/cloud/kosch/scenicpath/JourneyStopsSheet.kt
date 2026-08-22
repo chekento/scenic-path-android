@@ -15,14 +15,15 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
 import kotlin.math.ln
 import kotlin.math.roundToInt
 
 /**
- * Stable Smart Stops surface.
- *
- * A fixed dialog avoids the draggable-sheet/list gesture conflict. Recommendations are
- * rendered category-first so a common category can never visually hide a rarer one.
+ * Smart Stops is the route-wide POI browser. The automatic pass combines the cheap Photon
+ * path with the resilient precision Overpass families. A manual refresh widens that scan.
  */
 @Composable
 fun JourneyStopsSheet(
@@ -47,36 +48,55 @@ fun JourneyStopsSheet(
             enrichmentLoading = false
             return@LaunchedEffect
         }
+
         enrichmentLoading = true
         enrichmentFailed = false
         val result = runCatching {
-            val normal = FastRoutePoiDiscovery.discover(
-                route = current.points,
+            val (fast, precision) = coroutineScope {
+                val fastJob = async(Dispatchers.IO) {
+                    FastRoutePoiDiscovery.discover(
+                        route = current.points,
+                        enabledKinds = prototypeSelectableSceneKinds,
+                        maxResults = 150,
+                    )
+                }
+                val precisionJob = async(Dispatchers.IO) {
+                    PrecisionRoutePoiDiscovery.discover(
+                        route = current.points,
+                        enabledKinds = prototypeSelectableSceneKinds,
+                        maxResults = 220,
+                        radiusMeters = 15_000,
+                        maxSamples = 10,
+                    )
+                }
+                fastJob.await() to precisionJob.await()
+            }
+
+            var combined = FastRoutePoiDiscovery.mergeResults(
+                first = fast,
+                second = precision,
                 enabledKinds = prototypeSelectableSceneKinds,
-                maxResults = 90,
+                maxResults = 240,
             )
-            if (refreshToken == 0) {
-                normal
-            } else {
-                // A user-triggered refresh deliberately searches a wider corridor and more
-                // route anchors than the fast automatic pass. This is opt-in so public
-                // development endpoints remain bounded during normal interaction.
-                val deep = FastRoutePoiDiscovery.discoverTargetedOnly(
+
+            if (refreshToken > 0) {
+                val deep = PrecisionRoutePoiDiscovery.discover(
                     route = current.points,
                     enabledKinds = prototypeSelectableSceneKinds,
-                    maxResults = 140,
+                    maxResults = 340,
                     radiusMeters = 30_000,
-                    maxSamples = 12,
-                    allowBackfill = true,
+                    maxSamples = 14,
                 )
-                FastRoutePoiDiscovery.mergeResults(
-                    first = normal,
+                combined = FastRoutePoiDiscovery.mergeResults(
+                    first = combined,
                     second = deep,
                     enabledKinds = prototypeSelectableSceneKinds,
-                    maxResults = 140,
+                    maxResults = 340,
                 )
             }
+            combined
         }
+
         enriched = result.getOrElse { emptyList() }
         enrichmentFailed = result.isFailure
         enrichmentLoading = false
@@ -94,7 +114,7 @@ fun JourneyStopsSheet(
             enriched.forEach { candidate ->
                 val duplicate = any { existing ->
                     existing.id == candidate.id ||
-                        existing.name.equals(candidate.name, ignoreCase = true)
+                        (existing.name.equals(candidate.name, ignoreCase = true) && existing.kind == candidate.kind)
                 }
                 if (!duplicate) add(candidate)
             }
@@ -104,6 +124,7 @@ fun JourneyStopsSheet(
     LaunchedEffect(route?.id, merged) {
         val current = route
         if (current != null && current.points.size >= 2) {
+            // The exact Smart Stops result set is the map result set as well.
             ScenicPoiSharedState.publish(current.points, merged)
         }
     }
@@ -166,7 +187,7 @@ fun JourneyStopsSheet(
                         Column(Modifier.weight(1f)) {
                             Text("Smart Stops", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
                             Text(
-                                "Every Scenic Category gets its own result lane.",
+                                "Precision search across the complete route corridor.",
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
                         }
@@ -194,7 +215,7 @@ fun JourneyStopsSheet(
                                 )
                                 if (enrichmentLoading) {
                                     Text(
-                                        "Searching all ${scenicCategoryLanes.size} Scenic Categories… ${merged.size} route candidates available",
+                                        "Searching all ${scenicCategoryLanes.size} Scenic Categories… ${merged.size} route candidates already available",
                                         style = MaterialTheme.typography.bodySmall,
                                         fontWeight = FontWeight.SemiBold,
                                     )
@@ -206,11 +227,11 @@ fun JourneyStopsSheet(
                                     )
                                 }
                                 if (!enrichmentLoading && missingCategories.isNotEmpty()) {
-                                    val preview = missingCategories.take(8)
+                                    val preview = missingCategories.take(7)
                                     val rest = missingCategories.size - preview.size
                                     Text(
                                         buildString {
-                                            append("Still missing in this corridor: ")
+                                            append("No mapped result yet: ")
                                             append(preview.joinToString { "${it.emoji} ${it.label}" })
                                             if (rest > 0) append(" · +$rest more")
                                         },
@@ -234,7 +255,7 @@ fun JourneyStopsSheet(
                                 Icon(Icons.Default.Refresh, null)
                             }
                             Spacer(Modifier.width(8.dp))
-                            Text(if (enrichmentLoading) "Refreshing Smart Stops…" else "Refresh Smart Stops")
+                            Text(if (enrichmentLoading) "Searching route corridor…" else "Deep refresh Smart Stops")
                         }
                     }
 
@@ -253,8 +274,8 @@ fun JourneyStopsSheet(
                                 CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
                                 Spacer(Modifier.width(8.dp))
                                 Text(
-                                    if (refreshToken > 0) "Deep-scanning the full route corridor…"
-                                    else "Searching the full corridor for missing categories…",
+                                    if (refreshToken > 0) "Deep-scanning more route anchors and a wider corridor…"
+                                    else "Scanning FOOD, heritage, culture, architecture and nature independently…",
                                     style = MaterialTheme.typography.bodySmall,
                                 )
                             }
@@ -265,7 +286,7 @@ fun JourneyStopsSheet(
                         item(key = "enrichment-failed") {
                             Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer)) {
                                 Text(
-                                    "Some public development POI services did not answer. Existing route results are still shown; use Refresh Smart Stops to try again.",
+                                    "One or more public development POI services did not answer. Existing results remain available; Deep refresh can retry independently.",
                                     modifier = Modifier.padding(12.dp),
                                     style = MaterialTheme.typography.bodySmall,
                                     color = MaterialTheme.colorScheme.onErrorContainer,
@@ -280,7 +301,7 @@ fun JourneyStopsSheet(
                             Row(verticalAlignment = Alignment.CenterVertically) {
                                 Text("🍽️", style = MaterialTheme.typography.titleLarge)
                                 Spacer(Modifier.width(7.dp))
-                                Text("Top Food pick", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                                Text("Best restaurant / café candidate", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
                             }
                         }
                         item(key = "top-food-${food.id}") {
@@ -298,29 +319,28 @@ fun JourneyStopsSheet(
                         item(key = "lane-title-${lane.id}") {
                             CategoryHeader(lane, count = laneCount)
                         }
-
-                        if (lane.id == "top-food" && topFood != null) {
+                        if (lane.id == "restaurants-cafes" && topFood != null) {
                             item(key = "lane-food-note") {
                                 Text(
-                                    "The strongest food candidate is highlighted above.",
+                                    "The strongest candidate is highlighted above; additional restaurants and cafés remain listed here.",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+                        }
+
+                        val candidates = availableByCategory[lane.id].orEmpty().take(6)
+                        if (candidates.isEmpty()) {
+                            item(key = "lane-empty-${lane.id}") {
+                                Text(
+                                    if (enrichmentLoading) "Searching…" else "No mapped candidate found in the current corridor.",
                                     style = MaterialTheme.typography.bodySmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 )
                             }
                         } else {
-                            val candidates = availableByCategory[lane.id].orEmpty().take(3)
-                            if (candidates.isEmpty()) {
-                                item(key = "lane-empty-${lane.id}") {
-                                    Text(
-                                        if (enrichmentLoading) "Searching…" else "No mapped candidate found in the current search corridor.",
-                                        style = MaterialTheme.typography.bodySmall,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    )
-                                }
-                            } else {
-                                items(candidates, key = { "lane-${lane.id}-${it.id}" }) { stop ->
-                                    AlternativeStopRow(stop, onClick = { onAddAlternative(stop) })
-                                }
+                            items(candidates, key = { "lane-${lane.id}-${it.id}" }) { stop ->
+                                AlternativeStopRow(stop, onClick = { onAddAlternative(stop) })
                             }
                         }
                     }
@@ -364,11 +384,9 @@ private fun CategoryHeader(lane: ScenicCategoryLane, count: Int) {
 private fun foodPickScore(stop: ScenePointUi): Double {
     val rating = stop.rating
     val reviews = stop.ratingCount ?: 0
-    val verified = if (rating != null) {
-        rating * 20.0 + ln((reviews + 1).toDouble()) * 4.0
-    } else 0.0
-    val restaurantBonus = if (stop.subtype.equals("restaurant", ignoreCase = true)) 8.0 else 0.0
-    val detourPenalty = stop.distanceFromRouteMeters / 700.0
+    val verified = if (rating != null) rating * 20.0 + ln((reviews + 1).toDouble()) * 4.0 else 0.0
+    val restaurantBonus = if (stop.subtype.equals("restaurant", ignoreCase = true)) 12.0 else 0.0
+    val detourPenalty = stop.distanceFromRouteMeters / 800.0
     return verified + stop.suggestionScore + restaurantBonus - detourPenalty
 }
 
@@ -397,13 +415,13 @@ private fun TopFoodRow(stop: ScenePointUi, onClick: () -> Unit) {
             }
             Text(
                 if (stop.rating != null) "Verified rating-based food candidate."
-                else "Best available route-food candidate from OSM metadata. Verified ratings require the configured food provider.",
+                else "Best mapped route-food candidate. OSM supplies the place; verified consumer ratings require the configured food provider.",
                 style = MaterialTheme.typography.bodySmall,
             )
             Button(onClick = onClick, modifier = Modifier.fillMaxWidth()) {
                 Icon(Icons.Default.AddLocationAlt, null)
                 Spacer(Modifier.width(7.dp))
-                Text("Add Top Food to route")
+                Text("Add to route")
             }
         }
     }
