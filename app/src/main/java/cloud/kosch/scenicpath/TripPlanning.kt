@@ -13,29 +13,18 @@ enum class RouteCharacter(val label: String) {
     CUSTOM("Custom")
 }
 
-enum class StopKind(val label: String) {
-    VIEWPOINT("Viewpoint"),
-    NATURE("Nature"),
-    WATER("Water"),
-    CULTURE("Culture"),
-    MUSEUM("Museum"),
-    ARCHITECTURE("Architecture"),
-    PARK("Park"),
-    FOOD("Top food"),
-    CUSTOM("Custom")
-}
-
 data class PlannedStop(
     val id: String,
     val name: String,
     val kind: StopKind,
-    val dwellMinutes: Int = 30,
+    val dwellMinutes: Int = kind.defaultDwellMinutes,
     val locked: Boolean = false,
     val mustVisit: Boolean = true,
     val point: GeoPoint? = null,
     val subtitle: String? = null,
     val rating: Double? = null,
     val ratingCount: Int? = null,
+    val subtype: String? = null,
 )
 
 data class TripPlan(
@@ -47,6 +36,7 @@ data class TripPlan(
     val flexibleStopOrder: Boolean = true,
     val autoSuggestStops: Boolean = true,
     val preserveScenicIntentOnReroute: Boolean = true,
+    val enabledSceneKinds: Set<StopKind> = prototypeSelectableSceneKinds,
 )
 
 fun ScenicPreferences.forCharacter(character: RouteCharacter): ScenicPreferences = when (character) {
