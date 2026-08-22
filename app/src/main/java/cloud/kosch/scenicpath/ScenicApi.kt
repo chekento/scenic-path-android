@@ -69,8 +69,6 @@ object ScenicApi {
         val backend = runCatching { searchBackend(query.trim(), bias) }.getOrNull().orEmpty()
         if (backend.isNotEmpty()) return@withContext backend
 
-        // Device Geocoder is a usability fallback for development/offline-backend testing.
-        // Production search remains provider-backed through the Scenic Path backend.
         searchDeviceGeocoder(context, query.trim())
     }
 
@@ -80,10 +78,14 @@ object ScenicApi {
         plan: TripPlan,
         preferences: ScenicPreferences,
     ): Result<RoutePlanUi> = withContext(Dispatchers.IO) {
-        runCatching { planBackend(origin, destination, plan, preferences) }
+        val effectivePreferences = preferences.forCharacter(plan.routeCharacter)
+        runCatching { planBackend(origin, destination, plan, effectivePreferences) }
             .recoverCatching { backendError ->
                 if (!BuildConfig.DEBUG) throw backendError
-                debugOsrmFallback(origin, destination, plan)
+                // Physical-device development must still respect Scenic Path intent.
+                // Unlike the old OSRM geometry-only fallback, this OSM/Valhalla path
+                // honors motorway avoidance and can discover/insert scenic waypoints.
+                OsmScenicRoutingFallback.plan(origin, destination, plan, effectivePreferences)
             }
     }
 
@@ -256,49 +258,6 @@ object ScenicApi {
             val lat = p.optDouble("lat", Double.NaN)
             val lon = p.optDouble("lon", Double.NaN)
             if (lat.isFinite() && lon.isFinite()) add(GeoPoint(lat, lon))
-        }
-    }
-
-    /** Debug-only route preview. Never used in release builds. */
-    private fun debugOsrmFallback(
-        origin: GeoPoint,
-        destination: GeoPoint,
-        plan: TripPlan,
-    ): RoutePlanUi {
-        val coordinates = buildList {
-            add(origin)
-            plan.stops.mapNotNullTo(this) { it.point }
-            add(destination)
-        }.joinToString(";") { "${it.lon},${it.lat}" }
-
-        val url = "https://router.project-osrm.org/route/v1/driving/$coordinates?overview=full&geometries=geojson&steps=false"
-        val connection = open(url, "GET", timeoutMs = 7_000)
-        return connection.useJson { response ->
-            val route = response.optJSONArray("routes")?.optJSONObject(0)
-                ?: error("No debug preview route returned")
-            val coords = route.optJSONObject("geometry")?.optJSONArray("coordinates") ?: JSONArray()
-            val points = buildList {
-                for (i in 0 until coords.length()) {
-                    val pair = coords.optJSONArray(i) ?: continue
-                    if (pair.length() >= 2) add(GeoPoint(pair.optDouble(1), pair.optDouble(0)))
-                }
-            }
-            RoutePlanUi(
-                candidates = listOf(
-                    RouteCandidateUi(
-                        id = "debug-preview",
-                        character = "DIRECT",
-                        distanceMeters = route.optDouble("distance", 0.0),
-                        durationSeconds = route.optDouble("duration", 0.0),
-                        scenicScore = 0.0,
-                        extraMinutes = 0.0,
-                        points = points,
-                        provider = "OSRM debug preview",
-                        isPreviewFallback = true,
-                    )
-                ),
-                note = "Debug preview only — ScenicScore requires the Scenic Path backend.",
-            )
         }
     }
 
