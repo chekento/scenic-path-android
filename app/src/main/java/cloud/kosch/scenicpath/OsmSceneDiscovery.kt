@@ -11,7 +11,6 @@ import java.util.Locale
 import kotlin.math.asin
 import kotlin.math.cos
 import kotlin.math.max
-import kotlin.math.min
 import kotlin.math.pow
 import kotlin.math.roundToInt
 import kotlin.math.sin
@@ -43,7 +42,7 @@ object OsmSceneDiscovery {
             else -> 6
         }
         val samples = routeSamples(route, sampleCount)
-        val routeForDistance = routeSamples(route, 100)
+        val routeForDistance = routeSamples(route, 110)
         val collected = linkedMapOf<String, JSONObject>()
 
         for (sample in samples) {
@@ -55,7 +54,7 @@ object OsmSceneDiscovery {
                 if (type.isBlank() || id < 0) continue
                 collected.putIfAbsent("$type:$id", element)
             }
-            if (collected.size >= 80) break
+            if (collected.size >= 110) break
         }
 
         val parsed = buildList {
@@ -68,7 +67,7 @@ object OsmSceneDiscovery {
                 if (kind != StopKind.SCENIC && kind !in enabledKinds) return@forEach
 
                 val distance = routeForDistance.minOfOrNull { haversineMeters(point, it) } ?: return@forEach
-                if (distance > 10_000) return@forEach
+                if (distance > 12_000) return@forEach
 
                 val relevance = sceneRelevance(kind, rawType, tags)
                 val name = tags.optString("name").ifBlank { fallbackName(rawType) }
@@ -84,9 +83,9 @@ object OsmSceneDiscovery {
                         subtype = rawType,
                         point = point,
                         relevance = relevance,
-                        suggestionScore = (relevance * 100.0 - distance / 220.0).coerceAtLeast(1.0),
+                        suggestionScore = (relevance * 100.0 - distance / 240.0).coerceAtLeast(1.0),
                         distanceFromRouteMeters = distance.roundToInt(),
-                        suggestedDwellMinutes = kind.defaultDwellMinutes,
+                        suggestedDwellMinutes = dwellFor(rawType, kind),
                         url = website,
                         attribution = "© OpenStreetMap contributors",
                     )
@@ -109,7 +108,7 @@ object OsmSceneDiscovery {
     }
 
     private fun queryOneWindow(sample: GeoPoint, enabledKinds: Set<StopKind>): JSONArray {
-        val radius = 9_000
+        val radius = 10_000
         val clauses = buildList {
             if (StopKind.VIEWPOINT in enabledKinds) add("nwr(around:$radius,${sample.lat},${sample.lon})[tourism=viewpoint];")
             if (StopKind.MUSEUM in enabledKinds) add("nwr(around:$radius,${sample.lat},${sample.lon})[tourism=museum];")
@@ -118,7 +117,10 @@ object OsmSceneDiscovery {
                 add("nwr(around:$radius,${sample.lat},${sample.lon})[amenity=arts_centre];")
             }
             if (StopKind.MONUMENT in enabledKinds || StopKind.WORSHIP in enabledKinds) {
+                // Broad historic query deliberately includes castles, palaces, stately homes,
+                // manor houses, forts, ruins, memorials and historic religious buildings.
                 add("nwr(around:$radius,${sample.lat},${sample.lon})[historic];")
+                add("nwr(around:$radius,${sample.lat},${sample.lon})[castle_type];")
             }
             if (StopKind.NATURE in enabledKinds) {
                 add("nwr(around:$radius,${sample.lat},${sample.lon})[natural~\"^(peak|cape|stone)$\"];")
@@ -142,7 +144,7 @@ object OsmSceneDiscovery {
         }
 
         if (clauses.isEmpty()) return JSONArray()
-        val query = "[out:json][timeout:10];(${clauses.joinToString("\n")});out center tags 80;"
+        val query = "[out:json][timeout:10];(${clauses.joinToString("\n")});out center tags 100;"
         val encoded = "data=" + URLEncoder.encode(query, Charsets.UTF_8.name())
         var lastError: Throwable? = null
 
@@ -172,26 +174,49 @@ object OsmSceneDiscovery {
         throw lastError ?: IllegalStateException("OSM scene discovery unavailable")
     }
 
-    private fun rawSceneType(tags: JSONObject): String? = when {
-        tags.optString("amenity") == "place_of_worship" -> "worship"
-        tags.optString("amenity") == "arts_centre" -> "artwork"
-        tags.optString("tourism") == "viewpoint" -> "viewpoint"
-        tags.optString("tourism") == "museum" -> "museum"
-        tags.optString("tourism") == "artwork" -> "artwork"
-        tags.optString("tourism") == "gallery" -> "gallery"
-        tags.optString("tourism") == "attraction" -> "attraction"
-        tags.optString("waterway") == "waterfall" -> "waterfall"
-        tags.optString("historic").isNotBlank() -> tags.optString("historic")
-        tags.optString("natural").isNotBlank() -> tags.optString("natural")
-        tags.optString("leisure").isNotBlank() -> tags.optString("leisure")
-        tags.optString("man_made").isNotBlank() -> tags.optString("man_made")
-        tags.optString("bridge") == "yes" -> "bridge"
-        else -> null
+    private fun rawSceneType(tags: JSONObject): String? {
+        val historic = tags.optString("historic").lowercase()
+        val castleType = tags.optString("castle_type").lowercase()
+        return when {
+            tags.optString("amenity") == "place_of_worship" -> "worship"
+            tags.optString("amenity") == "arts_centre" -> "artwork"
+            tags.optString("tourism") == "viewpoint" -> "viewpoint"
+            tags.optString("tourism") == "museum" -> "museum"
+            tags.optString("tourism") == "artwork" -> "artwork"
+            tags.optString("tourism") == "gallery" -> "gallery"
+            historic == "castle" && castleType == "manor" -> "manor"
+            historic == "castle" && castleType == "palace" -> "palace"
+            historic == "castle" && castleType == "stately" -> "stately"
+            historic == "castle" && castleType == "defensive" -> "defensive_castle"
+            historic == "castle" -> "castle"
+            historic == "manor" || historic == "manor_house" -> "manor"
+            historic == "palace" -> "palace"
+            tags.optString("tourism") == "attraction" -> "attraction"
+            tags.optString("waterway") == "waterfall" -> "waterfall"
+            historic.isNotBlank() -> historic
+            tags.optString("natural").isNotBlank() -> tags.optString("natural")
+            tags.optString("leisure").isNotBlank() -> tags.optString("leisure")
+            tags.optString("man_made").isNotBlank() -> tags.optString("man_made")
+            tags.optString("bridge") == "yes" -> "bridge"
+            else -> null
+        }
     }
 
-    private fun fallbackName(rawType: String): String = rawType
-        .replace('_', ' ')
-        .replaceFirstChar { it.uppercase() }
+    private fun fallbackName(rawType: String): String = when (rawType) {
+        "defensive_castle" -> "Castle"
+        "stately" -> "Stately home"
+        "palace" -> "Palace"
+        "manor" -> "Manor house"
+        else -> rawType.replace('_', ' ').replaceFirstChar { it.uppercase() }
+    }
+
+    private fun dwellFor(rawType: String, kind: StopKind): Int = when (rawType) {
+        "castle", "defensive_castle", "stately", "palace", "manor" -> 30
+        "ruins" -> 25
+        "viewpoint" -> 12
+        "waterfall", "beach" -> 25
+        else -> kind.defaultDwellMinutes
+    }
 
     private fun sceneRelevance(kind: StopKind, rawType: String, tags: JSONObject): Double {
         var score = when (kind) {
@@ -207,9 +232,14 @@ object OsmSceneDiscovery {
             StopKind.SCENIC -> 0.68
             else -> 0.55
         }
-        if (rawType == "castle" || rawType == "waterfall" || rawType == "lighthouse") score += 0.10
+        when (rawType) {
+            "castle", "defensive_castle" -> score += 0.22
+            "stately", "palace", "manor" -> score += 0.20
+            "waterfall", "lighthouse" -> score += 0.12
+        }
+        if (tags.optString("heritage").isNotBlank()) score += 0.06
         if (tags.optString("wikipedia").isNotBlank() || tags.optString("wikidata").isNotBlank()) score += 0.10
-        return score.coerceIn(0.0, 1.2)
+        return score.coerceIn(0.0, 1.3)
     }
 
     private fun routeSamples(route: List<GeoPoint>, maxSamples: Int): List<GeoPoint> {
