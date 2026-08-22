@@ -1,18 +1,21 @@
 package cloud.kosch.scenicpath
 
 import android.content.Context
+import android.content.Intent
+import android.net.Uri
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Language
 import androidx.compose.material.icons.filled.Map
-import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.Icon
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Text
+import androidx.compose.material.icons.filled.OpenInNew
+import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.Lifecycle
@@ -23,8 +26,10 @@ import org.maplibre.android.geometry.LatLng
 import org.maplibre.android.geometry.LatLngBounds
 import org.maplibre.android.maps.MapLibreMap
 import org.maplibre.android.maps.MapView
+import org.maplibre.android.style.expressions.Expression.get
 import org.maplibre.android.style.layers.CircleLayer
 import org.maplibre.android.style.layers.LineLayer
+import org.maplibre.android.style.layers.SymbolLayer
 import org.maplibre.android.style.layers.PropertyFactory.circleColor
 import org.maplibre.android.style.layers.PropertyFactory.circleOpacity
 import org.maplibre.android.style.layers.PropertyFactory.circleRadius
@@ -33,6 +38,11 @@ import org.maplibre.android.style.layers.PropertyFactory.circleStrokeWidth
 import org.maplibre.android.style.layers.PropertyFactory.lineColor
 import org.maplibre.android.style.layers.PropertyFactory.lineOpacity
 import org.maplibre.android.style.layers.PropertyFactory.lineWidth
+import org.maplibre.android.style.layers.PropertyFactory.textAllowOverlap
+import org.maplibre.android.style.layers.PropertyFactory.textColor
+import org.maplibre.android.style.layers.PropertyFactory.textField
+import org.maplibre.android.style.layers.PropertyFactory.textIgnorePlacement
+import org.maplibre.android.style.layers.PropertyFactory.textSize
 import org.maplibre.android.style.sources.GeoJsonSource
 import org.maplibre.geojson.Feature
 import org.maplibre.geojson.FeatureCollection
@@ -47,11 +57,10 @@ private const val STOP_SOURCE = "scenic-stop-source"
 private const val STOP_LAYER = "scenic-stop-layer"
 private const val HIGHLIGHT_SOURCE = "scenic-highlight-source"
 private const val HIGHLIGHT_LAYER = "scenic-highlight-layer"
+private const val HIGHLIGHT_SYMBOL_LAYER = "scenic-highlight-symbol-layer"
 
 /**
- * MapLibre host with deliberately boring lifecycle management.
- * GPS is supplied by FusedLocationProviderClient outside MapLibre, so a
- * location-engine failure cannot take down map startup.
+ * MapLibre host with stable lifecycle, manual GPS recentering and interactive scene POIs.
  */
 @Composable
 fun ScenicMap(
@@ -69,7 +78,27 @@ fun ScenicMap(
     var styleLoaded by remember { mutableStateOf(false) }
     var mapError by remember { mutableStateOf<String?>(null) }
     var lastHandledRecenterToken by remember { mutableIntStateOf(0) }
+    var localHighlights by remember { mutableStateOf<List<ScenePointUi>>(emptyList()) }
+    var selectedHighlight by remember { mutableStateOf<ScenePointUi?>(null) }
     val latestUserLocation by rememberUpdatedState(userLocation)
+    val visibleHighlights = if (highlights.isNotEmpty()) highlights else localHighlights
+    val latestVisibleHighlights by rememberUpdatedState(visibleHighlights)
+
+    LaunchedEffect(routePoints, highlights) {
+        selectedHighlight = null
+        if (routePoints.size < 2 || highlights.isNotEmpty() || !BuildConfig.DEBUG) {
+            localHighlights = emptyList()
+            return@LaunchedEffect
+        }
+        localHighlights = emptyList()
+        localHighlights = runCatching {
+            OsmSceneDiscovery.discover(
+                route = routePoints,
+                enabledKinds = prototypeSelectableSceneKinds,
+                maxResults = 24,
+            )
+        }.getOrElse { emptyList() }
+    }
 
     val mapView = remember(context) {
         runCatching {
@@ -150,10 +179,28 @@ fun ScenicMap(
                             map.uiSettings.isCompassEnabled = true
                             map.uiSettings.isAttributionEnabled = true
                             map.uiSettings.isLogoEnabled = true
+                            map.addOnMapClickListener { latLng ->
+                                val screenPoint = map.projection.toScreenLocation(latLng)
+                                val features = map.queryRenderedFeatures(
+                                    screenPoint,
+                                    arrayOf(HIGHLIGHT_SYMBOL_LAYER, HIGHLIGHT_LAYER),
+                                )
+                                val id = features.firstOrNull()
+                                    ?.takeIf { it.hasProperty("id") }
+                                    ?.getStringProperty("id")
+                                val hit = latestVisibleHighlights.firstOrNull { it.id == id }
+                                if (hit != null) {
+                                    selectedHighlight = hit
+                                    true
+                                } else {
+                                    selectedHighlight = null
+                                    false
+                                }
+                            }
                             runCatching {
                                 map.setStyle(BuildConfig.MAP_STYLE_URL) {
                                     styleLoaded = true
-                                    updateMapData(map, userLocation, routePoints, stops, highlights)
+                                    updateMapData(map, userLocation, routePoints, stops, visibleHighlights)
                                 }
                             }.onFailure { error ->
                                 mapError = error.message ?: "Map style failed"
@@ -174,15 +221,34 @@ fun ScenicMap(
         mapError?.let { error ->
             MapStatusBadge(error, Modifier.align(Alignment.BottomStart).padding(12.dp))
         }
+
+        selectedHighlight?.let { highlight ->
+            ScenicLocationCard(
+                highlight = highlight,
+                onClose = { selectedHighlight = null },
+                onOpenWebsite = highlight.url?.let { url -> { openExternal(context, url) } },
+                onOpenOsm = {
+                    openExternal(
+                        context,
+                        "https://www.openstreetmap.org/?mlat=${highlight.point.lat}&mlon=${highlight.point.lon}#map=17/${highlight.point.lat}/${highlight.point.lon}",
+                    )
+                },
+                modifier = Modifier
+                    .align(Alignment.Center)
+                    .padding(horizontal = 18.dp)
+                    .fillMaxWidth()
+                    .widthIn(max = 420.dp),
+            )
+        }
     }
 
-    LaunchedEffect(userLocation, routePoints, stops, highlights, styleLoaded) {
-        if (styleLoaded) mapRef?.let { updateMapData(it, userLocation, routePoints, stops, highlights) }
+    LaunchedEffect(userLocation, routePoints, stops, visibleHighlights, styleLoaded) {
+        if (styleLoaded) {
+            mapRef?.let { updateMapData(it, userLocation, routePoints, stops, visibleHighlights) }
+        }
     }
 
-    // A newly calculated route should immediately make visual sense: show the whole
-    // journey, then leave camera movement entirely to the user until they explicitly
-    // tap Locate Me again.
+    // New routes show the whole journey once, then camera control stays with the user.
     LaunchedEffect(routePoints, styleLoaded) {
         if (styleLoaded && routePoints.size >= 2) {
             runCatching {
@@ -194,8 +260,7 @@ fun ScenicMap(
         }
     }
 
-    // Recenter exactly once per explicit Locate Me tap. GPS updates continue moving
-    // the blue position marker but never move the camera on their own.
+    // Recenter exactly once per explicit Locate Me tap.
     LaunchedEffect(recenterToken, styleLoaded) {
         if (styleLoaded && recenterToken > lastHandledRecenterToken) {
             latestUserLocation?.let { point ->
@@ -259,8 +324,10 @@ private fun updateMapData(
 
     val highlightFeatures = highlights.map { highlight ->
         Feature.fromGeometry(Point.fromLngLat(highlight.point.lon, highlight.point.lat)).also {
+            it.addStringProperty("id", highlight.id)
             it.addStringProperty("name", highlight.name)
             it.addStringProperty("kind", highlight.kind)
+            it.addStringProperty("symbol", mapSymbol(highlight.kind))
         }
     }
     val highlightSource = style.getSourceAs<GeoJsonSource>(HIGHLIGHT_SOURCE)
@@ -270,11 +337,20 @@ private fun updateMapData(
             style.addSource(GeoJsonSource(HIGHLIGHT_SOURCE, collection))
             style.addLayer(
                 CircleLayer(HIGHLIGHT_LAYER, HIGHLIGHT_SOURCE).withProperties(
-                    circleRadius(5f),
+                    circleRadius(11f),
                     circleColor("#2E7D32"),
-                    circleOpacity(0.78f),
+                    circleOpacity(0.92f),
                     circleStrokeColor("#FFFFFF"),
-                    circleStrokeWidth(1.5f),
+                    circleStrokeWidth(2.5f),
+                )
+            )
+            style.addLayer(
+                SymbolLayer(HIGHLIGHT_SYMBOL_LAYER, HIGHLIGHT_SOURCE).withProperties(
+                    textField(get("symbol")),
+                    textSize(12f),
+                    textColor("#FFFFFF"),
+                    textAllowOverlap(true),
+                    textIgnorePlacement(true),
                 )
             )
         } else {
@@ -299,7 +375,7 @@ private fun updateMapData(
             style.addSource(GeoJsonSource(STOP_SOURCE, collection))
             style.addLayer(
                 CircleLayer(STOP_LAYER, STOP_SOURCE).withProperties(
-                    circleRadius(7f),
+                    circleRadius(8f),
                     circleColor("#F59E0B"),
                     circleStrokeColor("#FFFFFF"),
                     circleStrokeWidth(2f),
@@ -310,6 +386,108 @@ private fun updateMapData(
         }
     } else {
         stopSource?.setGeoJson(FeatureCollection.fromFeatures(emptyArray<Feature>()))
+    }
+}
+
+private fun mapSymbol(kind: String): String = when (kind) {
+    "VIEWPOINT" -> "V"
+    "MUSEUM" -> "M"
+    "NATURE" -> "N"
+    "MONUMENT" -> "H"
+    "PARK" -> "P"
+    "ART" -> "A"
+    "WORSHIP" -> "W"
+    "WATER" -> "~"
+    "FOOD" -> "F"
+    "ARCHITECTURE" -> "B"
+    else -> "★"
+}
+
+private fun sceneTypeLabel(highlight: ScenePointUi): String {
+    val kind = StopKind.entries.firstOrNull { it.name == highlight.kind }?.label ?: "Scenic location"
+    val subtype = highlight.subtype
+        ?.replace('_', ' ')
+        ?.replaceFirstChar { it.uppercase() }
+        ?.takeIf { it.isNotBlank() && !kind.contains(it, ignoreCase = true) }
+    return listOfNotNull(kind, subtype).joinToString(" · ")
+}
+
+@Composable
+private fun ScenicLocationCard(
+    highlight: ScenePointUi,
+    onClose: () -> Unit,
+    onOpenWebsite: (() -> Unit)?,
+    onOpenOsm: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Card(
+        modifier = modifier,
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.98f)),
+        elevation = CardDefaults.cardElevation(defaultElevation = 10.dp),
+    ) {
+        Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(9.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Surface(
+                    shape = MaterialTheme.shapes.large,
+                    color = MaterialTheme.colorScheme.secondaryContainer,
+                ) {
+                    Text(
+                        mapSymbol(highlight.kind),
+                        modifier = Modifier.padding(horizontal = 11.dp, vertical = 7.dp),
+                        fontWeight = FontWeight.Bold,
+                    )
+                }
+                Spacer(Modifier.width(10.dp))
+                Column(Modifier.weight(1f)) {
+                    Text(highlight.name, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                    Text(
+                        sceneTypeLabel(highlight),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                IconButton(onClick = onClose) { Icon(Icons.Default.Close, "Close location info") }
+            }
+
+            val details = buildList {
+                if (highlight.distanceFromRouteMeters > 0) add("${highlight.distanceFromRouteMeters} m from route")
+                add("Suggested stop ${highlight.suggestedDwellMinutes} min")
+                highlight.rating?.let { add(String.format("%.1f★", it)) }
+            }
+            Text(details.joinToString(" · "), style = MaterialTheme.typography.bodyMedium)
+
+            if (!highlight.attribution.isNullOrBlank()) {
+                Text(
+                    highlight.attribution,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                OutlinedButton(onClick = onOpenOsm, modifier = Modifier.weight(1f)) {
+                    Icon(Icons.Default.Map, null, Modifier.size(18.dp))
+                    Spacer(Modifier.width(6.dp))
+                    Text("OpenStreetMap")
+                }
+                if (onOpenWebsite != null) {
+                    Button(onClick = onOpenWebsite, modifier = Modifier.weight(1f)) {
+                        Icon(Icons.Default.OpenInNew, null, Modifier.size(18.dp))
+                        Spacer(Modifier.width(6.dp))
+                        Text("Website")
+                    }
+                }
+            }
+        }
+    }
+}
+
+private fun openExternal(context: Context, url: String) {
+    runCatching {
+        context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
     }
 }
 
