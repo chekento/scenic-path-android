@@ -3,6 +3,7 @@ package cloud.kosch.scenicpath
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
@@ -20,10 +21,8 @@ import kotlin.math.roundToInt
 /**
  * Stable Smart Stops surface.
  *
- * This intentionally is NOT a ModalBottomSheet anymore. The sheet drag state and the
- * scrolling list were still competing at scroll boundaries on physical devices and could
- * make the window visibly bounce/shake. A fixed dialog has exactly one vertical scroll
- * owner and no draggable sheet anchors.
+ * A fixed dialog avoids the draggable-sheet/list gesture conflict. Recommendations are
+ * rendered category-first so a common category can never visually hide a rarer one.
  */
 @Composable
 fun JourneyStopsSheet(
@@ -35,21 +34,26 @@ fun JourneyStopsSheet(
 ) {
     var enriched by remember(route?.id) { mutableStateOf<List<ScenePointUi>>(emptyList()) }
     var enrichmentLoading by remember(route?.id) { mutableStateOf(false) }
+    var enrichmentFailed by remember(route?.id) { mutableStateOf(false) }
 
     LaunchedEffect(route?.id) {
         val current = route
         if (current == null || current.points.size < 2) {
             enriched = emptyList()
+            enrichmentFailed = false
             return@LaunchedEffect
         }
         enrichmentLoading = true
-        enriched = runCatching {
+        enrichmentFailed = false
+        val result = runCatching {
             FastRoutePoiDiscovery.discover(
                 route = current.points,
                 enabledKinds = prototypeSelectableSceneKinds,
-                maxResults = 40,
+                maxResults = 50,
             )
-        }.getOrElse { emptyList() }
+        }
+        enriched = result.getOrElse { emptyList() }
+        enrichmentFailed = result.isFailure
         enrichmentLoading = false
     }
 
@@ -58,24 +62,46 @@ fun JourneyStopsSheet(
             point.copy(includedInRoute = true)
         } else point
     }
+
     val merged = remember(routePoints, enriched) {
         buildList {
             addAll(routePoints)
             enriched.forEach { candidate ->
                 val duplicate = any { existing ->
-                    existing.id == candidate.id || existing.name.equals(candidate.name, ignoreCase = true)
+                    existing.id == candidate.id ||
+                        existing.name.equals(candidate.name, ignoreCase = true)
                 }
                 if (!duplicate) add(candidate)
             }
         }
     }
+
     val included = merged.filter { it.includedInRoute }
     val includedIds = included.mapTo(mutableSetOf()) { it.id }
     val topFood = merged
-        .filter { it.kind == StopKind.FOOD.name && it.id !in includedIds && it.id !in manuallyAddedIds }
+        .filter {
+            it.kind == StopKind.FOOD.name &&
+                it.id !in includedIds &&
+                it.id !in manuallyAddedIds
+        }
         .maxByOrNull(::foodPickScore)
-    val alternatives = merged.filterNot {
-        it.id in includedIds || it.id in manuallyAddedIds || it.id == topFood?.id
+
+    val availableByKind = remember(merged, includedIds, manuallyAddedIds, topFood?.id) {
+        merged
+            .filterNot {
+                it.id in includedIds ||
+                    it.id in manuallyAddedIds ||
+                    it.id == topFood?.id
+            }
+            .groupBy { it.kind }
+            .mapValues { (_, values) -> values.sortedByDescending { it.suggestionScore } }
+    }
+
+    val coveredKinds = remember(merged) {
+        prototypeSelectableSceneKinds.filter { kind -> merged.any { it.kind == kind.name } }
+    }
+    val missingKinds = remember(coveredKinds) {
+        prototypeSelectableSceneKinds.filterNot { it in coveredKinds }
     }
 
     Dialog(
@@ -89,14 +115,14 @@ fun JourneyStopsSheet(
         Surface(
             modifier = Modifier
                 .fillMaxWidth(0.96f)
-                .fillMaxHeight(0.90f),
+                .fillMaxHeight(0.92f),
             shape = MaterialTheme.shapes.extraLarge,
             tonalElevation = 8.dp,
             shadowElevation = 12.dp,
         ) {
             LazyColumn(
                 modifier = Modifier.fillMaxSize(),
-                contentPadding = PaddingValues(start = 18.dp, end = 18.dp, top = 16.dp, bottom = 24.dp),
+                contentPadding = PaddingValues(start = 18.dp, end = 18.dp, top = 16.dp, bottom = 26.dp),
                 verticalArrangement = Arrangement.spacedBy(11.dp),
             ) {
                 item(key = "header") {
@@ -106,7 +132,7 @@ fun JourneyStopsSheet(
                         Column(Modifier.weight(1f)) {
                             Text("Smart Stops", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
                             Text(
-                                "Included stops and worthwhile alternatives along this journey.",
+                                "Every enabled Scenic Category gets its own result lane.",
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
                         }
@@ -132,11 +158,18 @@ fun JourneyStopsSheet(
                                     "${included.size} automatic stops · ${route.dwellMinutes} min visiting · +${route.driveExtraMinutes.roundToInt()} min driving detour",
                                     style = MaterialTheme.typography.bodySmall,
                                 )
-                                val kinds = merged.map { it.kind }.distinct().size
                                 Text(
-                                    "${merged.size} visible locations across $kinds scene categories",
+                                    "${merged.size} locations · ${coveredKinds.size}/${prototypeSelectableSceneKinds.size} Scenic Categories covered",
                                     style = MaterialTheme.typography.bodySmall,
+                                    fontWeight = FontWeight.SemiBold,
                                 )
+                                if (!enrichmentLoading && missingKinds.isNotEmpty()) {
+                                    Text(
+                                        "Still missing in this corridor: ${missingKinds.joinToString { "${it.emoji} ${it.label}" }}",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    )
+                                }
                             }
                         }
                     }
@@ -148,10 +181,6 @@ fun JourneyStopsSheet(
                         itemsIndexed(included, key = { _, stop -> "included-${stop.id}" }) { index, stop ->
                             IncludedStopRow(index + 1, stop)
                         }
-                    } else {
-                        item(key = "no-included") {
-                            Text("This variant has no automatic stop yet.", color = MaterialTheme.colorScheme.onSurfaceVariant)
-                        }
                     }
 
                     if (enrichmentLoading) {
@@ -159,7 +188,20 @@ fun JourneyStopsSheet(
                             Row(verticalAlignment = Alignment.CenterVertically) {
                                 CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
                                 Spacer(Modifier.width(8.dp))
-                                Text("Finding all enabled scene categories…", style = MaterialTheme.typography.bodySmall)
+                                Text("Searching the full corridor for missing categories…", style = MaterialTheme.typography.bodySmall)
+                            }
+                        }
+                    }
+
+                    if (enrichmentFailed) {
+                        item(key = "enrichment-failed") {
+                            Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer)) {
+                                Text(
+                                    "Some public development POI services did not answer. Existing route results are still shown.",
+                                    modifier = Modifier.padding(12.dp),
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onErrorContainer,
+                                )
                             }
                         }
                     }
@@ -178,13 +220,39 @@ fun JourneyStopsSheet(
                         }
                     }
 
-                    if (alternatives.isNotEmpty()) {
-                        item(key = "alternatives-divider") { HorizontalDivider() }
-                        item(key = "alternatives-title") {
-                            Text("Good alternatives", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                    item(key = "categories-divider") { HorizontalDivider() }
+                    item(key = "categories-title") {
+                        Text("Recommendations by Scenic Category", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                    }
+
+                    prototypeSelectableSceneKinds.forEach { kind ->
+                        item(key = "kind-title-${kind.name}") {
+                            CategoryHeader(kind, count = merged.count { it.kind == kind.name })
                         }
-                        itemsIndexed(alternatives.take(30), key = { _, stop -> "alt-${stop.id}" }) { _, stop ->
-                            AlternativeStopRow(stop, onClick = { onAddAlternative(stop) })
+
+                        if (kind == StopKind.FOOD && topFood != null) {
+                            item(key = "kind-food-note") {
+                                Text(
+                                    "The strongest food candidate is highlighted above.",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+                        } else {
+                            val candidates = availableByKind[kind.name].orEmpty().take(3)
+                            if (candidates.isEmpty()) {
+                                item(key = "kind-empty-${kind.name}") {
+                                    Text(
+                                        if (enrichmentLoading) "Searching…" else "No mapped candidate found in the current search corridor.",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    )
+                                }
+                            } else {
+                                items(candidates, key = { "kind-${kind.name}-${it.id}" }) { stop ->
+                                    AlternativeStopRow(stop, onClick = { onAddAlternative(stop) })
+                                }
+                            }
                         }
                     }
                 }
@@ -202,11 +270,32 @@ fun JourneyStopsSheet(
     }
 }
 
+@Composable
+private fun CategoryHeader(kind: StopKind, count: Int) {
+    Row(
+        modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(kind.emoji, style = MaterialTheme.typography.titleLarge)
+        Spacer(Modifier.width(8.dp))
+        Text(kind.label, modifier = Modifier.weight(1f), fontWeight = FontWeight.SemiBold)
+        Surface(
+            shape = MaterialTheme.shapes.extraLarge,
+            color = if (count > 0) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceContainerHighest,
+        ) {
+            Text(
+                count.toString(),
+                modifier = Modifier.padding(horizontal = 9.dp, vertical = 3.dp),
+                style = MaterialTheme.typography.labelMedium,
+            )
+        }
+    }
+}
+
 private fun foodPickScore(stop: ScenePointUi): Double {
     val rating = stop.rating
     val reviews = stop.ratingCount ?: 0
     val verified = if (rating != null) {
-        // Avoid a tiny-review 5.0 beating a heavily reviewed 4.8 restaurant.
         rating * 20.0 + ln((reviews + 1).toDouble()) * 4.0
     } else 0.0
     val restaurantBonus = if (stop.subtype.equals("restaurant", ignoreCase = true)) 8.0 else 0.0
@@ -303,7 +392,7 @@ private fun AlternativeStopRow(stop: ScenePointUi, onClick: () -> Unit) {
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     maxLines = 1,
                 )
-                stop.rationale?.let { Text(it, style = MaterialTheme.typography.labelSmall, maxLines = 1) }
+                stop.rationale?.let { Text(it, style = MaterialTheme.typography.labelSmall, maxLines = 2) }
             }
             Icon(Icons.Default.AddCircleOutline, "Add ${stop.name}")
         }
