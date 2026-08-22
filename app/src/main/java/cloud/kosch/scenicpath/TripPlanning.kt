@@ -32,6 +32,10 @@ data class PlannedStop(
     val dwellMinutes: Int = 30,
     val locked: Boolean = false,
     val mustVisit: Boolean = true,
+    val point: GeoPoint? = null,
+    val subtitle: String? = null,
+    val rating: Double? = null,
+    val ratingCount: Int? = null,
 )
 
 data class TripPlan(
