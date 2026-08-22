@@ -5,6 +5,7 @@ import { enrichRouteFromOsm } from "./osm-enrichment.js";
 import { enrichTopFoodAlongRoute } from "./food-enrichment.js";
 import { selectSceneSuggestions } from "./scene-suggestions.js";
 import { orderRoutesForCharacter } from "./route-selection.js";
+import { photonSearch } from "./photon-search.js";
 import { tomTomRoute } from "./tomtom.js";
 import { tomTomSearch } from "./tomtom-search.js";
 
@@ -123,6 +124,28 @@ function beautifulPreferences(preferences) {
   };
 }
 
+async function searchPlaces(query, lat, lon) {
+  if (process.env.PHOTON_URL) {
+    const osmResults = await photonSearch({
+      endpoint: process.env.PHOTON_URL,
+      query,
+      lat,
+      lon,
+      limit: 8,
+      language: "de",
+    });
+    if (osmResults.length) return osmResults;
+  }
+
+  return tomTomSearch({
+    apiKey: process.env.TOMTOM_API_KEY,
+    query,
+    lat,
+    lon,
+    limit: 8
+  });
+}
+
 const server = http.createServer(async (req, res) => {
   const requestUrl = new URL(req.url, `http://${req.headers.host || "localhost"}`);
 
@@ -130,7 +153,8 @@ const server = http.createServer(async (req, res) => {
     return json(res, 200, {
       ok: true,
       service: "scenic-path-backend",
-      version: "0.3.0",
+      version: "0.3.1",
+      placeSearch: process.env.PHOTON_URL ? "OpenStreetMap/Photon" : "TomTom fallback",
       corridorEnrichment: process.env.OSM_ENRICHMENT_URL ? "configured" : "geometry-only",
       verifiedFood: process.env.GOOGLE_PLACES_API_KEY ? "configured" : "disabled"
     });
@@ -142,13 +166,7 @@ const server = http.createServer(async (req, res) => {
       if (!query || query.length < 2) return json(res, 200, { results: [] });
       const lat = Number(requestUrl.searchParams.get("lat"));
       const lon = Number(requestUrl.searchParams.get("lon"));
-      const results = await tomTomSearch({
-        apiKey: process.env.TOMTOM_API_KEY,
-        query,
-        lat,
-        lon,
-        limit: 8
-      });
+      const results = await searchPlaces(query, lat, lon);
       return json(res, 200, { results });
     } catch (error) {
       console.error(error);
