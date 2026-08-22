@@ -29,9 +29,17 @@ fun JourneyPlannerSheet(
     onDismiss: () -> Unit,
 ) {
     var advanced by remember { mutableStateOf(false) }
-    val budget = preferences.maxExtraMinutes
+
+    // The sheet edits a local draft. The last successfully generated journey must remain
+    // visible on the map until the user explicitly starts a rebuild. This prevents a
+    // category/slider/toggle change from blanking an otherwise valid route.
+    var draftPlan by remember(plan) { mutableStateOf(plan) }
+    var draftPreferences by remember(preferences) { mutableStateOf(preferences) }
+
+    val budget = draftPreferences.maxExtraMinutes
     val corridorKm = (4.0 + budget * 0.15).coerceIn(6.0, 42.0)
-    val autoStops = autoStopPreview(budget, preferences.maxStops)
+    val autoStops = autoStopPreview(budget, draftPreferences.maxStops)
+    val dirty = draftPlan != plan || draftPreferences != preferences
 
     ModalBottomSheet(onDismissRequest = onDismiss) {
         Column(
@@ -48,6 +56,19 @@ fun JourneyPlannerSheet(
                     Text("Give Scenic Path time. It turns that time into roads and places worth seeing.", color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
                 IconButton(onClick = onDismiss) { Icon(Icons.Default.Close, "Close planner") }
+            }
+
+            if (hasRoute && dirty) {
+                Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.tertiaryContainer.copy(alpha = 0.65f))) {
+                    Row(Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Icon(Icons.Default.EditRoad, null)
+                        Spacer(Modifier.width(8.dp))
+                        Text(
+                            "Your current route stays on the map. These changes are applied only when you rebuild.",
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                    }
+                }
             }
 
             Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.62f))) {
@@ -74,15 +95,15 @@ fun JourneyPlannerSheet(
             HorizontalChoiceRowV4 {
                 PlanningMode.entries.forEach { mode ->
                     FilterChip(
-                        selected = plan.mode == mode,
+                        selected = draftPlan.mode == mode,
                         onClick = {
                             val maxStops = when (mode) {
                                 PlanningMode.QUICK -> 5
                                 PlanningMode.DAY_TRIP -> 8
                                 PlanningMode.ROAD_TRIP -> 12
                             }
-                            onPlanChange(plan.copy(mode = mode))
-                            onPreferencesChange(preferences.copy(maxStops = maxStops))
+                            draftPlan = draftPlan.copy(mode = mode)
+                            draftPreferences = draftPreferences.copy(maxStops = maxStops)
                         },
                         label = { Text(mode.label) },
                     )
@@ -93,10 +114,10 @@ fun JourneyPlannerSheet(
             HorizontalChoiceRowV4 {
                 RouteCharacter.entries.forEach { character ->
                     FilterChip(
-                        selected = plan.routeCharacter == character,
+                        selected = draftPlan.routeCharacter == character,
                         onClick = {
-                            onPlanChange(plan.copy(routeCharacter = character))
-                            onPreferencesChange(preferences.forCharacter(character))
+                            draftPlan = draftPlan.copy(routeCharacter = character)
+                            draftPreferences = draftPreferences.forCharacter(character)
                         },
                         leadingIcon = if (character == RouteCharacter.BEAUTIFUL) {
                             { Icon(Icons.Default.AutoAwesome, null, Modifier.size(18.dp)) }
@@ -111,14 +132,14 @@ fun JourneyPlannerSheet(
                 listOf(30, 60, 120, 180, 240).forEach { minutes ->
                     FilterChip(
                         selected = budget == minutes,
-                        onClick = { onPreferencesChange(preferences.copy(maxExtraMinutes = minutes)) },
+                        onClick = { draftPreferences = draftPreferences.copy(maxExtraMinutes = minutes) },
                         label = { Text(if (minutes < 60) "+${minutes}m" else "+${minutes / 60}h${if (minutes % 60 == 0) "" else " ${minutes % 60}m"}") },
                     )
                 }
             }
             Slider(
                 value = budget.toFloat(),
-                onValueChange = { onPreferencesChange(preferences.copy(maxExtraMinutes = it.roundToInt())) },
+                onValueChange = { draftPreferences = draftPreferences.copy(maxExtraMinutes = it.roundToInt()) },
                 valueRange = 0f..360f,
                 steps = 23,
             )
@@ -138,12 +159,12 @@ fun JourneyPlannerSheet(
                         Text("Smart Stops", fontWeight = FontWeight.SemiBold)
                         Spacer(Modifier.weight(1f))
                         Switch(
-                            checked = plan.autoSuggestStops,
-                            onCheckedChange = { onPlanChange(plan.copy(autoSuggestStops = it)) },
+                            checked = draftPlan.autoSuggestStops,
+                            onCheckedChange = { draftPlan = draftPlan.copy(autoSuggestStops = it) },
                         )
                     }
                     Text(
-                        if (plan.autoSuggestStops) "The Journey Optimizer may automatically include the best combination of places inside your total time budget."
+                        if (draftPlan.autoSuggestStops) "The Journey Optimizer may automatically include the best combination of places inside your total time budget."
                         else "Only roads and your manually fixed stops will be used.",
                         style = MaterialTheme.typography.bodySmall,
                     )
@@ -155,11 +176,11 @@ fun JourneyPlannerSheet(
                 }
             }
 
-            if (plan.stops.isNotEmpty()) {
+            if (draftPlan.stops.isNotEmpty()) {
                 Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow)) {
                     Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                         Text("Fixed by you", fontWeight = FontWeight.SemiBold)
-                        plan.stops.forEach { stop ->
+                        draftPlan.stops.forEach { stop ->
                             Row(verticalAlignment = Alignment.CenterVertically) {
                                 Text(stop.kind.emoji)
                                 Spacer(Modifier.width(8.dp))
@@ -167,7 +188,7 @@ fun JourneyPlannerSheet(
                                     Text(stop.name, fontWeight = FontWeight.Medium)
                                     Text("${stop.dwellMinutes} min · fixed anchor", style = MaterialTheme.typography.bodySmall)
                                 }
-                                IconButton(onClick = { onPlanChange(plan.copy(stops = plan.stops.filterNot { it.id == stop.id })) }) {
+                                IconButton(onClick = { draftPlan = draftPlan.copy(stops = draftPlan.stops.filterNot { it.id == stop.id }) }) {
                                     Icon(Icons.Default.DeleteOutline, "Remove ${stop.name}")
                                 }
                             }
@@ -185,11 +206,11 @@ fun JourneyPlannerSheet(
             if (advanced) {
                 Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainer)) {
                     Column(Modifier.padding(15.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                        SettingSwitchV4("Avoid motorways", "Hard-validation remains active after routing.", preferences.avoidMotorways) {
-                            onPreferencesChange(preferences.copy(avoidMotorways = it))
+                        SettingSwitchV4("Avoid motorways", "Hard-validation remains active after routing.", draftPreferences.avoidMotorways) {
+                            draftPreferences = draftPreferences.copy(avoidMotorways = it)
                         }
-                        SettingSwitchV4("Avoid tolls", "Prefer routes without toll roads.", preferences.avoidTolls) {
-                            onPreferencesChange(preferences.copy(avoidTolls = it))
+                        SettingSwitchV4("Avoid tolls", "Prefer routes without toll roads.", draftPreferences.avoidTolls) {
+                            draftPreferences = draftPreferences.copy(avoidTolls = it)
                         }
 
                         HorizontalDivider()
@@ -201,13 +222,13 @@ fun JourneyPlannerSheet(
                                 horizontalArrangement = Arrangement.spacedBy(7.dp),
                             ) {
                                 kinds.forEach { kind ->
-                                    val selected = kind in plan.enabledSceneKinds
+                                    val selected = kind in draftPlan.enabledSceneKinds
                                     FilterChip(
                                         selected = selected,
                                         onClick = {
-                                            val next = plan.enabledSceneKinds.toMutableSet()
+                                            val next = draftPlan.enabledSceneKinds.toMutableSet()
                                             if (selected) next.remove(kind) else next.add(kind)
-                                            onPlanChange(plan.copy(enabledSceneKinds = next))
+                                            draftPlan = draftPlan.copy(enabledSceneKinds = next)
                                         },
                                         label = { Text("${kind.emoji} ${kind.label}") },
                                     )
@@ -217,48 +238,58 @@ fun JourneyPlannerSheet(
 
                         HorizontalDivider()
                         Text("Scenic DNA", fontWeight = FontWeight.SemiBold)
-                        DnaSliderV4("Beautiful roads", preferences.weights.beautifulRoads) { v ->
-                            onPreferencesChange(preferences.copy(weights = preferences.weights.copy(beautifulRoads = v)))
+                        DnaSliderV4("Beautiful roads", draftPreferences.weights.beautifulRoads) { v ->
+                            draftPreferences = draftPreferences.copy(weights = draftPreferences.weights.copy(beautifulRoads = v))
                         }
-                        DnaSliderV4("Viewpoints", preferences.weights.viewpoints) { v ->
-                            onPreferencesChange(preferences.copy(weights = preferences.weights.copy(viewpoints = v)))
+                        DnaSliderV4("Viewpoints", draftPreferences.weights.viewpoints) { v ->
+                            draftPreferences = draftPreferences.copy(weights = draftPreferences.weights.copy(viewpoints = v))
                         }
-                        DnaSliderV4("Water", preferences.weights.water) { v ->
-                            onPreferencesChange(preferences.copy(weights = preferences.weights.copy(water = v)))
+                        DnaSliderV4("Water", draftPreferences.weights.water) { v ->
+                            draftPreferences = draftPreferences.copy(weights = draftPreferences.weights.copy(water = v))
                         }
-                        DnaSliderV4("Forests", preferences.weights.forest) { v ->
-                            onPreferencesChange(preferences.copy(weights = preferences.weights.copy(forest = v)))
+                        DnaSliderV4("Forests", draftPreferences.weights.forest) { v ->
+                            draftPreferences = draftPreferences.copy(weights = draftPreferences.weights.copy(forest = v))
                         }
-                        DnaSliderV4("Mountains & relief", preferences.weights.mountains) { v ->
-                            onPreferencesChange(preferences.copy(weights = preferences.weights.copy(mountains = v)))
+                        DnaSliderV4("Mountains & relief", draftPreferences.weights.mountains) { v ->
+                            draftPreferences = draftPreferences.copy(weights = draftPreferences.weights.copy(mountains = v))
                         }
-                        DnaSliderV4("Culture", preferences.weights.culture) { v ->
-                            onPreferencesChange(preferences.copy(weights = preferences.weights.copy(culture = v)))
+                        DnaSliderV4("Culture", draftPreferences.weights.culture) { v ->
+                            draftPreferences = draftPreferences.copy(weights = draftPreferences.weights.copy(culture = v))
                         }
-                        DnaSliderV4("Monuments & history", preferences.weights.monuments) { v ->
-                            onPreferencesChange(preferences.copy(weights = preferences.weights.copy(monuments = v)))
+                        DnaSliderV4("Monuments & history", draftPreferences.weights.monuments) { v ->
+                            draftPreferences = draftPreferences.copy(weights = draftPreferences.weights.copy(monuments = v))
                         }
-                        DnaSliderV4("Museums", preferences.weights.museums) { v ->
-                            onPreferencesChange(preferences.copy(weights = preferences.weights.copy(museums = v)))
+                        DnaSliderV4("Museums", draftPreferences.weights.museums) { v ->
+                            draftPreferences = draftPreferences.copy(weights = draftPreferences.weights.copy(museums = v))
                         }
-                        DnaSliderV4("Parks & gardens", preferences.weights.parks) { v ->
-                            onPreferencesChange(preferences.copy(weights = preferences.weights.copy(parks = v)))
+                        DnaSliderV4("Parks & gardens", draftPreferences.weights.parks) { v ->
+                            draftPreferences = draftPreferences.copy(weights = draftPreferences.weights.copy(parks = v))
                         }
-                        DnaSliderV4("Architecture", preferences.weights.architecture) { v ->
-                            onPreferencesChange(preferences.copy(weights = preferences.weights.copy(architecture = v)))
+                        DnaSliderV4("Architecture", draftPreferences.weights.architecture) { v ->
+                            draftPreferences = draftPreferences.copy(weights = draftPreferences.weights.copy(architecture = v))
                         }
                     }
                 }
             }
 
             Button(
-                onClick = onBuildRoute,
+                onClick = {
+                    onPlanChange(draftPlan)
+                    onPreferencesChange(draftPreferences)
+                    onBuildRoute()
+                },
                 modifier = Modifier.fillMaxWidth().height(56.dp),
                 enabled = destination.isNotBlank(),
             ) {
                 Icon(Icons.Default.Route, null)
                 Spacer(Modifier.width(8.dp))
-                Text(if (hasRoute) "Recalculate experience with +$budget min" else "Build the best experiences")
+                Text(
+                    when {
+                        hasRoute && dirty -> "Rebuild with changes · +$budget min"
+                        hasRoute -> "Recalculate experience with +$budget min"
+                        else -> "Build the best experiences"
+                    }
+                )
             }
         }
     }
