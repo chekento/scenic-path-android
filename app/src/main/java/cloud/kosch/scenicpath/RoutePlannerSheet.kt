@@ -27,10 +27,11 @@ fun RoutePlannerSheet(
     preferences: ScenicPreferences,
     onPlanChange: (TripPlan) -> Unit,
     onPreferencesChange: (ScenicPreferences) -> Unit,
+    onRequestAddStop: () -> Unit,
+    onBuildRoute: () -> Unit,
     onDismiss: () -> Unit,
 ) {
     var advanced by remember { mutableStateOf(false) }
-    var addStop by remember { mutableStateOf(false) }
 
     ModalBottomSheet(onDismissRequest = onDismiss) {
         Column(
@@ -108,13 +109,13 @@ fun RoutePlannerSheet(
                         )
                     }
                     EndpointRow(Icons.Default.Flag, "Destination", destination.ifBlank { "Choose destination" })
-                    OutlinedButton(onClick = { addStop = true }, Modifier.fillMaxWidth()) {
+                    OutlinedButton(onClick = onRequestAddStop, Modifier.fillMaxWidth()) {
                         Icon(Icons.Default.AddLocationAlt, null)
                         Spacer(Modifier.width(8.dp))
-                        Text("Add stop")
+                        Text("Search & add stop")
                     }
                     Text(
-                        "Tip: long-press the grip and drag a stop up or down. Lock a stop to keep it fixed while Scenic Path optimizes the rest.",
+                        "Long-press the grip to reorder. Locked stops stay fixed when later route optimization is enabled.",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
@@ -147,12 +148,18 @@ fun RoutePlannerSheet(
                     leadingIcon = { Icon(Icons.Default.Schedule, null, Modifier.size(18.dp)) },
                 )
                 AssistChip(
-                    onClick = { onPreferencesChange(preferences.copy(maxExtraMinutes = when {
-                        preferences.maxExtraMinutes < 30 -> 30
-                        preferences.maxExtraMinutes < 60 -> 60
-                        preferences.maxExtraMinutes < 120 -> 120
-                        else -> 15
-                    })) },
+                    onClick = {
+                        onPreferencesChange(
+                            preferences.copy(
+                                maxExtraMinutes = when {
+                                    preferences.maxExtraMinutes < 30 -> 30
+                                    preferences.maxExtraMinutes < 60 -> 60
+                                    preferences.maxExtraMinutes < 120 -> 120
+                                    else -> 15
+                                }
+                            )
+                        )
+                    },
                     label = { Text("+${preferences.maxExtraMinutes} min max") },
                     leadingIcon = { Icon(Icons.Default.MoreTime, null, Modifier.size(18.dp)) },
                 )
@@ -172,7 +179,7 @@ fun RoutePlannerSheet(
                     }
                     Text(
                         if (plan.autoSuggestStops) "Scenic Path may add exceptional nature, culture and top-food stops inside your time budget."
-                        else "Only your manually selected stops will be used.",
+                        else "Only your selected stops will be used.",
                         style = MaterialTheme.typography.bodySmall,
                     )
                 }
@@ -194,25 +201,15 @@ fun RoutePlannerSheet(
             }
 
             Button(
-                onClick = onDismiss,
+                onClick = onBuildRoute,
                 modifier = Modifier.fillMaxWidth().height(54.dp),
                 enabled = destination.isNotBlank(),
             ) {
                 Icon(Icons.Default.Route, null)
                 Spacer(Modifier.width(8.dp))
-                Text("Build route plan")
+                Text("Build route")
             }
         }
-    }
-
-    if (addStop) {
-        AddStopDialog(
-            onDismiss = { addStop = false },
-            onAdd = { stop ->
-                onPlanChange(plan.copy(stops = plan.stops + stop))
-                addStop = false
-            },
-        )
     }
 }
 
@@ -251,7 +248,7 @@ private fun AdvancedPlanningControls(
                 "Avoid motorways",
                 "Prefer smaller roads where sensible.",
                 preferences.avoidMotorways,
-            ) { onPreferencesChange(preferences.copy(avoidMotorways = it,)) }
+            ) { onPreferencesChange(preferences.copy(avoidMotorways = it)) }
 
             SettingSwitch(
                 "Avoid tolls",
@@ -324,7 +321,12 @@ private fun DraggableStopRow(
             Spacer(Modifier.width(6.dp))
             Column(Modifier.weight(1f)) {
                 Text(stop.name, fontWeight = FontWeight.SemiBold)
-                Text("${stop.kind.label} · ${stop.dwellMinutes} min", style = MaterialTheme.typography.bodySmall)
+                val resolved = if (stop.point != null) "located" else "location needed"
+                Text(
+                    "${stop.kind.label} · ${stop.dwellMinutes} min · $resolved",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = if (stop.point != null) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.error,
+                )
             }
             IconButton(onClick = { onChange(stop.copy(locked = !stop.locked)) }) {
                 Icon(if (stop.locked) Icons.Default.Lock else Icons.Default.LockOpen, if (stop.locked) "Unlock stop" else "Lock stop")
@@ -372,51 +374,4 @@ private fun SettingSwitch(title: String, subtitle: String, checked: Boolean, onC
         }
         Switch(checked = checked, onCheckedChange = onCheckedChange)
     }
-}
-
-@Composable
-private fun AddStopDialog(onDismiss: () -> Unit, onAdd: (PlannedStop) -> Unit) {
-    var name by remember { mutableStateOf("") }
-    var kind by remember { mutableStateOf(StopKind.VIEWPOINT) }
-
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text("Add a stop") },
-        text = {
-            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                OutlinedTextField(
-                    value = name,
-                    onValueChange = { name = it },
-                    label = { Text("Place or idea") },
-                    placeholder = { Text("e.g. Lübeck old town") },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth(),
-                )
-                Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    StopKind.entries.forEach { option ->
-                        FilterChip(
-                            selected = option == kind,
-                            onClick = { kind = option },
-                            label = { Text(option.label) },
-                        )
-                    }
-                }
-            }
-        },
-        confirmButton = {
-            TextButton(
-                onClick = {
-                    onAdd(
-                        PlannedStop(
-                            id = "user-${System.nanoTime()}",
-                            name = name.trim(),
-                            kind = kind,
-                        )
-                    )
-                },
-                enabled = name.isNotBlank(),
-            ) { Text("Add") }
-        },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
-    )
 }
