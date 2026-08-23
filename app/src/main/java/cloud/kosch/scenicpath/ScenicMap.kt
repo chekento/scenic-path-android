@@ -2,31 +2,33 @@ package cloud.kosch.scenicpath
 
 import android.content.Context
 import android.content.Intent
-import android.graphics.Bitmap
-import android.graphics.Canvas
-import android.graphics.Color
-import android.graphics.Paint
-import android.graphics.Typeface
 import android.net.Uri
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Map
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
-import org.maplibre.android.annotations.IconFactory
-import org.maplibre.android.annotations.MarkerOptions
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import org.maplibre.android.camera.CameraUpdateFactory
 import org.maplibre.android.geometry.LatLng
 import org.maplibre.android.geometry.LatLngBounds
@@ -47,7 +49,6 @@ import org.maplibre.geojson.Feature
 import org.maplibre.geojson.FeatureCollection
 import org.maplibre.geojson.LineString
 import org.maplibre.geojson.Point
-import kotlin.math.hypot
 import kotlin.math.roundToInt
 
 private const val USER_SOURCE = "scenic-user-source"
@@ -57,13 +58,15 @@ private const val ROUTE_LAYER = "scenic-route-layer"
 private const val MAX_SCENIC_MARKERS = 240
 
 /**
- * MapLibre host.
+ * MapLibre host with a Compose POI overlay.
  *
- * Scenic markers are durable journey display state. A provider timeout, a sparse reroute result,
- * a temporary empty Compose frame or waypoint recalculation must never collapse a rich POI map.
- * Manual waypoints keep their original category symbol and receive a luminous frame.
+ * MapLibre's legacy annotation API is deprecated and proved too fragile for the dense, frequently
+ * replaced Scenic marker population: a route recomposition or annotation replacement could leave
+ * the route visible while every POI marker vanished. The base map/route remain native MapLibre,
+ * while Scenic POIs are now drawn as Compose markers from committed POI state and projected through
+ * MapLibre's live projection. This keeps markers clickable, category-aware and independent from
+ * annotation lifecycle churn.
  */
-@Suppress("DEPRECATION")
 @Composable
 fun ScenicMap(
     modifier: Modifier = Modifier,
@@ -79,11 +82,14 @@ fun ScenicMap(
 ) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
+    val density = LocalDensity.current
+
     var mapRef by remember { mutableStateOf<MapLibreMap?>(null) }
     var styleLoaded by remember { mutableStateOf(false) }
     var mapError by remember { mutableStateOf<String?>(null) }
     var lastHandledRecenterToken by remember { mutableIntStateOf(0) }
     var initialLocationFocused by remember { mutableStateOf(false) }
+    var cameraRevision by remember { mutableIntStateOf(0) }
 
     var localHighlights by remember { mutableStateOf<List<ScenePointUi>>(emptyList()) }
     var retainedHighlights by remember { mutableStateOf<List<ScenePointUi>>(emptyList()) }
@@ -127,9 +133,6 @@ fun ScenicMap(
         )
     }
 
-    // Never replace a rich 100+ marker population with a sparse route response containing only
-    // one accepted waypoint or a handful of scenePoints. Merge current information into the
-    // retained journey reservoir and let category balancing decide the visible set.
     LaunchedEffect(candidateCore) {
         if (candidateCore.isNotEmpty()) {
             retainedHighlights = PrecisionRoutePoiDiscovery.mergeForDisplay(
@@ -149,13 +152,10 @@ fun ScenicMap(
     }
     val visibleHighlights = remember(coreVisible, plannedHighlights, plannedStopIds) {
         buildList {
-            // Planned stops win deduplication and stay visible even if a provider temporarily omits
-            // them from its current route-corridor response.
             addAll(plannedHighlights)
             coreVisible.forEach { point -> if (point.id !in plannedStopIds) add(point) }
         }.take(MAX_SCENIC_MARKERS)
     }
-    val latestVisibleHighlights by rememberUpdatedState(visibleHighlights)
 
     LaunchedEffect(selectedHighlight?.id) {
         val selected = selectedHighlight
@@ -182,71 +182,70 @@ fun ScenicMap(
 
     LaunchedEffect(routePoints) {
         selectedHighlight = null
-
-        // A short/empty route can occur for one Compose frame while route alternatives are being
-        // replaced. It is not permission to destroy the committed marker population. An unrelated
-        // journey is detected only when a new valid polyline with different endpoints arrives.
         if (routePoints.size < 2) return@LaunchedEffect
 
         val journeyKey = routeJourneyKey(routePoints)
         if (retainedJourneyKey != null && retainedJourneyKey != journeyKey) {
             localHighlights = emptyList()
             retainedHighlights = emptyList()
-            mapRef?.removeAnnotations()
         }
         retainedJourneyKey = journeyKey
 
-        // Fast POIs are committed as soon as they arrive. The precision pass can take considerably
-        // longer on a 300 km corridor, so waiting for both jobs before painting caused the map to
-        // appear empty even though useful restaurant/museum/heritage results were already ready.
+        val enabledKinds = prototypeSelectableSceneKinds.ifEmpty { allSelectableSceneKinds }
+
+        suspend fun commit(points: List<ScenePointUi>) {
+            if (points.isEmpty()) return
+            withContext(Dispatchers.Main.immediate) {
+                localHighlights = PrecisionRoutePoiDiscovery.mergeForDisplay(
+                    first = points,
+                    second = localHighlights,
+                    maxResults = MAX_SCENIC_MARKERS,
+                )
+                retainedHighlights = PrecisionRoutePoiDiscovery.mergeForDisplay(
+                    first = points,
+                    second = retainedHighlights,
+                    maxResults = MAX_SCENIC_MARKERS,
+                )
+                ScenicPoiSharedState.publish(routePoints, retainedHighlights)
+            }
+        }
+
+        // Three independent discovery paths race in parallel. Rapid bbox Overpass was the path
+        // behind the previously successful mixed-marker screenshots and is deliberately restored.
+        // Photon contributes fast indexed POIs, while the precision pass fills the complete scenic
+        // taxonomy. Any one successful provider can paint the map; later results enrich it.
         coroutineScope {
-            val fastJob = async(Dispatchers.IO) {
-                runCatching {
-                    FastRoutePoiDiscovery.discover(
+            launch(Dispatchers.IO) {
+                val rapid = runCatching {
+                    RapidRoutePoiDiscovery.discover(
                         route = routePoints,
-                        enabledKinds = prototypeSelectableSceneKinds,
+                        enabledKinds = enabledKinds,
                         maxResults = 150,
                     )
                 }.getOrElse { emptyList() }
+                commit(rapid)
             }
-            val precisionJob = async(Dispatchers.IO) {
-                runCatching {
+            launch(Dispatchers.IO) {
+                val fast = runCatching {
+                    FastRoutePoiDiscovery.discover(
+                        route = routePoints,
+                        enabledKinds = enabledKinds,
+                        maxResults = 150,
+                    )
+                }.getOrElse { emptyList() }
+                commit(fast)
+            }
+            launch(Dispatchers.IO) {
+                val precision = runCatching {
                     PrecisionRoutePoiDiscovery.discover(
                         route = routePoints,
-                        enabledKinds = prototypeSelectableSceneKinds,
+                        enabledKinds = enabledKinds,
                         maxResults = MAX_SCENIC_MARKERS,
                         radiusMeters = 15_000,
                         maxSamples = 10,
                     )
                 }.getOrElse { emptyList() }
-            }
-
-            val fast = fastJob.await()
-            if (fast.isNotEmpty()) {
-                localHighlights = fast
-                val immediate = PrecisionRoutePoiDiscovery.mergeForDisplay(
-                    first = fast,
-                    second = retainedHighlights,
-                    maxResults = MAX_SCENIC_MARKERS,
-                )
-                retainedHighlights = immediate
-                ScenicPoiSharedState.publish(routePoints, immediate)
-            }
-
-            val precision = precisionJob.await()
-            if (precision.isNotEmpty()) {
-                localHighlights = PrecisionRoutePoiDiscovery.mergeForDisplay(
-                    first = precision,
-                    second = fast,
-                    maxResults = MAX_SCENIC_MARKERS,
-                )
-                val complete = PrecisionRoutePoiDiscovery.mergeForDisplay(
-                    first = precision,
-                    second = retainedHighlights,
-                    maxResults = MAX_SCENIC_MARKERS,
-                )
-                retainedHighlights = complete
-                ScenicPoiSharedState.publish(routePoints, complete)
+                commit(precision)
             }
         }
     }
@@ -327,35 +326,11 @@ fun ScenicMap(
                         map.uiSettings.isCompassEnabled = true
                         map.uiSettings.isAttributionEnabled = true
                         map.uiSettings.isLogoEnabled = true
-
-                        map.setOnMarkerClickListener { marker ->
-                            val hit = latestVisibleHighlights.firstOrNull { it.id == marker.snippet }
-                            if (hit != null) {
-                                selectedHighlight = hit
-                                true
-                            } else false
-                        }
-
-                        map.addOnMapClickListener { latLng ->
-                            val tap = map.projection.toScreenLocation(latLng)
-                            val hit = latestVisibleHighlights
-                                .mapNotNull { highlight ->
-                                    val markerPoint = map.projection.toScreenLocation(LatLng(highlight.point.lat, highlight.point.lon))
-                                    val distance = hypot(
-                                        (markerPoint.x - tap.x).toDouble(),
-                                        (markerPoint.y - tap.y).toDouble(),
-                                    )
-                                    if (distance <= 52.0) highlight to distance else null
-                                }
-                                .minByOrNull { it.second }
-                                ?.first
-                            if (hit != null) {
-                                selectedHighlight = hit
-                                true
-                            } else {
-                                selectedHighlight = null
-                                false
-                            }
+                        map.addOnCameraMoveListener { cameraRevision++ }
+                        map.addOnCameraIdleListener { cameraRevision++ }
+                        map.addOnMapClickListener {
+                            selectedHighlight = null
+                            false
                         }
 
                         runCatching {
@@ -363,7 +338,7 @@ fun ScenicMap(
                                 ensureBaseLayers(style)
                                 styleLoaded = true
                                 updateBaseMapData(map, userLocation, routePoints)
-                                syncScenicMarkers(map, context, visibleHighlights, plannedStopIds)
+                                cameraRevision++
                             }
                         }.onFailure { error ->
                             mapError = error.message ?: "Map style failed"
@@ -374,8 +349,49 @@ fun ScenicMap(
             },
         )
 
-        if (!styleLoaded && mapError == null) CircularProgressIndicator(Modifier.align(Alignment.Center))
+        if (!styleLoaded && mapError == null) {
+            CircularProgressIndicator(Modifier.align(Alignment.Center))
+        }
         mapError?.let { MapStatusBadge(it, Modifier.align(Alignment.BottomStart).padding(12.dp)) }
+
+        // Reading the revision causes marker projection to refresh continuously while the user
+        // pans/zooms. Only markers inside (or just outside) the current viewport are composed.
+        val revision = cameraRevision
+        val map = mapRef
+        if (styleLoaded && map != null && visibleHighlights.isNotEmpty()) {
+            val width = mapView.width
+            val height = mapView.height
+            val normalHalf = with(density) { 22.dp.roundToPx() }
+            val emphasizedHalf = with(density) { 27.dp.roundToPx() }
+
+            visibleHighlights.forEach { highlight ->
+                key(highlight.id) {
+                    val screen = runCatching {
+                        map.projection.toScreenLocation(LatLng(highlight.point.lat, highlight.point.lon))
+                    }.getOrNull()
+                    val emphasized = highlight.includedInRoute || highlight.id in plannedStopIds
+                    val half = if (emphasized) emphasizedHalf else normalHalf
+                    if (
+                        screen != null && width > 0 && height > 0 &&
+                        screen.x >= -half && screen.x <= width + half &&
+                        screen.y >= -half && screen.y <= height + half
+                    ) {
+                        ScenicPoiOverlayMarker(
+                            symbol = scenicCategoryLaneFor(highlight).emoji,
+                            emphasized = emphasized,
+                            onClick = { selectedHighlight = highlight },
+                            modifier = Modifier.offset {
+                                IntOffset(
+                                    x = screen.x.roundToInt() - half,
+                                    y = screen.y.roundToInt() - half,
+                                )
+                            },
+                        )
+                    }
+                }
+            }
+            @Suppress("UNUSED_VARIABLE") val keepProjectionReactive = revision
+        }
 
         selectedHighlight?.let { highlight ->
             ScenicLocationDetailsCard(
@@ -401,18 +417,17 @@ fun ScenicMap(
                 },
                 onTogglePlannedStop = { onToggleRouteStop(highlight) },
                 onRecalculateRoute = onRecalculateRoute,
-                modifier = Modifier.align(Alignment.Center).padding(horizontal = 18.dp).fillMaxWidth().widthIn(max = 430.dp),
+                modifier = Modifier
+                    .align(Alignment.Center)
+                    .padding(horizontal = 18.dp)
+                    .fillMaxWidth()
+                    .widthIn(max = 430.dp),
             )
         }
     }
 
     LaunchedEffect(userLocation, routePoints, styleLoaded) {
         if (styleLoaded) mapRef?.let { updateBaseMapData(it, userLocation, routePoints) }
-    }
-    LaunchedEffect(visibleHighlights, plannedStopIds, styleLoaded) {
-        if (styleLoaded && visibleHighlights.isNotEmpty()) {
-            mapRef?.let { syncScenicMarkers(it, context, visibleHighlights, plannedStopIds) }
-        }
     }
     LaunchedEffect(userLocation, routePoints, styleLoaded) {
         if (styleLoaded && routePoints.size < 2 && !initialLocationFocused) {
@@ -425,7 +440,9 @@ fun ScenicMap(
     LaunchedEffect(routePoints, styleLoaded) {
         if (styleLoaded && routePoints.size >= 2) {
             runCatching {
-                val bounds = LatLngBounds.Builder().apply { routePoints.forEach { include(LatLng(it.lat, it.lon)) } }.build()
+                val bounds = LatLngBounds.Builder().apply {
+                    routePoints.forEach { include(LatLng(it.lat, it.lon)) }
+                }.build()
                 mapRef?.animateCamera(CameraUpdateFactory.newLatLngBounds(bounds, 96), 650)
             }.onFailure { onMapError(it.message ?: "Route overview failed") }
         }
@@ -440,19 +457,79 @@ fun ScenicMap(
     }
 }
 
+@Composable
+private fun ScenicPoiOverlayMarker(
+    symbol: String,
+    emphasized: Boolean,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val outerSize = if (emphasized) 54.dp else 44.dp
+    val innerSize = if (emphasized) 40.dp else 40.dp
+    val primary = MaterialTheme.colorScheme.primary
+
+    Box(
+        modifier = modifier
+            .size(outerSize)
+            .then(
+                if (emphasized) {
+                    Modifier
+                        .shadow(12.dp, CircleShape, clip = false)
+                        .background(primary.copy(alpha = 0.18f), CircleShape)
+                        .border(2.dp, primary.copy(alpha = 0.65f), CircleShape)
+                } else Modifier
+            )
+            .clickable(onClick = onClick),
+        contentAlignment = Alignment.Center,
+    ) {
+        Box(
+            modifier = Modifier
+                .size(innerSize)
+                .shadow(if (emphasized) 5.dp else 2.dp, CircleShape)
+                .background(MaterialTheme.colorScheme.surface, CircleShape)
+                .border(if (emphasized) 3.dp else 2.dp, primary, CircleShape),
+            contentAlignment = Alignment.Center,
+        ) {
+            Text(
+                text = symbol,
+                fontSize = 20.sp,
+                fontWeight = FontWeight.Normal,
+                maxLines = 1,
+            )
+        }
+    }
+}
+
+private fun routeJourneyKey(route: List<GeoPoint>): String? {
+    if (route.size < 2) return null
+    fun bucket(value: Double): Int = (value * 10_000.0).roundToInt()
+    val first = route.first()
+    val last = route.last()
+    return "${bucket(first.lat)},${bucket(first.lon)}:${bucket(last.lat)},${bucket(last.lon)}"
+}
+
 private fun ensureBaseLayers(style: Style) {
     val empty = FeatureCollection.fromFeatures(emptyArray<Feature>())
     if (style.getSource(USER_SOURCE) == null) style.addSource(GeoJsonSource(USER_SOURCE, empty))
     if (style.getLayer(USER_LAYER) == null) {
-        style.addLayer(CircleLayer(USER_LAYER, USER_SOURCE).withProperties(
-            circleRadius(8f), circleColor("#1769E0"), circleStrokeColor("#FFFFFF"), circleStrokeWidth(3f)
-        ))
+        style.addLayer(
+            CircleLayer(USER_LAYER, USER_SOURCE).withProperties(
+                circleRadius(8f),
+                circleColor("#1769E0"),
+                circleStrokeColor("#FFFFFF"),
+                circleStrokeWidth(3f),
+            )
+        )
     }
     if (style.getSource(ROUTE_SOURCE) == null) style.addSource(GeoJsonSource(ROUTE_SOURCE, empty))
     if (style.getLayer(ROUTE_LAYER) == null) {
-        style.addLayer(LineLayer(ROUTE_LAYER, ROUTE_SOURCE).withProperties(
-            lineColor("#1769E0"), lineWidth(6f), lineOpacity(0.92f)
-        ))
+        style.addLayer(
+            LineLayer(ROUTE_LAYER, ROUTE_SOURCE).withProperties(
+                lineColor("#1769E0"),
+                lineWidth(6f),
+                lineOpacity(0.92f),
+            )
+        )
     }
 }
 
@@ -470,118 +547,29 @@ private fun updateBaseMapData(map: MapLibreMap, userLocation: GeoPoint?, routePo
     val routeSource = style.getSourceAs<GeoJsonSource>(ROUTE_SOURCE)
     if (routePoints.size >= 2) {
         routeSource?.setGeoJson(
-            Feature.fromGeometry(LineString.fromLngLats(routePoints.map { Point.fromLngLat(it.lon, it.lat) }))
+            Feature.fromGeometry(
+                LineString.fromLngLats(routePoints.map { Point.fromLngLat(it.lon, it.lat) })
+            )
         )
     } else {
         routeSource?.setGeoJson(FeatureCollection.fromFeatures(emptyArray<Feature>()))
     }
 }
 
-@Suppress("DEPRECATION")
-private fun syncScenicMarkers(
-    map: MapLibreMap,
-    context: Context,
-    highlights: List<ScenePointUi>,
-    plannedStopIds: Set<String>,
-) {
-    if (highlights.isEmpty()) return
-
-    // Build the replacement set completely before touching the currently visible annotations.
-    // A malformed icon can therefore not erase a good marker map before construction succeeds.
-    val iconFactory = IconFactory.getInstance(context)
-    val cache = mutableMapOf<String, org.maplibre.android.annotations.Icon>()
-    val options = runCatching {
-        highlights.take(MAX_SCENIC_MARKERS).map { highlight ->
-            val symbol = scenicCategoryLaneFor(highlight).emoji
-            val emphasized = highlight.includedInRoute || highlight.id in plannedStopIds
-            val cacheKey = "$symbol:$emphasized"
-            val icon = cache.getOrPut(cacheKey) { iconFactory.fromBitmap(createMarkerBitmap(symbol, emphasized)) }
-            MarkerOptions()
-                .position(LatLng(highlight.point.lat, highlight.point.lon))
-                .title(highlight.name)
-                .snippet(highlight.id)
-                .icon(icon)
-        }
-    }.getOrElse { return }
-
-    if (options.isEmpty()) return
-    runCatching {
-        map.removeAnnotations()
-        map.addMarkers(options)
-    }
-}
-
-/**
- * Normal candidates keep the established white/green marker. A route waypoint keeps that same
- * category emoji but receives a bright multi-ring halo, so selection is obvious without losing
- * the semantic meaning of 🍽️ / 🏛️ / 🏰 / 👁️ / etc.
- */
-private fun createMarkerBitmap(symbol: String, emphasized: Boolean): Bitmap {
-    val size = if (emphasized) 94 else 76
-    val bitmap = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
-    val canvas = Canvas(bitmap)
-    val center = size / 2f
-
-    if (emphasized) {
-        val outerGlow = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            color = Color.argb(72, 91, 246, 196)
-            style = Paint.Style.STROKE
-            strokeWidth = 10f
-        }
-        val middleGlow = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            color = Color.argb(150, 35, 220, 166)
-            style = Paint.Style.STROKE
-            strokeWidth = 6f
-        }
-        val brightRing = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            color = Color.rgb(124, 255, 215)
-            style = Paint.Style.STROKE
-            strokeWidth = 3.5f
-        }
-        canvas.drawCircle(center, center, center - 8f, outerGlow)
-        canvas.drawCircle(center, center, center - 12f, middleGlow)
-        canvas.drawCircle(center, center, center - 16f, brightRing)
-    }
-
-    val markerRadius = if (emphasized) center - 18f else center - 5f
-    val fill = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = Color.WHITE
-        style = Paint.Style.FILL
-    }
-    val stroke = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = Color.rgb(20, 124, 82)
-        style = Paint.Style.STROKE
-        strokeWidth = if (emphasized) 5.5f else 5f
-    }
-    canvas.drawCircle(center, center, markerRadius, fill)
-    canvas.drawCircle(center, center, markerRadius, stroke)
-
-    val text = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = Color.rgb(20, 92, 65)
-        textAlign = Paint.Align.CENTER
-        typeface = Typeface.DEFAULT
-        textSize = if (emphasized) 42f else size * 0.50f
-    }
-    canvas.drawText(symbol, center, center - (text.ascent() + text.descent()) / 2f, text)
-    return bitmap
-}
-
-private fun routeJourneyKey(route: List<GeoPoint>): String {
-    fun bucket(value: Double): Int = (value * 10_000.0).roundToInt()
-    val first = route.first()
-    val last = route.last()
-    return "${bucket(first.lat)},${bucket(first.lon)}:${bucket(last.lat)},${bucket(last.lon)}"
-}
-
 private fun openExternal(context: Context, url: String) {
     runCatching {
-        context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+        context.startActivity(
+            Intent(Intent.ACTION_VIEW, Uri.parse(url)).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        )
     }
 }
 
 @Composable
 private fun MapFallback(modifier: Modifier, message: String) {
-    Box(modifier.background(MaterialTheme.colorScheme.surfaceVariant), contentAlignment = Alignment.Center) {
+    Box(
+        modifier.background(MaterialTheme.colorScheme.surfaceVariant),
+        contentAlignment = Alignment.Center,
+    ) {
         Column(horizontalAlignment = Alignment.CenterHorizontally) {
             Icon(Icons.Default.Map, null, Modifier.size(42.dp))
             Spacer(Modifier.height(8.dp))
