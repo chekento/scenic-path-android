@@ -54,8 +54,6 @@ private const val USER_SOURCE = "scenic-user-source"
 private const val USER_LAYER = "scenic-user-layer"
 private const val ROUTE_SOURCE = "scenic-route-source"
 private const val ROUTE_LAYER = "scenic-route-layer"
-private const val STOP_SOURCE = "scenic-stop-source"
-private const val STOP_LAYER = "scenic-stop-layer"
 private const val MAX_SCENIC_MARKERS = 240
 
 /**
@@ -63,6 +61,8 @@ private const val MAX_SCENIC_MARKERS = 240
  *
  * Marker population is committed display state just like the route itself. A provider timeout,
  * reroute geometry change or transient empty Compose frame must never erase a valid POI layer.
+ * Manual waypoints are rendered as their original Scenic category symbol with a luminous frame;
+ * they are never replaced by a generic yellow circle.
  */
 @Suppress("DEPRECATION")
 @Composable
@@ -86,8 +86,6 @@ fun ScenicMap(
     var lastHandledRecenterToken by remember { mutableIntStateOf(0) }
     var initialLocationFocused by remember { mutableStateOf(false) }
 
-    // Both states intentionally survive a route-geometry change. The exact new population replaces
-    // them only after useful data has arrived.
     var localHighlights by remember { mutableStateOf<List<ScenePointUi>>(emptyList()) }
     var retainedHighlights by remember { mutableStateOf<List<ScenePointUi>>(emptyList()) }
     var selectedHighlight by remember { mutableStateOf<ScenePointUi?>(null) }
@@ -97,8 +95,31 @@ fun ScenicMap(
     val latestUserLocation by rememberUpdatedState(userLocation)
     val sharedHighlights = ScenicPoiSharedState.pointsFor(routePoints)
     val plannedStopIds = remember(stops) { stops.mapTo(mutableSetOf()) { it.id } }
+    val plannedHighlights = remember(stops) {
+        stops.mapNotNull { stop ->
+            stop.point?.let { point ->
+                ScenePointUi(
+                    id = stop.id,
+                    name = stop.name,
+                    kind = stop.kind.name,
+                    subtype = stop.subtype,
+                    point = point,
+                    relevance = 1.25,
+                    suggestionScore = 250.0,
+                    distanceFromRouteMeters = 0,
+                    suggestedDwellMinutes = stop.dwellMinutes,
+                    rating = stop.rating,
+                    ratingCount = stop.ratingCount,
+                    includedInRoute = true,
+                    personalMatch = 100.0,
+                    rationale = "fixed waypoint · must visit",
+                    estimatedDetourMinutes = 0.0,
+                )
+            }
+        }
+    }
 
-    val candidateHighlights = remember(highlights, sharedHighlights, localHighlights) {
+    val candidateCore = remember(highlights, sharedHighlights, localHighlights) {
         PrecisionRoutePoiDiscovery.mergeForDisplay(
             first = highlights + sharedHighlights,
             second = localHighlights,
@@ -106,11 +127,19 @@ fun ScenicMap(
         )
     }
 
-    LaunchedEffect(candidateHighlights) {
-        if (candidateHighlights.isNotEmpty()) retainedHighlights = candidateHighlights
+    LaunchedEffect(candidateCore) {
+        if (candidateCore.isNotEmpty()) retainedHighlights = candidateCore
     }
 
-    val visibleHighlights = if (candidateHighlights.isNotEmpty()) candidateHighlights else retainedHighlights
+    val coreVisible = if (candidateCore.isNotEmpty()) candidateCore else retainedHighlights
+    val visibleHighlights = remember(coreVisible, plannedHighlights, plannedStopIds) {
+        buildList {
+            // Planned stops win deduplication and stay visible even if a provider temporarily omits
+            // them from its current route-corridor response.
+            addAll(plannedHighlights)
+            coreVisible.forEach { point -> if (point.id !in plannedStopIds) add(point) }
+        }.take(MAX_SCENIC_MARKERS)
+    }
     val latestVisibleHighlights by rememberUpdatedState(visibleHighlights)
 
     LaunchedEffect(selectedHighlight?.id) {
@@ -145,8 +174,6 @@ fun ScenicMap(
             return@LaunchedEffect
         }
 
-        // Route-plan scenePoints and the shared fast POI bridge can paint immediately. This deeper
-        // pass enriches them, but an empty/failed request is never allowed to blank the map.
         val discovered = withContext(Dispatchers.IO) {
             runCatching {
                 val (fast, precision) = coroutineScope {
@@ -277,7 +304,7 @@ fun ScenicMap(
                                         (markerPoint.x - tap.x).toDouble(),
                                         (markerPoint.y - tap.y).toDouble(),
                                     )
-                                    if (distance <= 48.0) highlight to distance else null
+                                    if (distance <= 52.0) highlight to distance else null
                                 }
                                 .minByOrNull { it.second }
                                 ?.first
@@ -294,8 +321,8 @@ fun ScenicMap(
                             map.setStyle(BuildConfig.MAP_STYLE_URL) { style ->
                                 ensureBaseLayers(style)
                                 styleLoaded = true
-                                updateBaseMapData(map, userLocation, routePoints, stops)
-                                syncScenicMarkers(map, context, visibleHighlights)
+                                updateBaseMapData(map, userLocation, routePoints)
+                                syncScenicMarkers(map, context, visibleHighlights, plannedStopIds)
                             }
                         }.onFailure { error ->
                             mapError = error.message ?: "Map style failed"
@@ -338,12 +365,12 @@ fun ScenicMap(
         }
     }
 
-    LaunchedEffect(userLocation, routePoints, stops, styleLoaded) {
-        if (styleLoaded) mapRef?.let { updateBaseMapData(it, userLocation, routePoints, stops) }
+    LaunchedEffect(userLocation, routePoints, styleLoaded) {
+        if (styleLoaded) mapRef?.let { updateBaseMapData(it, userLocation, routePoints) }
     }
-    LaunchedEffect(visibleHighlights, styleLoaded) {
+    LaunchedEffect(visibleHighlights, plannedStopIds, styleLoaded) {
         if (styleLoaded && visibleHighlights.isNotEmpty()) {
-            mapRef?.let { syncScenicMarkers(it, context, visibleHighlights) }
+            mapRef?.let { syncScenicMarkers(it, context, visibleHighlights, plannedStopIds) }
         }
     }
     LaunchedEffect(userLocation, routePoints, styleLoaded) {
@@ -386,15 +413,9 @@ private fun ensureBaseLayers(style: Style) {
             lineColor("#1769E0"), lineWidth(6f), lineOpacity(0.92f)
         ))
     }
-    if (style.getSource(STOP_SOURCE) == null) style.addSource(GeoJsonSource(STOP_SOURCE, empty))
-    if (style.getLayer(STOP_LAYER) == null) {
-        style.addLayer(CircleLayer(STOP_LAYER, STOP_SOURCE).withProperties(
-            circleRadius(9f), circleColor("#F59E0B"), circleStrokeColor("#FFFFFF"), circleStrokeWidth(2.5f)
-        ))
-    }
 }
 
-private fun updateBaseMapData(map: MapLibreMap, userLocation: GeoPoint?, routePoints: List<GeoPoint>, stops: List<PlannedStop>) {
+private fun updateBaseMapData(map: MapLibreMap, userLocation: GeoPoint?, routePoints: List<GeoPoint>) {
     val style = map.style ?: return
     ensureBaseLayers(style)
 
@@ -413,30 +434,25 @@ private fun updateBaseMapData(map: MapLibreMap, userLocation: GeoPoint?, routePo
     } else {
         routeSource?.setGeoJson(FeatureCollection.fromFeatures(emptyArray<Feature>()))
     }
-
-    val stopFeatures = stops.mapNotNull { stop ->
-        stop.point?.let { Feature.fromGeometry(Point.fromLngLat(it.lon, it.lat)) }
-    }
-    style.getSourceAs<GeoJsonSource>(STOP_SOURCE)?.setGeoJson(FeatureCollection.fromFeatures(stopFeatures))
 }
 
 @Suppress("DEPRECATION")
-private fun syncScenicMarkers(map: MapLibreMap, context: Context, highlights: List<ScenePointUi>) {
-    // Never erase an already rendered population because a provider/Compose frame is empty.
-    // Route removal clears annotations explicitly in the routePoints effect above.
+private fun syncScenicMarkers(
+    map: MapLibreMap,
+    context: Context,
+    highlights: List<ScenePointUi>,
+    plannedStopIds: Set<String>,
+) {
     if (highlights.isEmpty()) return
     map.removeAnnotations()
 
-    val included = highlights.filter { it.includedInRoute }
-    val includedOrder = included.mapIndexed { index, point -> point.id to (index + 1).toString() }.toMap()
     val iconFactory = IconFactory.getInstance(context)
     val cache = mutableMapOf<String, org.maplibre.android.annotations.Icon>()
     val options = highlights.take(MAX_SCENIC_MARKERS).map { highlight ->
-        val number = includedOrder[highlight.id]
-        val symbol = number ?: scenicCategoryLaneFor(highlight).emoji
-        val includedStop = number != null
-        val cacheKey = "$symbol:$includedStop"
-        val icon = cache.getOrPut(cacheKey) { iconFactory.fromBitmap(createMarkerBitmap(symbol, includedStop)) }
+        val symbol = scenicCategoryLaneFor(highlight).emoji
+        val emphasized = highlight.includedInRoute || highlight.id in plannedStopIds
+        val cacheKey = "$symbol:$emphasized"
+        val icon = cache.getOrPut(cacheKey) { iconFactory.fromBitmap(createMarkerBitmap(symbol, emphasized)) }
         MarkerOptions()
             .position(LatLng(highlight.point.lat, highlight.point.lon))
             .title(highlight.name)
@@ -446,27 +462,56 @@ private fun syncScenicMarkers(map: MapLibreMap, context: Context, highlights: Li
     map.addMarkers(options)
 }
 
-private fun createMarkerBitmap(symbol: String, included: Boolean): Bitmap {
-    val size = if (included) 78 else 76
+/**
+ * Normal candidates keep the established white/green marker. A route waypoint keeps that same
+ * category emoji but receives a bright multi-ring halo, so selection is obvious without losing
+ * the semantic meaning of 🍽️ / 🏛️ / 🏰 / 👁️ / etc.
+ */
+private fun createMarkerBitmap(symbol: String, emphasized: Boolean): Bitmap {
+    val size = if (emphasized) 94 else 76
     val bitmap = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
     val canvas = Canvas(bitmap)
     val center = size / 2f
+
+    if (emphasized) {
+        val outerGlow = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = Color.argb(72, 91, 246, 196)
+            style = Paint.Style.STROKE
+            strokeWidth = 10f
+        }
+        val middleGlow = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = Color.argb(150, 35, 220, 166)
+            style = Paint.Style.STROKE
+            strokeWidth = 6f
+        }
+        val brightRing = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = Color.rgb(124, 255, 215)
+            style = Paint.Style.STROKE
+            strokeWidth = 3.5f
+        }
+        canvas.drawCircle(center, center, center - 8f, outerGlow)
+        canvas.drawCircle(center, center, center - 12f, middleGlow)
+        canvas.drawCircle(center, center, center - 16f, brightRing)
+    }
+
+    val markerRadius = if (emphasized) center - 18f else center - 5f
     val fill = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = if (included) Color.rgb(245, 158, 11) else Color.WHITE
+        color = Color.WHITE
         style = Paint.Style.FILL
     }
     val stroke = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = if (included) Color.WHITE else Color.rgb(20, 124, 82)
+        color = Color.rgb(20, 124, 82)
         style = Paint.Style.STROKE
-        strokeWidth = if (included) 6f else 5f
+        strokeWidth = if (emphasized) 5.5f else 5f
     }
-    canvas.drawCircle(center, center, center - 5f, fill)
-    canvas.drawCircle(center, center, center - 5f, stroke)
+    canvas.drawCircle(center, center, markerRadius, fill)
+    canvas.drawCircle(center, center, markerRadius, stroke)
+
     val text = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = if (included) Color.WHITE else Color.rgb(20, 92, 65)
+        color = Color.rgb(20, 92, 65)
         textAlign = Paint.Align.CENTER
-        typeface = if (included) Typeface.DEFAULT_BOLD else Typeface.DEFAULT
-        textSize = if (included) size * 0.42f else size * 0.50f
+        typeface = Typeface.DEFAULT
+        textSize = if (emphasized) 42f else size * 0.50f
     }
     canvas.drawText(symbol, center, center - (text.ascent() + text.descent()) / 2f, text)
     return bitmap
