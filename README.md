@@ -41,6 +41,10 @@ Current planner capabilities include:
 - motorway/toll preferences
 - route persistence during replacement calculations
 
+## Validation
+
+The v0.5.4 app-code commit `a8a95ae538e2521021d3f34f5fb1f9b808cc3de4` passed Android CI #190, Backend tests #190 and POI provider smoke #16. The following README-only commits do not modify the APK source.
+
 ## Development infrastructure
 
 Public Photon, Overpass, OpenStreetMap and OpenFreeMap endpoints are development/testing infrastructure. A production Play Store release should use controlled/self-hosted or contracted providers and follow each provider's attribution, caching, quota and branding requirements.
