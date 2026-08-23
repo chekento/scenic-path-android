@@ -6,28 +6,19 @@ import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 
-/**
- * Bounded route-wide discovery used while a journey is being planned.
- *
- * Earlier versions had a second, independent Overpass implementation here. On long routes
- * it sampled a few circular windows, deduplicated unrelated nearby POIs and could therefore
- * hand the long-route optimizer mostly water/nature even though the post-route map had a
- * better precision scanner.
- *
- * v0.5 has one taxonomy and one corridor algorithm. Photon remains a quick independent OSM
- * source; PrecisionRoutePoiDiscovery follows the actual route line. The precision task is
- * time-bounded so the long-route planner can still meet its own latency guard.
- */
 object FastRoutePoiDiscovery {
     suspend fun discover(
         route: List<GeoPoint>,
         enabledKinds: Set<StopKind> = prototypeSelectableSceneKinds,
         maxResults: Int = 40,
     ): List<ScenePointUi> = withContext(Dispatchers.IO) {
-        if (route.size < 2 || enabledKinds.isEmpty() || maxResults <= 0) {
-            return@withContext emptyList()
-        }
+        if (route.size < 2 || enabledKinds.isEmpty() || maxResults <= 0) return@withContext emptyList()
 
+        // Planning calls are small (typically 24-40 results) and need enough category
+        // coverage before the itinerary is chosen. Map and Smart Stops calls request 100+
+        // results and already launch PrecisionRoutePoiDiscovery themselves, so they only
+        // need Photon from this quick source.
+        val includePrecision = maxResults < 100
         val (photon, precision) = coroutineScope {
             val photonJob = async(Dispatchers.IO) {
                 runCatching {
@@ -41,7 +32,7 @@ object FastRoutePoiDiscovery {
                 }.getOrElse { emptyList() }
             }
             val precisionJob = async(Dispatchers.IO) {
-                withTimeoutOrNull(8_500) {
+                if (!includePrecision) emptyList() else withTimeoutOrNull(8_500) {
                     runCatching {
                         PrecisionRoutePoiDiscovery.discover(
                             route = route,
@@ -55,19 +46,9 @@ object FastRoutePoiDiscovery {
             }
             photonJob.await() to precisionJob.await()
         }
-
-        mergeResults(
-            first = precision,
-            second = photon,
-            enabledKinds = enabledKinds,
-            maxResults = maxResults,
-        )
+        mergeResults(precision, photon, enabledKinds, maxResults)
     }
 
-    /**
-     * Compatibility entry point for Photon missing-category rescue. It deliberately skips
-     * Photon so there is no recursion and queries the continuous corridor directly.
-     */
     internal suspend fun discoverTargetedOnly(
         route: List<GeoPoint>,
         enabledKinds: Set<StopKind>,
@@ -76,9 +57,7 @@ object FastRoutePoiDiscovery {
         maxSamples: Int = 10,
         allowBackfill: Boolean = true,
     ): List<ScenePointUi> = withContext(Dispatchers.IO) {
-        if (route.size < 2 || enabledKinds.isEmpty() || maxResults <= 0) {
-            return@withContext emptyList()
-        }
+        if (route.size < 2 || enabledKinds.isEmpty() || maxResults <= 0) return@withContext emptyList()
 
         val normal = withTimeoutOrNull(9_000) {
             runCatching {
@@ -91,7 +70,6 @@ object FastRoutePoiDiscovery {
                 )
             }.getOrElse { emptyList() }
         }.orEmpty()
-
         if (!allowBackfill) return@withContext normal
 
         val missing = enabledKinds.filterTo(linkedSetOf()) { kind ->
@@ -110,7 +88,6 @@ object FastRoutePoiDiscovery {
                 )
             }.getOrElse { emptyList() }
         }.orEmpty()
-
         mergeResults(normal, wider, enabledKinds, maxResults)
     }
 
@@ -124,10 +101,6 @@ object FastRoutePoiDiscovery {
             val kind = StopKind.entries.firstOrNull { it.name == point.kind } ?: StopKind.SCENIC
             kind == StopKind.SCENIC || kind in enabledKinds
         }
-        return PrecisionRoutePoiDiscovery.mergeForDisplay(
-            first = allowed,
-            second = emptyList(),
-            maxResults = maxResults,
-        )
+        return PrecisionRoutePoiDiscovery.mergeForDisplay(allowed, emptyList(), maxResults)
     }
 }
