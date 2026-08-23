@@ -35,6 +35,8 @@ Validated v0.5.7 APK source head: `e1e5298233e0e5d4245bc3a21174d2f0f6ba6098`.
 - POI provider smoke #40: passed
 - direct APK SHA-256: `06c0b8a9877423b8af449cced971c50f5c6ea5c3c7abb751e1d145ace939c920`
 
+The subsequent README-only commit does not alter the validated APK source.
+
 ## Development infrastructure
 
 Public OpenStreetMap, Photon, Nominatim, Overpass and routing services are used only as development/test infrastructure. Production deployment should use controlled/self-hosted or contracted providers and comply with each provider's usage, attribution and branding requirements.
