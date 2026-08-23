@@ -21,11 +21,15 @@ fun ScenicLocationDetailsCard(
     highlight: ScenePointUi,
     details: ScenicPoiDetails,
     detailsLoading: Boolean,
+    isPlannedStop: Boolean,
+    routeDirty: Boolean,
     onClose: () -> Unit,
     onOpenUrl: (String) -> Unit,
     onCall: (String) -> Unit,
     onEmail: (String) -> Unit,
     onOpenOsm: () -> Unit,
+    onTogglePlannedStop: () -> Unit,
+    onRecalculateRoute: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     Card(
@@ -35,7 +39,7 @@ fun ScenicLocationDetailsCard(
     ) {
         Column(
             Modifier
-                .heightIn(max = 590.dp)
+                .heightIn(max = 610.dp)
                 .verticalScroll(rememberScrollState())
                 .padding(15.dp),
             verticalArrangement = Arrangement.spacedBy(10.dp),
@@ -43,7 +47,7 @@ fun ScenicLocationDetailsCard(
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Surface(
                     shape = MaterialTheme.shapes.large,
-                    color = if (highlight.includedInRoute) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.secondaryContainer,
+                    color = if (isPlannedStop || highlight.includedInRoute) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.secondaryContainer,
                 ) {
                     Text(
                         scenicCategoryLaneFor(highlight).emoji,
@@ -63,7 +67,13 @@ fun ScenicLocationDetailsCard(
                 IconButton(onClick = onClose) { Icon(Icons.Default.Close, "Close location info") }
             }
 
-            if (highlight.includedInRoute) {
+            if (isPlannedStop) {
+                Text(
+                    "✓ Selected as a route waypoint",
+                    fontWeight = FontWeight.SemiBold,
+                    color = MaterialTheme.colorScheme.primary,
+                )
+            } else if (highlight.includedInRoute) {
                 Text(
                     "✓ Automatically included in this journey",
                     fontWeight = FontWeight.SemiBold,
@@ -77,6 +87,39 @@ fun ScenicLocationDetailsCard(
                 highlight.personalMatch?.let { add("${it.toInt()}% match") }
             }
             Text(routeFacts.joinToString(" · "), style = MaterialTheme.typography.bodyMedium)
+
+            Surface(
+                shape = MaterialTheme.shapes.large,
+                color = MaterialTheme.colorScheme.surfaceContainerLow,
+            ) {
+                Column(Modifier.fillMaxWidth().padding(10.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    if (isPlannedStop) {
+                        OutlinedButton(onClick = onTogglePlannedStop, modifier = Modifier.fillMaxWidth()) {
+                            Icon(Icons.Default.RemoveCircleOutline, null, Modifier.size(18.dp))
+                            Spacer(Modifier.width(7.dp))
+                            Text("Remove from route")
+                        }
+                    } else {
+                        Button(onClick = onTogglePlannedStop, modifier = Modifier.fillMaxWidth()) {
+                            Icon(Icons.Default.AddLocationAlt, null, Modifier.size(18.dp))
+                            Spacer(Modifier.width(7.dp))
+                            Text("Add as route waypoint")
+                        }
+                    }
+                    if (routeDirty) {
+                        Button(onClick = onRecalculateRoute, modifier = Modifier.fillMaxWidth()) {
+                            Icon(Icons.Default.Route, null, Modifier.size(18.dp))
+                            Spacer(Modifier.width(7.dp))
+                            Text("Recalculate route")
+                        }
+                        Text(
+                            "Your current route stays visible until the replacement route is ready.",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                }
+            }
 
             RatingBlock(
                 rating = details.rating ?: highlight.rating,
