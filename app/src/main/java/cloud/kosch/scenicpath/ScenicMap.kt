@@ -57,7 +57,11 @@ private const val USER_SOURCE = "scenic-user-source"
 private const val USER_LAYER = "scenic-user-layer"
 private const val ROUTE_SOURCE = "scenic-route-source"
 private const val ROUTE_LAYER = "scenic-route-layer"
-private const val MAX_SCENIC_MARKERS = 240
+
+// A long planning session can deliberately widen its corridor through selected POIs. Keep enough
+// capacity that old route discoveries and newly reached areas can coexist instead of trading one
+// marker set for another after the third/fourth waypoint.
+private const val MAX_SCENIC_MARKERS = 420
 
 /** MapLibre route host + durable Compose POIs + first native live-navigation mode. */
 @Composable
@@ -193,6 +197,8 @@ fun ScenicMap(
     }
 
     // Route-wide multi-provider POI population. Any provider can paint first; later results enrich.
+    // Recalculated waypoint routes search their new corridor too. ScenicPoiSharedState merges those
+    // discoveries with the previous corridor so a deliberate detour grows the exploration space.
     LaunchedEffect(routePoints) {
         selectedHighlight = null
         if (routePoints.size < 2) {
@@ -202,6 +208,9 @@ fun ScenicMap(
 
         val journeyKey = routeJourneyKey(routePoints)
         if (retainedJourneyKey != null && retainedJourneyKey != journeyKey) {
+            // Local provider results may reset after a materially different endpoint snap, but the
+            // shared journey pool remains authoritative and immediately repopulates the map when
+            // this is still the same planning journey.
             localHighlights = emptyList()
             retainedHighlights = emptyList()
         }
@@ -220,12 +229,12 @@ fun ScenicMap(
         coroutineScope {
             launch(Dispatchers.IO) {
                 commit(runCatching {
-                    RapidRoutePoiDiscovery.discover(routePoints, enabledKinds, 150)
+                    RapidRoutePoiDiscovery.discover(routePoints, enabledKinds, 220)
                 }.getOrElse { emptyList() })
             }
             launch(Dispatchers.IO) {
                 commit(runCatching {
-                    FastRoutePoiDiscovery.discover(routePoints, enabledKinds, 150)
+                    FastRoutePoiDiscovery.discover(routePoints, enabledKinds, 220)
                 }.getOrElse { emptyList() })
             }
             launch(Dispatchers.IO) {
@@ -511,7 +520,10 @@ private fun ScenicPoiOverlayMarker(
 
 private fun routeJourneyKey(route: List<GeoPoint>): String? {
     if (route.size < 2) return null
-    fun bucket(value: Double): Int = (value * 10_000.0).roundToInt()
+    // This is only a *local cache* hint. Use a coarser bucket than older 11 m buckets so ordinary
+    // Valhalla road snapping does not constantly flush the local provider cache. The authoritative
+    // journey-preservation decision lives in ScenicPoiSharedState's distance-based endpoint check.
+    fun bucket(value: Double): Int = (value * 1_000.0).roundToInt()
     val first = route.first()
     val last = route.last()
     return "${bucket(first.lat)},${bucket(first.lon)}:${bucket(last.lat)},${bucket(last.lon)}"
