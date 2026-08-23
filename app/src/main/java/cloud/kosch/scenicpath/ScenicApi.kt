@@ -76,12 +76,34 @@ object ScenicApi {
         query: String,
         bias: GeoPoint? = null,
     ): List<PlaceSuggestion> = withContext(Dispatchers.IO) {
-        if (query.trim().length < 2) return@withContext emptyList()
+        val normalized = query.trim()
+        if (normalized.length < 2) return@withContext emptyList()
 
-        val backend = runCatching { searchBackend(query.trim(), bias) }.getOrNull().orEmpty()
+        // The default debug URL (10.0.2.2) only exists from an Android emulator. A physical
+        // phone must never wait on that dead endpoint before it can enter a destination.
+        // Prefer the platform geocoder for ordinary cities/addresses, then Photon/OSM for
+        // landmarks and richer POIs. This also decouples destination entry from POI-provider
+        // throttling caused by long corridor discovery runs.
+        if (BuildConfig.DEBUG) {
+            val device = searchDeviceGeocoder(context, normalized)
+            if (device.isNotEmpty()) return@withContext device
+
+            val osm = runCatching { OsmPlaceSearch.search(normalized, bias) }.getOrNull().orEmpty()
+            if (osm.isNotEmpty()) return@withContext osm
+
+            // Only try a non-local configured backend in debug. Never hit emulator localhost
+            // from a physical device as a final fallback.
+            if (!baseUrl.contains("10.0.2.2") && !baseUrl.contains("127.0.0.1") && !baseUrl.contains("localhost")) {
+                val backend = runCatching { searchBackend(normalized, bias) }.getOrNull().orEmpty()
+                if (backend.isNotEmpty()) return@withContext backend
+            }
+            return@withContext emptyList()
+        }
+
+        val backend = runCatching { searchBackend(normalized, bias) }.getOrNull().orEmpty()
         if (backend.isNotEmpty()) return@withContext backend
 
-        searchDeviceGeocoder(context, query.trim())
+        searchDeviceGeocoder(context, normalized)
     }
 
     suspend fun planRoute(
