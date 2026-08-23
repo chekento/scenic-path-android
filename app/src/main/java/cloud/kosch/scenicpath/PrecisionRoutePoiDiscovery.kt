@@ -13,7 +13,6 @@ import java.net.URLEncoder
 import java.util.Locale
 import kotlin.math.asin
 import kotlin.math.cos
-import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.pow
 import kotlin.math.roundToInt
@@ -21,14 +20,13 @@ import kotlin.math.sin
 import kotlin.math.sqrt
 
 /**
- * Route-wide OSM POI discovery that follows the route corridor instead of probing a few
- * isolated circles.
+ * Coverage-first OSM discovery along the actual route corridor.
  *
- * The important difference is the Overpass linestring `around` filter. Every segment query
- * follows a simplified piece of the actual road geometry, so restaurants, museums, castles,
- * art, worship, architecture and attractions between sparse route samples can no longer fall
- * through gaps. Long routes are split into bounded segments and query families fail
- * independently, keeping public development endpoints usable while preserving coverage.
+ * v0.5 no longer asks Overpass for one huge union and then applies one shared output limit.
+ * That design allowed a dense feature type (especially water or restaurants) to consume the
+ * response before museums, heritage or architecture were returned. Each selector now has
+ * its own output quota inside one of four failure-isolated request groups. A museum cannot be
+ * crowded out by 300 restaurants and a heritage timeout cannot erase the food result set.
  */
 object PrecisionRoutePoiDiscovery {
     private val endpoints = listOf(
@@ -37,88 +35,79 @@ object PrecisionRoutePoiDiscovery {
         "https://overpass.private.coffee/api/interpreter",
     )
 
-    private data class QueryFamily(
-        val id: String,
-        val acceptedKinds: Set<StopKind>,
-        val normalRadiusMeters: Int,
-        val deepRadiusMeters: Int,
+    private data class SelectorSpec(
+        val requiredKind: StopKind?,
+        val filter: String,
         val normalLimit: Int,
         val deepLimit: Int,
-        val filters: List<String>,
     )
 
-    private val allFamilies = listOf(
-        QueryFamily(
-            id = "food",
-            acceptedKinds = setOf(StopKind.FOOD),
+    private data class QueryGroup(
+        val id: String,
+        val normalRadiusMeters: Int,
+        val deepRadiusMeters: Int,
+        val selectors: List<SelectorSpec>,
+    )
+
+    private val groups = listOf(
+        QueryGroup(
+            id = "essential",
             normalRadiusMeters = 8_000,
             deepRadiusMeters = 14_000,
-            normalLimit = 320,
-            deepLimit = 520,
-            filters = listOf(
-                "[amenity~\"^(restaurant|cafe|biergarten|food_court)$\"][name]",
-                "[tourism=hotel][restaurant=yes][name]",
+            selectors = listOf(
+                SelectorSpec(StopKind.FOOD, "[amenity~\"^(restaurant|cafe|biergarten|food_court)$\"][name]", 80, 130),
+                SelectorSpec(StopKind.FOOD, "[tourism=hotel][restaurant=yes][name]", 20, 35),
+                SelectorSpec(StopKind.MUSEUM, "[tourism=museum][name]", 45, 75),
+                SelectorSpec(StopKind.VIEWPOINT, "[tourism=viewpoint][name]", 45, 75),
+                SelectorSpec(StopKind.VIEWPOINT, "[man_made=observation_tower][name]", 25, 40),
             ),
         ),
-        QueryFamily(
+        QueryGroup(
             id = "heritage",
-            acceptedKinds = setOf(StopKind.VIEWPOINT, StopKind.MUSEUM, StopKind.MONUMENT),
             normalRadiusMeters = 14_000,
             deepRadiusMeters = 24_000,
-            normalLimit = 520,
-            deepLimit = 800,
-            filters = listOf(
-                "[tourism=museum][name]",
-                "[historic][name]",
-                "[heritage][name]",
-                "[memorial][name]",
-                "[tourism=viewpoint][name]",
-                "[man_made=observation_tower][name]",
+            selectors = listOf(
+                SelectorSpec(
+                    StopKind.MONUMENT,
+                    "[historic~\"^(castle|manor|palace|fort|ruins|monument|memorial|archaeological_site|battlefield|city_gate)$\"][name]",
+                    80,
+                    130,
+                ),
+                SelectorSpec(StopKind.MONUMENT, "[castle_type][name]", 35, 55),
+                SelectorSpec(StopKind.MONUMENT, "[heritage][name]", 55, 90),
+                SelectorSpec(StopKind.MONUMENT, "[memorial][name]", 35, 55),
             ),
         ),
-        QueryFamily(
+        QueryGroup(
             id = "culture",
-            acceptedKinds = setOf(StopKind.ART, StopKind.WORSHIP, StopKind.ARCHITECTURE),
-            normalRadiusMeters = 14_000,
-            deepRadiusMeters = 24_000,
-            normalLimit = 520,
-            deepLimit = 800,
-            filters = listOf(
-                "[tourism~\"^(artwork|gallery)$\"][name]",
-                "[amenity=arts_centre][name]",
-                "[artwork_type][name]",
-                "[amenity=place_of_worship][name]",
-                "[building~\"^(church|cathedral|chapel|mosque|synagogue|temple)$\"][name]",
-                "[man_made~\"^(tower|lighthouse|water_tower|windmill|watermill)$\"][name]",
-                "[bridge][name]",
-                "[historic=aqueduct][name]",
+            normalRadiusMeters = 12_000,
+            deepRadiusMeters = 22_000,
+            selectors = listOf(
+                SelectorSpec(StopKind.ART, "[tourism~\"^(artwork|gallery)$\"][name]", 55, 90),
+                SelectorSpec(StopKind.ART, "[amenity~\"^(arts_centre|theatre)$\"][name]", 40, 65),
+                SelectorSpec(StopKind.ART, "[artwork_type][name]", 45, 70),
+                SelectorSpec(StopKind.WORSHIP, "[amenity=place_of_worship][name]", 70, 110),
+                SelectorSpec(StopKind.WORSHIP, "[building~\"^(church|cathedral|chapel|mosque|synagogue|temple)$\"][name]", 55, 90),
+                SelectorSpec(StopKind.ARCHITECTURE, "[man_made~\"^(tower|lighthouse|water_tower|windmill|watermill)$\"][name]", 50, 80),
+                SelectorSpec(StopKind.ARCHITECTURE, "[bridge][name]", 45, 70),
+                SelectorSpec(StopKind.ARCHITECTURE, "[historic=aqueduct][name]", 20, 35),
             ),
         ),
-        QueryFamily(
-            id = "nature",
-            acceptedKinds = setOf(StopKind.NATURE, StopKind.PARK, StopKind.WATER),
-            normalRadiusMeters = 11_000,
-            deepRadiusMeters = 19_000,
-            normalLimit = 520,
-            deepLimit = 780,
-            filters = listOf(
-                "[natural~\"^(peak|cape|stone|rock|cave_entrance|wood|water|beach|spring)$\"][name]",
-                "[geological][name]",
-                "[landuse=forest][name]",
-                "[leisure~\"^(park|garden|nature_reserve)$\"][name]",
-                "[boundary~\"^(protected_area|national_park)$\"][name]",
-                "[waterway~\"^(waterfall|river)$\"][name]",
-            ),
-        ),
-        QueryFamily(
-            id = "attractions",
-            acceptedKinds = setOf(StopKind.SCENIC),
-            normalRadiusMeters = 14_000,
-            deepRadiusMeters = 24_000,
-            normalLimit = 360,
-            deepLimit = 620,
-            filters = listOf(
-                "[tourism~\"^(attraction|zoo|theme_park|aquarium)$\"][name]",
+        QueryGroup(
+            id = "landscape",
+            normalRadiusMeters = 10_000,
+            deepRadiusMeters = 18_000,
+            selectors = listOf(
+                SelectorSpec(StopKind.NATURE, "[natural~\"^(peak|cape|stone|rock|cave_entrance|cliff|ridge)$\"][name]", 55, 90),
+                SelectorSpec(StopKind.NATURE, "[geological][name]", 35, 55),
+                SelectorSpec(StopKind.NATURE, "[landuse=forest][name]", 45, 70),
+                SelectorSpec(StopKind.NATURE, "[natural=wood][name]", 45, 70),
+                SelectorSpec(StopKind.PARK, "[leisure~\"^(park|garden|nature_reserve)$\"][name]", 60, 95),
+                SelectorSpec(StopKind.PARK, "[boundary~\"^(protected_area|national_park)$\"][name]", 40, 65),
+                SelectorSpec(StopKind.WATER, "[natural~\"^(water|beach|spring)$\"][name]", 55, 85),
+                SelectorSpec(StopKind.WATER, "[waterway~\"^(waterfall|river)$\"][name]", 50, 80),
+                // Scenic attractions are intentionally always available as a distinct lane.
+                SelectorSpec(null, "[tourism~\"^(attraction|zoo|theme_park|aquarium)$\"][name]", 45, 75),
             ),
         ),
     )
@@ -130,71 +119,94 @@ object PrecisionRoutePoiDiscovery {
         radiusMeters: Int = 15_000,
         maxSamples: Int = 10,
     ): List<ScenePointUi> = withContext(Dispatchers.IO) {
-        if (route.size < 2 || enabledKinds.isEmpty()) return@withContext emptyList()
+        if (route.size < 2 || enabledKinds.isEmpty() || maxResults <= 0) return@withContext emptyList()
 
         val deep = radiusMeters >= 24_000 || maxSamples >= 12
-        val segmentLength = if (deep) 52_000.0 else 68_000.0
-        val maxPolylinePoints = if (deep) 20 else 16
-        val segments = splitRoute(route, segmentLength, maxPolylinePoints)
-        val routeForDistance = sampleRoute(route, if (deep) 520 else 360)
-
-        val families = allFamilies.filter { family ->
-            family.id == "attractions" || family.acceptedKinds.any { it in enabledKinds }
-        }
+        val segments = splitRoute(
+            route = route,
+            maxSegmentMeters = if (deep) 50_000.0 else 82_000.0,
+            maxPointsPerSegment = if (deep) 16 else 13,
+        )
+        val routeForDistance = sampleRoute(route, if (deep) 560 else 380)
         val collected = mutableListOf<ScenePointUi>()
 
-        // Segment by segment keeps requests bounded. Only two query families run at once so
-        // public Overpass development endpoints are not hammered by a long route.
         for (segment in segments) {
-            for (batch in families.chunked(2)) {
-                val resultSets = coroutineScope {
-                    batch.map { family ->
-                        async(Dispatchers.IO) {
-                            runCatching {
-                                querySegment(
-                                    family = family,
-                                    segment = segment,
-                                    routeForDistance = routeForDistance,
-                                    enabledKinds = enabledKinds,
-                                    deep = deep,
-                                    requestedRadiusMeters = radiusMeters,
-                                )
-                            }.getOrElse { emptyList() }
-                        }
-                    }.awaitAll()
+            val activeGroups = groups.mapNotNull { group ->
+                val activeSelectors = group.selectors.filter { selector ->
+                    selector.requiredKind == null || selector.requiredKind in enabledKinds
                 }
-                resultSets.forEach(collected::addAll)
+                if (activeSelectors.isEmpty()) null else group to activeSelectors
             }
+
+            // Four groups at most: essential, heritage, culture, landscape. Failures are
+            // isolated and endpoint selection is rotated per query to avoid a single public
+            // instance becoming the sole point of failure.
+            val resultSets = coroutineScope {
+                activeGroups.map { (group, selectors) ->
+                    async(Dispatchers.IO) {
+                        runCatching {
+                            querySegment(
+                                group = group,
+                                selectors = selectors,
+                                segment = segment,
+                                routeForDistance = routeForDistance,
+                                enabledKinds = enabledKinds,
+                                deep = deep,
+                                requestedRadiusMeters = radiusMeters,
+                            )
+                        }.getOrElse { emptyList() }
+                    }
+                }.awaitAll()
+            }
+            resultSets.forEach(collected::addAll)
         }
 
         balanceAndDedupe(collected, maxResults)
     }
 
+    /**
+     * Display merge also applies the currently committed broad filter set. This prevents old
+     * locally cached map results from re-introducing a category the user has disabled.
+     */
     internal fun mergeForDisplay(
         first: List<ScenePointUi>,
         second: List<ScenePointUi>,
         maxResults: Int,
-    ): List<ScenePointUi> = balanceAndDedupe(first + second, maxResults)
+    ): List<ScenePointUi> {
+        val active = ScenicSceneSelectionState.activeKinds
+        val filtered = (first + second).filter { point ->
+            val kind = StopKind.entries.firstOrNull { it.name == point.kind } ?: StopKind.SCENIC
+            kind == StopKind.SCENIC || kind in active
+        }
+        return balanceAndDedupe(filtered, maxResults)
+    }
 
     private fun querySegment(
-        family: QueryFamily,
+        group: QueryGroup,
+        selectors: List<SelectorSpec>,
         segment: List<GeoPoint>,
         routeForDistance: List<GeoPoint>,
         enabledKinds: Set<StopKind>,
         deep: Boolean,
         requestedRadiusMeters: Int,
     ): List<ScenePointUi> {
-        if (segment.size < 2) return emptyList()
+        if (segment.size < 2 || selectors.isEmpty()) return emptyList()
 
-        val familyRadius = if (deep) family.deepRadiusMeters else family.normalRadiusMeters
-        val radius = min(requestedRadiusMeters.coerceAtLeast(5_000), familyRadius)
-        val outputLimit = if (deep) family.deepLimit else family.normalLimit
+        val familyRadius = if (deep) group.deepRadiusMeters else group.normalRadiusMeters
+        val radius = min(requestedRadiusMeters.coerceAtLeast(4_000), familyRadius)
         val line = segment.joinToString(",") { "${it.lat},${it.lon}" }
 
-        val selectors = family.filters.joinToString(separator = "") { filter ->
-            "nwr(around:$radius,$line)$filter;"
+        // Each selector gets an independent `out` limit. Dense restaurant/water data can no
+        // longer consume the museum or viewpoint quota in the same response.
+        val query = buildString {
+            append("[out:json][timeout:${if (deep) 24 else 15}];")
+            selectors.forEach { selector ->
+                val limit = if (deep) selector.deepLimit else selector.normalLimit
+                append("nwr(around:$radius,$line)")
+                append(selector.filter)
+                append(";out center $limit;")
+            }
         }
-        val query = "[out:json][timeout:${if (deep) 30 else 22}];($selectors);out center $outputLimit;"
         val elements = execute(query, deep)
         val points = mutableListOf<ScenePointUi>()
 
@@ -204,13 +216,10 @@ object PrecisionRoutePoiDiscovery {
             val point = elementPoint(element) ?: continue
             val rawType = rawType(tags) ?: continue
             val kind = sceneKindForRawType(rawType)
-
             if (kind != StopKind.SCENIC && kind !in enabledKinds) continue
-            if (family.id != "attractions" && kind !in family.acceptedKinds) continue
-            if (family.id == "attractions" && kind != StopKind.SCENIC) continue
 
             val distance = routeForDistance.minOfOrNull { haversineMeters(point, it) } ?: continue
-            if (distance > radius * 1.28) continue
+            if (distance > radius * 1.30) continue
 
             val name = preferredName(tags).ifBlank { fallbackName(rawType) }
             if (name.isBlank()) continue
@@ -227,8 +236,7 @@ object PrecisionRoutePoiDiscovery {
                 point = point,
                 relevance = relevance,
                 suggestionScore = (
-                    relevance * 100.0 +
-                        metadataBonus(kind, rawType, tags) -
+                    relevance * 100.0 + metadataBonus(kind, rawType, tags) -
                         distance / if (kind == StopKind.FOOD) 520.0 else 460.0
                     ).coerceAtLeast(1.0),
                 distanceFromRouteMeters = distance.roundToInt(),
@@ -246,15 +254,7 @@ object PrecisionRoutePoiDiscovery {
 
         val deduped = mutableListOf<ScenePointUi>()
         input.sortedByDescending { it.suggestionScore }.forEach { candidate ->
-            val duplicate = deduped.any { existing ->
-                existing.id == candidate.id ||
-                    (existing.kind == candidate.kind &&
-                        existing.name.equals(candidate.name, ignoreCase = true) &&
-                        haversineMeters(existing.point, candidate.point) < 300) ||
-                    (existing.kind == candidate.kind &&
-                        existing.subtype == candidate.subtype &&
-                        haversineMeters(existing.point, candidate.point) < 35)
-            }
+            val duplicate = deduped.any { existing -> samePlace(existing, candidate) }
             if (!duplicate) deduped += candidate
         }
 
@@ -262,16 +262,18 @@ object PrecisionRoutePoiDiscovery {
             .groupBy { scenicCategoryLaneFor(it).id }
             .mapValues { (_, values) -> values.sortedByDescending { it.suggestionScore } }
         val result = mutableListOf<ScenePointUi>()
+        val laneCounts = mutableMapOf<String, Int>()
 
-        // Round-robin across user-facing lanes. Nature/water therefore cannot consume the
-        // display budget before restaurants, museums or heritage receive their slots.
         var round = 0
-        while (result.size < maxResults && round < 24) {
+        while (result.size < maxResults && round < 20) {
             var added = false
             scenicCategoryLanes.forEach { lane ->
+                val cap = laneCap(lane.id, maxResults)
+                if ((laneCounts[lane.id] ?: 0) >= cap) return@forEach
                 byLane[lane.id]?.getOrNull(round)?.let { candidate ->
                     if (result.size < maxResults && result.none { it.id == candidate.id }) {
                         result += candidate
+                        laneCounts[lane.id] = (laneCounts[lane.id] ?: 0) + 1
                         added = true
                     }
                 }
@@ -280,26 +282,62 @@ object PrecisionRoutePoiDiscovery {
             round++
         }
 
+        // Spare capacity still respects per-lane caps. This is what prevents a long named
+        // river or a dense park region from turning the map into one-symbol wallpaper.
         deduped.forEach { candidate ->
-            if (result.size < maxResults && result.none { it.id == candidate.id }) result += candidate
+            if (result.size >= maxResults) return@forEach
+            val lane = scenicCategoryLaneFor(candidate)
+            val cap = laneCap(lane.id, maxResults)
+            if ((laneCounts[lane.id] ?: 0) < cap && result.none { it.id == candidate.id }) {
+                result += candidate
+                laneCounts[lane.id] = (laneCounts[lane.id] ?: 0) + 1
+            }
         }
         return result.take(maxResults)
+    }
+
+    private fun laneCap(laneId: String, maxResults: Int): Int {
+        if (maxResults <= 40) return 4
+        val base = if (maxResults <= 140) 9 else 15
+        return when (laneId) {
+            "lakes-rivers" -> min(9, base)
+            "forests-woodland" -> min(9, base)
+            "parks-gardens" -> min(11, base)
+            "peaks-landmarks" -> min(12, base)
+            "restaurants-cafes" -> if (maxResults > 140) 20 else base
+            else -> base
+        }
+    }
+
+    private fun samePlace(a: ScenePointUi, b: ScenePointUi): Boolean {
+        if (a.id == b.id) return true
+        if (a.kind != b.kind) return false
+        val sameName = a.name.trim().equals(b.name.trim(), ignoreCase = true)
+        val distance = haversineMeters(a.point, b.point)
+        if (sameName) {
+            // Rivers are represented by many OSM ways. For POI purposes one named river is
+            // one scenic location, not a row of identical droplet markers.
+            if (a.subtype == "river" && b.subtype == "river") return true
+            val repeatedArea = setOf("lake", "forest", "protected_area", "national_park", "nature_reserve")
+            if (a.subtype in repeatedArea && b.subtype in repeatedArea && distance < 4_000) return true
+            if (distance < 350) return true
+        }
+        return a.subtype == b.subtype && distance < 30
     }
 
     private fun execute(query: String, deep: Boolean): JSONArray {
         val encodedBody = "data=" + URLEncoder.encode(query, Charsets.UTF_8.name())
         val encodedQuery = URLEncoder.encode(query, Charsets.UTF_8.name())
         var lastError: Throwable? = null
+        val start = Math.floorMod(query.hashCode(), endpoints.size)
+        val orderedEndpoints = endpoints.indices.map { endpoints[(start + it) % endpoints.size] }
 
-        for (endpoint in endpoints) {
+        for (endpoint in orderedEndpoints) {
             try {
                 return executePost(endpoint, encodedBody, deep)
             } catch (error: Throwable) {
                 lastError = error
             }
-
-            // GET is a useful fallback for the bounded segment queries if an endpoint or
-            // mobile network path rejects POST bodies. Keep it below a conservative URL size.
             if (encodedQuery.length < 6_500) {
                 try {
                     return executeGet(endpoint, encodedQuery, deep)
@@ -314,8 +352,8 @@ object PrecisionRoutePoiDiscovery {
     private fun executePost(endpoint: String, encodedBody: String, deep: Boolean): JSONArray {
         val connection = (URL(endpoint).openConnection() as HttpURLConnection).apply {
             requestMethod = "POST"
-            connectTimeout = 4_000
-            readTimeout = if (deep) 28_000 else 19_000
+            connectTimeout = if (deep) 3_500 else 2_500
+            readTimeout = if (deep) 15_000 else 9_000
             doOutput = true
             setRequestProperty("Content-Type", "application/x-www-form-urlencoded; charset=utf-8")
             setRequestProperty("Accept", "application/json")
@@ -332,8 +370,8 @@ object PrecisionRoutePoiDiscovery {
     private fun executeGet(endpoint: String, encodedQuery: String, deep: Boolean): JSONArray {
         val connection = (URL("$endpoint?data=$encodedQuery").openConnection() as HttpURLConnection).apply {
             requestMethod = "GET"
-            connectTimeout = 4_000
-            readTimeout = if (deep) 28_000 else 19_000
+            connectTimeout = if (deep) 3_500 else 2_500
+            readTimeout = if (deep) 15_000 else 9_000
             setRequestProperty("Accept", "application/json")
             setRequestProperty("User-Agent", "ScenicPath-Android/${BuildConfig.VERSION_NAME} development")
         }
@@ -376,7 +414,7 @@ object PrecisionRoutePoiDiscovery {
             tourism == "aquarium" -> "attraction"
             tourism == "attraction" -> "attraction"
 
-            amenity == "arts_centre" || tags.optString("artwork_type").isNotBlank() -> "artwork"
+            amenity in setOf("arts_centre", "theatre") || tags.optString("artwork_type").isNotBlank() -> "artwork"
             amenity == "restaurant" -> "restaurant"
             amenity == "cafe" -> "cafe"
             amenity in setOf("biergarten", "food_court") -> "restaurant"
@@ -413,6 +451,7 @@ object PrecisionRoutePoiDiscovery {
             natural == "spring" -> "spring"
             natural == "cave_entrance" -> "cave"
             natural == "wood" -> "forest"
+            natural in setOf("cliff", "ridge") -> "natural_landmark"
             natural in setOf("peak", "cape", "stone", "rock") -> natural
             geological.isNotBlank() -> "geological"
             landuse == "forest" -> "forest"
@@ -437,7 +476,7 @@ object PrecisionRoutePoiDiscovery {
     }
 
     private fun preferredName(tags: JSONObject): String =
-        tags.optString("name").ifBlank { tags.optString("name:de") }
+        tags.optString("name:de").ifBlank { tags.optString("name") }
 
     private fun relevance(kind: StopKind, rawType: String, tags: JSONObject): Double {
         var value = when (kind) {
@@ -478,20 +517,18 @@ object PrecisionRoutePoiDiscovery {
         return bonus
     }
 
-    private fun rationale(kind: StopKind, rawType: String, tags: JSONObject): String? {
-        return when (kind) {
-            StopKind.FOOD -> buildList {
-                add(if (rawType == "restaurant") "restaurant" else "café")
-                tags.optString("cuisine").takeIf { it.isNotBlank() }?.let { add(it.replace(';', ',')) }
-                if (tags.optString("opening_hours").isNotBlank()) add("opening hours mapped")
-                if (tags.optString("website").isNotBlank() || tags.optString("contact:website").isNotBlank()) add("website available")
-            }.joinToString(" · ")
-            StopKind.MONUMENT, StopKind.MUSEUM, StopKind.ARCHITECTURE, StopKind.ART, StopKind.WORSHIP -> buildList {
-                if (tags.optString("wikipedia").isNotBlank() || tags.optString("wikidata").isNotBlank()) add("reference data available")
-                if (tags.optString("heritage").isNotBlank()) add("heritage tagged")
-            }.takeIf { it.isNotEmpty() }?.joinToString(" · ")
-            else -> null
-        }
+    private fun rationale(kind: StopKind, rawType: String, tags: JSONObject): String? = when (kind) {
+        StopKind.FOOD -> buildList {
+            add(if (rawType == "restaurant") "restaurant" else "café")
+            tags.optString("cuisine").takeIf { it.isNotBlank() }?.let { add(it.replace(';', ',')) }
+            if (tags.optString("opening_hours").isNotBlank()) add("opening hours mapped")
+            if (tags.optString("website").isNotBlank() || tags.optString("contact:website").isNotBlank()) add("website available")
+        }.joinToString(" · ")
+        StopKind.MONUMENT, StopKind.MUSEUM, StopKind.ARCHITECTURE, StopKind.ART, StopKind.WORSHIP -> buildList {
+            if (tags.optString("wikipedia").isNotBlank() || tags.optString("wikidata").isNotBlank()) add("reference data available")
+            if (tags.optString("heritage").isNotBlank()) add("heritage tagged")
+        }.takeIf { it.isNotEmpty() }?.joinToString(" · ")
+        else -> null
     }
 
     private fun dwell(rawType: String, kind: StopKind): Int = when (rawType) {
@@ -535,7 +572,6 @@ object PrecisionRoutePoiDiscovery {
             val point = route[index]
             accumulated += haversineMeters(previous, point)
             current += point
-
             if (accumulated >= maxSegmentMeters && index < route.lastIndex) {
                 segments += simplifyByIndex(current, maxPointsPerSegment)
                 current = mutableListOf(point)
@@ -552,9 +588,7 @@ object PrecisionRoutePoiDiscovery {
         return (0 until maxPoints)
             .map { index -> points[(index * step).roundToInt().coerceIn(0, points.lastIndex)] }
             .distinct()
-            .let { simplified ->
-                if (simplified.lastOrNull() == points.last()) simplified else simplified + points.last()
-            }
+            .let { simplified -> if (simplified.lastOrNull() == points.last()) simplified else simplified + points.last() }
     }
 
     private fun sampleRoute(route: List<GeoPoint>, maxSamples: Int): List<GeoPoint> {
