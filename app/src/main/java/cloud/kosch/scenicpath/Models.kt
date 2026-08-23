@@ -40,6 +40,7 @@ data class ScenicPreferences(
     val avoidTolls: Boolean = false,
     val windingness: Int = 70,
     val hilliness: Int = 55,
+    val vehicle: VehicleProfile = VehicleSettingsState.profile,
 )
 
 data class RouteSummary(
