@@ -2,21 +2,30 @@ package cloud.kosch.scenicpath
 
 data class GeoPoint(val lat: Double, val lon: Double)
 
+/**
+ * Default Scenic DNA is deliberately diverse.
+ *
+ * Earlier builds heavily over-weighted water/forest/viewpoints while food was only 0.35.
+ * That made a nominally "Beautiful" journey look like a nature-only filter even when the
+ * user had enabled museums, culture and restaurants. The defaults now keep natural scenery
+ * strong without starving urban, heritage, architecture or food candidates. Users can still
+ * push any dimension to 0–100% in the native planner.
+ */
 data class ScenicWeights(
     val beautifulRoads: Float = 0.90f,
-    val forest: Float = 0.85f,
-    val water: Float = 0.90f,
-    val mountains: Float = 0.75f,
-    val viewpoints: Float = 1.00f,
-    val culture: Float = 0.80f,
-    val monuments: Float = 0.78f,
-    val museums: Float = 0.65f,
-    val art: Float = 0.58f,
-    val worship: Float = 0.48f,
-    val architecture: Float = 0.65f,
-    val parks: Float = 0.60f,
-    val food: Float = 0.35f,
-    val scenicHighlights: Float = 0.70f,
+    val forest: Float = 0.70f,
+    val water: Float = 0.72f,
+    val mountains: Float = 0.68f,
+    val viewpoints: Float = 0.82f,
+    val culture: Float = 0.82f,
+    val monuments: Float = 0.80f,
+    val museums: Float = 0.78f,
+    val art: Float = 0.72f,
+    val worship: Float = 0.62f,
+    val architecture: Float = 0.75f,
+    val parks: Float = 0.68f,
+    val food: Float = 0.72f,
+    val scenicHighlights: Float = 0.80f,
 )
 
 data class ScenicPreferences(
