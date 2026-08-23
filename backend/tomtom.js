@@ -67,7 +67,7 @@ export async function tomTomRoute({
     if (Number.isFinite(v.widthMeters)) params.set("vehicleWidth", String(v.widthMeters));
     if (Number.isFinite(v.lengthMeters)) params.set("vehicleLength", String(v.lengthMeters));
     if (Number.isFinite(v.weightTons)) params.set("vehicleWeight", String(Math.round(v.weightTons * 1000)));
-    if (config.kind === "TRUCK" && Number.isFinite(v.axleLoadTons)) {
+    if (["TRUCK", "COACH"].includes(config.kind) && Number.isFinite(v.axleLoadTons)) {
       params.set("vehicleAxleWeight", String(Math.round(v.axleLoadTons * 1000)));
     }
     params.set("vehicleCommercial", config.kind === "TRUCK" || config.kind === "COACH" ? "true" : "false");
