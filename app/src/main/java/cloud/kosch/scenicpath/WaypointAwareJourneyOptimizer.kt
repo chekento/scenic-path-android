@@ -4,15 +4,10 @@ import kotlin.math.floor
 import kotlin.math.max
 
 /**
- * Waypoint-aware planner with two hard invariants:
- * 1) user POIs are visited in forward corridor order whenever flexible order is enabled;
- * 2) the scenic upgrade may never exceed the user's global extra-time budget.
- *
- * The previous implementation treated the current list order as sacred and stitched the best
- * scenic candidate for every leg. That can create A -> POI -> backwards -> forwards routes and
- * can multiply attractive detours until a 5-6 h journey becomes 10-11 h. This planner first
- * learns the natural A -> B corridor, sorts POIs by their progress on it, then spends one shared
- * scenic budget on the most valuable leg upgrades instead of taking every scenic leg blindly.
+ * Waypoint-aware planner with three hard invariants:
+ * 1) flexible POIs are visited in forward corridor order;
+ * 2) the detour required to reach fixed POIs counts against the user's global time budget;
+ * 3) scenic leg upgrades can only spend what remains of that same budget.
  */
 object WaypointAwareJourneyOptimizer {
     suspend fun plan(
@@ -24,8 +19,6 @@ object WaypointAwareJourneyOptimizer {
         val rawStops = plan.stops.filter { it.mustVisit && it.point != null }
         if (rawStops.isEmpty()) return SegmentedJourneyOptimizer.plan(origin, destination, plan, preferences)
 
-        // A roads-only baseline is the canonical forward direction. It is deliberately free of
-        // automatic POIs so it cannot teach the ordering algorithm a scenic loop.
         val baselinePlan = plan.copy(
             routeCharacter = RouteCharacter.DIRECT,
             stops = emptyList(),
@@ -43,11 +36,8 @@ object WaypointAwareJourneyOptimizer {
 
         val mandatoryStops = if (plan.flexibleStopOrder) {
             rawStops.sortedWith(
-                compareBy<PlannedStop> { stop ->
-                    routeProgressIndex(baseline.points, requireNotNull(stop.point))
-                }.thenBy { stop ->
-                    distanceToRouteMeters(baseline.points, requireNotNull(stop.point))
-                }
+                compareBy<PlannedStop> { stop -> routeProgressIndex(baseline.points, requireNotNull(stop.point)) }
+                    .thenBy { stop -> distanceToRouteMeters(baseline.points, requireNotNull(stop.point)) }
             )
         } else rawStops
 
@@ -59,27 +49,24 @@ object WaypointAwareJourneyOptimizer {
         val legDistances = nodes.zipWithNext().map { (a, b) -> haversineMeters(a, b).coerceAtLeast(1.0) }
         val manualDwell = mandatoryStops.sumOf { it.dwellMinutes }
         val totalBudget = preferences.maxExtraMinutes.coerceAtLeast(0)
-        val driveBudget = (totalBudget - manualDwell).coerceAtLeast(0)
-        val legBudgets = allocate(driveBudget, legDistances)
-        val legStopQuotas = if (plan.autoSuggestStops) allocate(preferences.maxStops.coerceAtLeast(0), legDistances)
-        else List(legDistances.size) { 0 }
 
-        val legResults = nodes.zipWithNext().mapIndexed { index, (from, to) ->
-            val legPlan = plan.copy(
-                routeCharacter = if (plan.routeCharacter == RouteCharacter.DIRECT) RouteCharacter.DIRECT else RouteCharacter.CUSTOM,
+        // First pass: direct legs only. These reveal the true mandatory detour caused by the POIs.
+        val directLegResults = nodes.zipWithNext().map { (from, to) ->
+            val directPlan = plan.copy(
+                routeCharacter = RouteCharacter.DIRECT,
                 stops = emptyList(),
                 flexibleStopOrder = false,
-                autoSuggestStops = plan.autoSuggestStops && legStopQuotas[index] > 0,
+                autoSuggestStops = false,
             )
-            val legPreferences = preferences.copy(
-                maxExtraMinutes = legBudgets[index],
-                maxStops = legStopQuotas[index],
+            SegmentedJourneyOptimizer.plan(
+                from,
+                to,
+                directPlan,
+                preferences.forCharacter(RouteCharacter.DIRECT).copy(maxStops = 0),
             )
-            SegmentedJourneyOptimizer.plan(from, to, legPlan, legPreferences)
         }
-
-        val directPieces = legResults.map(::pickDirect)
-        val direct = stitch(
+        val directPieces = directLegResults.map(::pickDirect)
+        var direct = stitch(
             id = "waypoint-direct",
             label = "Direct via waypoints",
             pieces = directPieces,
@@ -90,19 +77,55 @@ object WaypointAwareJourneyOptimizer {
         )
         validateMandatoryStops(direct.points, mandatoryStops)
 
-        if (plan.routeCharacter == RouteCharacter.DIRECT || driveBudget <= 0) {
+        val mandatoryDriveExtra = max(0.0, (direct.durationSeconds - baseline.durationSeconds) / 60.0)
+        val mandatoryTotalExtra = mandatoryDriveExtra + manualDwell
+        direct = direct.copy(
+            extraMinutes = mandatoryDriveExtra,
+            driveExtraMinutes = mandatoryDriveExtra,
+            totalExtraMinutes = mandatoryTotalExtra,
+        )
+
+        val scenicDriveBudget = (totalBudget - mandatoryTotalExtra.roundToInt()).coerceAtLeast(0)
+        val reordered = mandatoryStops.map { it.id } != rawStops.map { it.id }
+        if (plan.routeCharacter == RouteCharacter.DIRECT || scenicDriveBudget <= 0) {
             return RoutePlanUi(
                 candidates = listOf(direct),
-                baselineDurationSeconds = direct.durationSeconds,
-                baselineDistanceMeters = direct.distanceMeters,
-                note = note(mandatoryStops, plan, preferences, reordered = mandatoryStops.map { it.id } != rawStops.map { it.id }, scenicMinutes = 0),
+                baselineDurationSeconds = baseline.durationSeconds,
+                baselineDistanceMeters = baseline.distanceMeters,
+                note = note(
+                    mandatoryStops,
+                    plan,
+                    totalBudget,
+                    mandatoryDriveExtra,
+                    scenicMinutes = 0,
+                    reordered = reordered,
+                    overBudget = mandatoryTotalExtra > totalBudget + 1.0,
+                ),
             )
         }
 
-        // Start from the guaranteed sane route and treat every scenic leg as an optional upgrade.
-        // Upgrades are selected by experience gain per minute and only while the global budget fits.
+        // Second pass: each leg may offer a scenic upgrade, but all upgrades share only the
+        // remaining budget after fixed-POI travel + dwell time has been paid.
+        val legBudgets = allocate(scenicDriveBudget, legDistances)
+        val legStopQuotas = if (plan.autoSuggestStops) allocate(preferences.maxStops.coerceAtLeast(0), legDistances)
+        else List(legDistances.size) { 0 }
+        val scenicLegResults = nodes.zipWithNext().mapIndexed { index, (from, to) ->
+            val legPlan = plan.copy(
+                routeCharacter = RouteCharacter.CUSTOM,
+                stops = emptyList(),
+                flexibleStopOrder = false,
+                autoSuggestStops = plan.autoSuggestStops && legStopQuotas[index] > 0,
+            )
+            SegmentedJourneyOptimizer.plan(
+                from,
+                to,
+                legPlan,
+                preferences.copy(maxExtraMinutes = legBudgets[index], maxStops = legStopQuotas[index]),
+            )
+        }
+
         data class Upgrade(val index: Int, val candidate: RouteCandidateUi, val extraMinutes: Double, val value: Double)
-        val upgrades = legResults.mapIndexedNotNull { index, result ->
+        val upgrades = scenicLegResults.mapIndexedNotNull { index, result ->
             val scenic = pickScenic(result, plan.routeCharacter)
             val base = directPieces[index]
             val extra = max(0.0, (scenic.durationSeconds - base.durationSeconds) / 60.0)
@@ -113,11 +136,11 @@ object WaypointAwareJourneyOptimizer {
         }.sortedByDescending { it.value }
 
         val chosenPieces = directPieces.toMutableList()
-        var spent = 0.0
+        var scenicSpent = 0.0
         upgrades.forEach { upgrade ->
-            if (spent + upgrade.extraMinutes <= driveBudget + 0.5) {
+            if (scenicSpent + upgrade.extraMinutes <= scenicDriveBudget + 0.5) {
                 chosenPieces[upgrade.index] = upgrade.candidate
-                spent += upgrade.extraMinutes
+                scenicSpent += upgrade.extraMinutes
             }
         }
 
@@ -132,40 +155,36 @@ object WaypointAwareJourneyOptimizer {
         )
         validateMandatoryStops(scenic.points, mandatoryStops)
 
-        val driveExtra = max(0.0, (scenic.durationSeconds - direct.durationSeconds) / 60.0)
-        val totalExtra = driveExtra + scenic.dwellMinutes
-
-        // Final global guard. A provider can occasionally return a wildly looping candidate even
-        // if its per-leg metadata looked acceptable. Never publish it as Best match.
-        if (driveExtra > driveBudget + 1.0 || totalExtra > totalBudget + 1.0) {
+        val totalDriveExtra = max(0.0, (scenic.durationSeconds - baseline.durationSeconds) / 60.0)
+        val totalExtra = totalDriveExtra + scenic.dwellMinutes
+        if (totalExtra > totalBudget + 1.0 && mandatoryTotalExtra <= totalBudget + 1.0) {
             scenic = direct.copy(
                 id = "waypoint-budget-safe",
                 character = plan.routeCharacter.name,
                 variantLabel = "Budget-safe via waypoints",
-                scenicScore = 0.0,
-                experienceScore = 0.0,
                 strongestSignals = (direct.strongestSignals + "globalBudgetGuard").distinct(),
             )
         } else {
             scenic = scenic.copy(
-                extraMinutes = driveExtra,
-                driveExtraMinutes = driveExtra,
+                extraMinutes = totalDriveExtra,
+                driveExtraMinutes = totalDriveExtra,
                 totalExtraMinutes = totalExtra,
-                strongestSignals = (scenic.strongestSignals + listOf("forwardPoiOrder", "globalBudgetGuard")).distinct().take(8),
+                strongestSignals = (scenic.strongestSignals + listOf("forwardPoiOrder", "mandatoryDetourBudget", "globalBudgetGuard")).distinct().take(8),
             )
         }
 
-        val candidates = listOf(scenic, direct).distinctBy(::candidateKey)
         return RoutePlanUi(
-            candidates = candidates,
-            baselineDurationSeconds = direct.durationSeconds,
-            baselineDistanceMeters = direct.distanceMeters,
+            candidates = listOf(scenic, direct).distinctBy(::candidateKey),
+            baselineDurationSeconds = baseline.durationSeconds,
+            baselineDistanceMeters = baseline.distanceMeters,
             note = note(
                 mandatoryStops,
                 plan,
-                preferences,
-                reordered = mandatoryStops.map { it.id } != rawStops.map { it.id },
-                scenicMinutes = driveExtra.coerceAtMost(driveBudget.toDouble()).toInt(),
+                totalBudget,
+                mandatoryDriveExtra,
+                scenicMinutes = scenicSpent.roundToInt(),
+                reordered = reordered,
+                overBudget = mandatoryTotalExtra > totalBudget + 1.0,
             ),
         )
     }
@@ -173,14 +192,19 @@ object WaypointAwareJourneyOptimizer {
     private fun note(
         stops: List<PlannedStop>,
         plan: TripPlan,
-        preferences: ScenicPreferences,
-        reordered: Boolean,
+        totalBudget: Int,
+        mandatoryDriveMinutes: Double,
         scenicMinutes: Int,
+        reordered: Boolean,
+        overBudget: Boolean,
     ): String = buildString {
         append("${stops.size} fixed waypoint${if (stops.size == 1) "" else "s"}")
         if (reordered) append(" · automatically ordered along the route")
-        append(" · $scenicMinutes/${preferences.maxExtraMinutes} extra drive minutes used")
-        if (plan.autoSuggestStops) append(" · Smart Stops share the same global budget")
+        append(" · ${mandatoryDriveMinutes.roundToInt()} min mandatory POI detour")
+        if (scenicMinutes > 0) append(" · +$scenicMinutes min scenic-road upgrade")
+        append(" · ${totalBudget} min global budget")
+        if (overBudget) append(" · fixed POI itself exceeds the time budget")
+        if (plan.autoSuggestStops) append(" · Smart Stops use only remaining budget")
     }
 
     private fun pickDirect(result: RoutePlanUi): RouteCandidateUi =
@@ -221,7 +245,6 @@ object WaypointAwareJourneyOptimizer {
         val weightTotal = pieces.sumOf { it.distanceMeters.coerceAtLeast(1.0) }
         fun weighted(selector: (RouteCandidateUi) -> Double): Double =
             pieces.sumOf { selector(it) * it.distanceMeters.coerceAtLeast(1.0) } / weightTotal
-
         val manualIds = manualHighlights.mapTo(mutableSetOf()) { it.id }
         val scenePoints = buildList {
             addAll(manualHighlights)
@@ -273,8 +296,7 @@ object WaypointAwareJourneyOptimizer {
     private fun validateMandatoryStops(route: List<GeoPoint>, stops: List<PlannedStop>) {
         stops.forEach { stop ->
             val point = stop.point ?: return@forEach
-            val nearest = distanceToRouteMeters(route, point)
-            if (nearest > 900.0) error("Recalculated route bypassed fixed waypoint: ${stop.name}")
+            if (distanceToRouteMeters(route, point) > 900.0) error("Recalculated route bypassed fixed waypoint: ${stop.name}")
         }
     }
 
