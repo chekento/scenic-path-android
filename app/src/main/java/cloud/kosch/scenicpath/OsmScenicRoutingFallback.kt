@@ -41,9 +41,12 @@ object OsmScenicRoutingFallback {
             plan.routeCharacter != RouteCharacter.DIRECT && effective.maxExtraMinutes >= 90
         ) RoadMode.SCENIC_SHORTER else RoadMode.FASTEST
 
+        // Hard constraints belong to the baseline too. Otherwise a user who selected
+        // "avoid motorways" was compared against an unrestricted motorway route and the
+        // waypoint optimizer could even pick that unrestricted geometry as its Direct leg.
         val baseline = requestValhalla(
             locations = listOf(origin) + fixedStops + destination,
-            avoidMotorways = false,
+            avoidMotorways = effective.avoidMotorways,
             avoidTolls = effective.avoidTolls,
             roadMode = RoadMode.FASTEST,
         )
@@ -140,7 +143,7 @@ object OsmScenicRoutingFallback {
             baselineDistanceMeters = baseline.distanceMeters,
             note = buildString {
                 append("OSM development route via Valhalla · +${effective.maxExtraMinutes} min budget")
-                if (effective.avoidMotorways) append(" · motorway-free route validated")
+                if (effective.avoidMotorways) append(" · motorway avoidance active")
                 if (scenicRoadMode == RoadMode.SCENIC_SHORTER) append(" · expanded scenic-road freedom")
                 when {
                     acceptedAutoStops.isNotEmpty() -> {
@@ -191,9 +194,6 @@ object OsmScenicRoutingFallback {
                 put("use_ferry", 0.35)
                 put("use_tracks", 0.0)
                 put("exclude_unpaved", true)
-                // At higher scenic budgets we allow Valhalla to favor a shorter-distance
-                // path rather than remaining tied to the same fastest-time path. The
-                // explicit motorway guard is still applied afterwards.
                 put("shortest", roadMode == RoadMode.SCENIC_SHORTER)
             }))
             put("directions_options", JSONObject().put("units", "kilometers").put("language", "de-DE"))
@@ -234,11 +234,72 @@ object OsmScenicRoutingFallback {
     }
 
     /**
-     * Hard guard: a costing preference is not enough for an explicit motorway ban.
-     * The actual routed edges are checked and the route is rejected if any motorway remains.
+     * Verify motorway avoidance against the route Valhalla actually returned.
+     *
+     * The old validator reduced even a 100 km route to only 120 points and then used
+     * `walk_or_snap`. Near parallel roads/interchanges the trace matcher could snap one sparse
+     * sample onto a nearby Autobahn and one metre of reported motorway was enough to reject the
+     * complete journey. This produced the false error seen when adding an ordinary POI beside a
+     * perfectly valid B/L/K-road route.
+     *
+     * A Valhalla-generated polyline is already edge-faithful, so we prefer `edge_walk` with a
+     * much denser shape. If the public trace service cannot edge-walk that sample we use a denser
+     * map-snap only as a secondary check. Validator-provider failure itself never destroys an
+     * otherwise valid route; the route request already used `use_highways=0.0`.
      */
     private fun validateMotorwayFree(points: List<GeoPoint>) {
-        val shape = routeSamples(points, 120)
+        if (points.size < 2) return
+
+        val exactShape = routeSamples(points, min(1600, max(320, points.size)))
+        val exactEdges = runCatching { traceRoadClasses(exactShape, "edge_walk") }.getOrNull()
+
+        val edges: JSONArray
+        val exactMatch: Boolean
+        if (exactEdges != null) {
+            edges = exactEdges
+            exactMatch = true
+        } else {
+            val fallbackShape = routeSamples(points, min(900, max(260, points.size)))
+            edges = runCatching { traceRoadClasses(fallbackShape, "map_snap") }.getOrNull() ?: return
+            exactMatch = false
+        }
+
+        var totalLengthKm = 0.0
+        var motorwayLengthKm = 0.0
+        var currentMotorwayRunKm = 0.0
+        var longestMotorwayRunKm = 0.0
+
+        for (index in 0 until edges.length()) {
+            val edge = edges.optJSONObject(index) ?: continue
+            val length = edge.optDouble("length", 0.0).coerceAtLeast(0.0)
+            totalLengthKm += length
+            if (edge.optString("road_class") == "motorway") {
+                motorwayLengthKm += length
+                currentMotorwayRunKm += length
+                longestMotorwayRunKm = max(longestMotorwayRunKm, currentMotorwayRunKm)
+            } else {
+                currentMotorwayRunKm = 0.0
+            }
+        }
+
+        if (totalLengthKm <= 0.0 || motorwayLengthKm <= 0.0) return
+
+        // Edge-walk is route-faithful, so only a tiny tolerance is needed for connector/ramp
+        // classification. Map-snap is less authoritative and gets a wider tolerance so a nearby
+        // parallel motorway cannot falsely invalidate a local-road route.
+        val allowedMotorwayKm = if (exactMatch) {
+            max(0.12, totalLengthKm * 0.0015)
+        } else {
+            max(0.75, totalLengthKm * 0.008)
+        }
+        val allowedContinuousRunKm = if (exactMatch) 0.08 else 0.45
+
+        if (motorwayLengthKm > allowedMotorwayKm && longestMotorwayRunKm > allowedContinuousRunKm) {
+            error("No motorway-free route found for the selected constraints")
+        }
+    }
+
+    private fun traceRoadClasses(shape: List<GeoPoint>, shapeMatch: String): JSONArray {
         val body = JSONObject().apply {
             put("shape", JSONArray().apply {
                 shape.forEach { point ->
@@ -246,29 +307,19 @@ object OsmScenicRoutingFallback {
                 }
             })
             put("costing", "auto")
-            put("shape_match", "walk_or_snap")
+            put("shape_match", shapeMatch)
             put("filters", JSONObject().apply {
                 put("action", "include")
                 put("attributes", JSONArray(listOf("edge.road_class", "edge.length")))
             })
         }
-        val connection = openValhalla("/trace_attributes", 12_000).apply {
+        val connection = openValhalla("/trace_attributes", 14_000).apply {
             doOutput = true
             outputStream.bufferedWriter(Charsets.UTF_8).use { it.write(body.toString()) }
         }
-        try {
+        return try {
             val response = JSONObject(connection.readTextOrThrow())
-            val edges = response.optJSONArray("edges") ?: error("Could not validate road classes")
-            var motorwayLengthKm = 0.0
-            for (index in 0 until edges.length()) {
-                val edge = edges.optJSONObject(index) ?: continue
-                if (edge.optString("road_class") == "motorway") {
-                    motorwayLengthKm += edge.optDouble("length", 0.0)
-                }
-            }
-            if (motorwayLengthKm > 0.001) {
-                error("No motorway-free route found for the selected constraints")
-            }
+            response.optJSONArray("edges") ?: error("Could not validate road classes")
         } finally {
             connection.disconnect()
         }
