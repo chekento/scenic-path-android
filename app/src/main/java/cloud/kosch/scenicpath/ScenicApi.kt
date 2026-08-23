@@ -79,11 +79,6 @@ object ScenicApi {
         val normalized = query.trim()
         if (normalized.length < 2) return@withContext emptyList()
 
-        // The default debug URL (10.0.2.2) only exists from an Android emulator. A physical
-        // phone must never wait on that dead endpoint before it can enter a destination.
-        // Prefer the platform geocoder for ordinary cities/addresses, then Photon/OSM for
-        // landmarks and richer POIs. This also decouples destination entry from POI-provider
-        // throttling caused by long corridor discovery runs.
         if (BuildConfig.DEBUG) {
             val device = searchDeviceGeocoder(context, normalized)
             if (device.isNotEmpty()) return@withContext device
@@ -91,8 +86,6 @@ object ScenicApi {
             val osm = runCatching { OsmPlaceSearch.search(normalized, bias) }.getOrNull().orEmpty()
             if (osm.isNotEmpty()) return@withContext osm
 
-            // Only try a non-local configured backend in debug. Never hit emulator localhost
-            // from a physical device as a final fallback.
             if (!baseUrl.contains("10.0.2.2") && !baseUrl.contains("127.0.0.1") && !baseUrl.contains("localhost")) {
                 val backend = runCatching { searchBackend(normalized, bias) }.getOrNull().orEmpty()
                 if (backend.isNotEmpty()) return@withContext backend
@@ -112,18 +105,23 @@ object ScenicApi {
         plan: TripPlan,
         preferences: ScenicPreferences,
     ): Result<RoutePlanUi> = withContext(Dispatchers.IO) {
-        val effectivePreferences = preferences.forCharacter(plan.routeCharacter)
+        // Vehicle settings are persistent/global. Copy the latest profile into the committed
+        // planner preferences so a vehicle change is guaranteed to affect the next rebuild.
+        val effectivePreferences = preferences
+            .copy(vehicle = VehicleSettingsState.profile)
+            .forCharacter(plan.routeCharacter)
 
-        // Manual route stops are hard constraints, not mere POI decorations. On physical/debug
-        // builds route them as explicit breaks so a recalculation must physically pass through
-        // every selected waypoint. The wrapper delegates each leg back to the existing segmented
-        // Journey Optimizer and keeps one shared budget across the complete trip.
         if (BuildConfig.DEBUG) {
             return@withContext runCatching {
-                if (plan.stops.any { it.mustVisit && it.point != null }) {
-                    WaypointAwareJourneyOptimizer.plan(origin, destination, plan, effectivePreferences)
+                VehicleAwareJourneyPlanner.plan(origin, destination, plan, effectivePreferences)
+            }.recoverCatching { primaryError ->
+                // Only the ordinary car profile may use the older OSM fallback. Other vehicle
+                // types must never silently degrade to car routing, because that would make
+                // bridge/tunnel/HGV or bicycle access promises false.
+                if (effectivePreferences.vehicle.kind == VehicleKind.CAR) {
+                    OsmScenicRoutingFallback.plan(origin, destination, plan, effectivePreferences)
                 } else {
-                    SegmentedJourneyOptimizer.plan(origin, destination, plan, effectivePreferences)
+                    throw primaryError
                 }
             }
         }
@@ -377,6 +375,17 @@ private fun ScenicPreferences.toJson() = JSONObject().apply {
     put("avoidTolls", avoidTolls)
     put("windingness", windingness)
     put("hilliness", hilliness)
+    put("vehicle", JSONObject().apply {
+        put("kind", vehicle.kind.name)
+        put("heightMeters", vehicle.heightMeters)
+        put("widthMeters", vehicle.widthMeters)
+        put("lengthMeters", vehicle.lengthMeters)
+        put("weightTons", vehicle.weightTons)
+        put("axleLoadTons", vehicle.axleLoadTons)
+        put("axleCount", vehicle.axleCount)
+        put("bicycleType", vehicle.bicycleType.apiValue)
+        put("allowUnpavedBikePaths", vehicle.allowUnpavedBikePaths)
+    })
     put("weights", JSONObject().apply {
         put("beautifulRoads", weights.beautifulRoads.toDouble())
         put("forest", weights.forest.toDouble())
