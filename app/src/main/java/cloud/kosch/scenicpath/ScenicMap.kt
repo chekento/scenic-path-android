@@ -25,7 +25,6 @@ import androidx.lifecycle.compose.LocalLifecycleOwner
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
-import kotlinx.coroutines.withContext
 import org.maplibre.android.annotations.IconFactory
 import org.maplibre.android.annotations.MarkerOptions
 import org.maplibre.android.camera.CameraUpdateFactory
@@ -49,6 +48,7 @@ import org.maplibre.geojson.FeatureCollection
 import org.maplibre.geojson.LineString
 import org.maplibre.geojson.Point
 import kotlin.math.hypot
+import kotlin.math.roundToInt
 
 private const val USER_SOURCE = "scenic-user-source"
 private const val USER_LAYER = "scenic-user-layer"
@@ -59,10 +59,9 @@ private const val MAX_SCENIC_MARKERS = 240
 /**
  * MapLibre host.
  *
- * Marker population is committed display state just like the route itself. A provider timeout,
- * reroute geometry change or transient empty Compose frame must never erase a valid POI layer.
- * Manual waypoints are rendered as their original Scenic category symbol with a luminous frame;
- * they are never replaced by a generic yellow circle.
+ * Scenic markers are durable journey display state. A provider timeout, a sparse reroute result,
+ * a temporary empty Compose frame or waypoint recalculation must never collapse a rich POI map.
+ * Manual waypoints keep their original category symbol and receive a luminous frame.
  */
 @Suppress("DEPRECATION")
 @Composable
@@ -88,6 +87,7 @@ fun ScenicMap(
 
     var localHighlights by remember { mutableStateOf<List<ScenePointUi>>(emptyList()) }
     var retainedHighlights by remember { mutableStateOf<List<ScenePointUi>>(emptyList()) }
+    var retainedJourneyKey by remember { mutableStateOf<String?>(null) }
     var selectedHighlight by remember { mutableStateOf<ScenePointUi?>(null) }
     var selectedDetails by remember { mutableStateOf<ScenicPoiDetails?>(null) }
     var detailsLoading by remember { mutableStateOf(false) }
@@ -127,11 +127,26 @@ fun ScenicMap(
         )
     }
 
+    // Never replace a rich 100+ marker population with a sparse route response containing only
+    // one accepted waypoint or a handful of scenePoints. Merge current information into the
+    // retained journey reservoir and let category balancing decide the visible set.
     LaunchedEffect(candidateCore) {
-        if (candidateCore.isNotEmpty()) retainedHighlights = candidateCore
+        if (candidateCore.isNotEmpty()) {
+            retainedHighlights = PrecisionRoutePoiDiscovery.mergeForDisplay(
+                first = candidateCore,
+                second = retainedHighlights,
+                maxResults = MAX_SCENIC_MARKERS,
+            )
+        }
     }
 
-    val coreVisible = if (candidateCore.isNotEmpty()) candidateCore else retainedHighlights
+    val coreVisible = remember(candidateCore, retainedHighlights) {
+        PrecisionRoutePoiDiscovery.mergeForDisplay(
+            first = candidateCore,
+            second = retainedHighlights,
+            maxResults = MAX_SCENIC_MARKERS,
+        )
+    }
     val visibleHighlights = remember(coreVisible, plannedHighlights, plannedStopIds) {
         buildList {
             // Planned stops win deduplication and stay visible even if a provider temporarily omits
@@ -167,46 +182,72 @@ fun ScenicMap(
 
     LaunchedEffect(routePoints) {
         selectedHighlight = null
-        if (routePoints.size < 2) {
+
+        // A short/empty route can occur for one Compose frame while route alternatives are being
+        // replaced. It is not permission to destroy the committed marker population. An unrelated
+        // journey is detected only when a new valid polyline with different endpoints arrives.
+        if (routePoints.size < 2) return@LaunchedEffect
+
+        val journeyKey = routeJourneyKey(routePoints)
+        if (retainedJourneyKey != null && retainedJourneyKey != journeyKey) {
             localHighlights = emptyList()
             retainedHighlights = emptyList()
             mapRef?.removeAnnotations()
-            return@LaunchedEffect
         }
+        retainedJourneyKey = journeyKey
 
-        val discovered = withContext(Dispatchers.IO) {
-            runCatching {
-                val (fast, precision) = coroutineScope {
-                    val fastJob = async(Dispatchers.IO) {
-                        FastRoutePoiDiscovery.discover(
-                            route = routePoints,
-                            enabledKinds = prototypeSelectableSceneKinds,
-                            maxResults = 150,
-                        )
-                    }
-                    val precisionJob = async(Dispatchers.IO) {
-                        PrecisionRoutePoiDiscovery.discover(
-                            route = routePoints,
-                            enabledKinds = prototypeSelectableSceneKinds,
-                            maxResults = MAX_SCENIC_MARKERS,
-                            radiusMeters = 15_000,
-                            maxSamples = 10,
-                        )
-                    }
-                    fastJob.await() to precisionJob.await()
-                }
-                PrecisionRoutePoiDiscovery.mergeForDisplay(
+        // Fast POIs are committed as soon as they arrive. The precision pass can take considerably
+        // longer on a 300 km corridor, so waiting for both jobs before painting caused the map to
+        // appear empty even though useful restaurant/museum/heritage results were already ready.
+        coroutineScope {
+            val fastJob = async(Dispatchers.IO) {
+                runCatching {
+                    FastRoutePoiDiscovery.discover(
+                        route = routePoints,
+                        enabledKinds = prototypeSelectableSceneKinds,
+                        maxResults = 150,
+                    )
+                }.getOrElse { emptyList() }
+            }
+            val precisionJob = async(Dispatchers.IO) {
+                runCatching {
+                    PrecisionRoutePoiDiscovery.discover(
+                        route = routePoints,
+                        enabledKinds = prototypeSelectableSceneKinds,
+                        maxResults = MAX_SCENIC_MARKERS,
+                        radiusMeters = 15_000,
+                        maxSamples = 10,
+                    )
+                }.getOrElse { emptyList() }
+            }
+
+            val fast = fastJob.await()
+            if (fast.isNotEmpty()) {
+                localHighlights = fast
+                val immediate = PrecisionRoutePoiDiscovery.mergeForDisplay(
+                    first = fast,
+                    second = retainedHighlights,
+                    maxResults = MAX_SCENIC_MARKERS,
+                )
+                retainedHighlights = immediate
+                ScenicPoiSharedState.publish(routePoints, immediate)
+            }
+
+            val precision = precisionJob.await()
+            if (precision.isNotEmpty()) {
+                localHighlights = PrecisionRoutePoiDiscovery.mergeForDisplay(
                     first = precision,
                     second = fast,
                     maxResults = MAX_SCENIC_MARKERS,
                 )
-            }.getOrElse { emptyList() }
-        }
-
-        if (discovered.isNotEmpty()) {
-            localHighlights = discovered
-            retainedHighlights = discovered
-            ScenicPoiSharedState.publish(routePoints, discovered)
+                val complete = PrecisionRoutePoiDiscovery.mergeForDisplay(
+                    first = precision,
+                    second = retainedHighlights,
+                    maxResults = MAX_SCENIC_MARKERS,
+                )
+                retainedHighlights = complete
+                ScenicPoiSharedState.publish(routePoints, complete)
+            }
         }
     }
 
@@ -444,22 +485,30 @@ private fun syncScenicMarkers(
     plannedStopIds: Set<String>,
 ) {
     if (highlights.isEmpty()) return
-    map.removeAnnotations()
 
+    // Build the replacement set completely before touching the currently visible annotations.
+    // A malformed icon can therefore not erase a good marker map before construction succeeds.
     val iconFactory = IconFactory.getInstance(context)
     val cache = mutableMapOf<String, org.maplibre.android.annotations.Icon>()
-    val options = highlights.take(MAX_SCENIC_MARKERS).map { highlight ->
-        val symbol = scenicCategoryLaneFor(highlight).emoji
-        val emphasized = highlight.includedInRoute || highlight.id in plannedStopIds
-        val cacheKey = "$symbol:$emphasized"
-        val icon = cache.getOrPut(cacheKey) { iconFactory.fromBitmap(createMarkerBitmap(symbol, emphasized)) }
-        MarkerOptions()
-            .position(LatLng(highlight.point.lat, highlight.point.lon))
-            .title(highlight.name)
-            .snippet(highlight.id)
-            .icon(icon)
+    val options = runCatching {
+        highlights.take(MAX_SCENIC_MARKERS).map { highlight ->
+            val symbol = scenicCategoryLaneFor(highlight).emoji
+            val emphasized = highlight.includedInRoute || highlight.id in plannedStopIds
+            val cacheKey = "$symbol:$emphasized"
+            val icon = cache.getOrPut(cacheKey) { iconFactory.fromBitmap(createMarkerBitmap(symbol, emphasized)) }
+            MarkerOptions()
+                .position(LatLng(highlight.point.lat, highlight.point.lon))
+                .title(highlight.name)
+                .snippet(highlight.id)
+                .icon(icon)
+        }
+    }.getOrElse { return }
+
+    if (options.isEmpty()) return
+    runCatching {
+        map.removeAnnotations()
+        map.addMarkers(options)
     }
-    map.addMarkers(options)
 }
 
 /**
@@ -515,6 +564,13 @@ private fun createMarkerBitmap(symbol: String, emphasized: Boolean): Bitmap {
     }
     canvas.drawText(symbol, center, center - (text.ascent() + text.descent()) / 2f, text)
     return bitmap
+}
+
+private fun routeJourneyKey(route: List<GeoPoint>): String {
+    fun bucket(value: Double): Int = (value * 10_000.0).roundToInt()
+    val first = route.first()
+    val last = route.last()
+    return "${bucket(first.lat)},${bucket(first.lon)}:${bucket(last.lat)},${bucket(last.lon)}"
 }
 
 private fun openExternal(context: Context, url: String) {
