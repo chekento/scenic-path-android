@@ -18,8 +18,8 @@ android {
         applicationId = "cloud.kosch.scenicpath"
         minSdk = 26
         targetSdk = 36
-        versionCode = 30
-        versionName = "0.5.10"
+        versionCode = 31
+        versionName = "0.5.11"
         manifestPlaceholders["usesCleartextTraffic"] = "false"
 
         buildConfigField(
