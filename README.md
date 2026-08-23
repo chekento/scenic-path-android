@@ -1,34 +1,51 @@
 # Scenic Path Android
 
-Native Android implementation of Scenic Path — a scenic-route planner that prioritizes beautiful, interesting and customizable journeys over simple fastest-path navigation.
+Native Android implementation of **Scenic Path** — a map-first scenic-route planner that optimizes for beautiful, interesting and customizable journeys instead of only the fastest path.
 
-## Current milestone
+The active development branch is `feat/m0-foundation`; work is kept behind Draft PR #1 until the native experience is ready to merge.
 
-The active development branch is `feat/m0-foundation` and remains behind Draft PR #1.
+## v0.5.4 — destination-search recovery, persistent POIs and popup route editing
 
-### v0.5.4 reliability + popup route editing
+The physical-device regression route is **Current Location / Ahrensburg → Detmold**. v0.5.4 addresses two issues exposed during that test:
 
-- physical-device destination search no longer depends on the emulator-only `10.0.2.2` backend;
-- Android Geocoder is tried first for cities/addresses in debug builds, with Photon/OSM as a landmark/POI fallback;
-- calculated routes remain visible while replacement routes are built;
-- Scenic POI markers are no longer cleared when a waypoint causes a new route geometry;
-- the last valid clickable marker set stays on-screen until discovery for the replacement corridor returns useful data;
-- rich map popups can add a Scenic POI as a locked route waypoint or remove it again;
-- popup changes mark the route dirty and expose a direct `Recalculate route` action;
-- official website, contact data, opening hours, OSM references and provider-backed ratings remain part of rich POI popups;
-- ratings are never fabricated: verified values are shown only when a configured ratings provider supplies them.
+- Destination entry in debug builds no longer waits on the emulator-only `10.0.2.2` backend. Android Geocoder is used first for ordinary cities/addresses, with Photon/OpenStreetMap as an independent landmark/POI fallback.
+- Scenic POI markers are no longer reset to an empty list when adding a waypoint produces a replacement route. The last valid clickable POI population stays visible while the replacement corridor is enriched, and is replaced only when the new discovery produces useful results.
 
-### Scenic discovery
+Rich marker popups can now:
 
-The current physical-device discovery stack combines category-first route-window lookup with deeper OSM/Overpass enrichment and balanced human-facing Scenic lanes. The long-route regression case is Current Location/Ahrensburg → Detmold.
+- add a suggested Scenic location as a locked route waypoint;
+- remove a previously selected waypoint;
+- mark the current route as changed;
+- recalculate the route directly from the popup while the previous valid route remains visible until the replacement succeeds;
+- show mapped official website/contact links, address, phone, email, opening hours, OSM/reference links and provider-backed ratings when available.
 
-Human-interest categories include restaurants/cafés, museums, viewpoints, castles and fortresses, palaces/manor houses, ruins/archaeology, monuments/memorials, art/galleries, worship, towers/architecture, bridges, attractions, parks, water, forests and natural landmarks.
+Ratings are never fabricated. OpenStreetMap does not provide a general user-star-rating system; verified scores appear only when supplied by a configured rating provider, otherwise the popup links to live ratings.
+
+## Scenic discovery stack
+
+The current native discovery pipeline combines fast and deep route-corridor searches so long journeys do not collapse into only parks, mountains and water. Human-facing Scenic lanes include restaurants/cafés, museums, viewpoints, castles/fortresses, palaces/manor houses, ruins/archaeology, monuments/memorials, art/galleries, worship, towers/architecture, bridges, attractions, parks, water, forests and natural landmarks.
+
+Smart Stops and the map share discovered POIs, use category balancing and deduplication, and preserve the last valid route while settings or stops are edited.
+
+## Planner
+
+Current planner capabilities include:
+
+- Quick route / Day trip / Road trip
+- Beautiful / Balanced / Direct / Custom route character
+- configurable extra-time budget
+- Smart Stops
+- broad Scenic category filters
+- Scenic DNA weighting for roads, views, water, forest, relief, culture, monuments, museums, art, worship, parks, architecture, food and attractions
+- manual locked waypoints
+- motorway/toll preferences
+- route persistence during replacement calculations
 
 ## Development infrastructure
 
-Public Photon, Overpass, OpenStreetMap and OpenFreeMap endpoints are used only as development/testing infrastructure. A production Play Store release should use controlled/self-hosted or contracted providers and follow each provider's attribution, caching, quota and branding requirements.
+Public Photon, Overpass, OpenStreetMap and OpenFreeMap endpoints are development/testing infrastructure. A production Play Store release should use controlled/self-hosted or contracted providers and follow each provider's attribution, caching, quota and branding requirements.
 
-Google Places support belongs on the server side. API keys must never be embedded in the APK.
+Google Places / verified rating integrations belong server-side. Provider API keys must never be embedded in the APK.
 
 ## Build
 
@@ -44,4 +61,4 @@ The optional Node backend supports production-oriented provider composition, sea
 
 ## Status
 
-Draft / unmerged. The project is under active iteration and is not yet a production release.
+Draft / unmerged. Scenic Path is under active iteration and is not yet a production release.
