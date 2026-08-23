@@ -36,7 +36,7 @@ data class TripPlan(
     val flexibleStopOrder: Boolean = true,
     val autoSuggestStops: Boolean = true,
     val preserveScenicIntentOnReroute: Boolean = true,
-    val enabledSceneKinds: Set<StopKind> = prototypeSelectableSceneKinds,
+    val enabledSceneKinds: Set<StopKind> = allSelectableSceneKinds,
 )
 
 fun ScenicPreferences.forCharacter(character: RouteCharacter): ScenicPreferences = when (character) {
