@@ -95,7 +95,6 @@ fun ScenicExperienceRoot(
                         routeDirty = false
                         topExpanded = false
                     } else {
-                        // Never replace a valid displayed route with an empty calculation.
                         topExpanded = routePlan == null
                         routeError = if (routePlan != null) {
                             "No replacement journey matched the selected time budget. Your previous route is still shown."
@@ -133,9 +132,33 @@ fun ScenicExperienceRoot(
                 subtype = stop.subtype,
             )
         )
-        routeDirty = true
+        routeDirty = routePlan != null
         showStops = false
         showPlanner = true
+    }
+
+    fun toggleMapStop(stop: ScenePointUi) {
+        val existing = plan.stops.any { it.id == stop.id }
+        if (existing) {
+            plan = plan.copy(stops = plan.stops.filterNot { it.id == stop.id })
+        } else {
+            val kind = StopKind.entries.firstOrNull { it.name == stop.kind } ?: StopKind.SCENIC
+            plan = plan.copy(
+                stops = plan.stops + PlannedStop(
+                    id = stop.id,
+                    name = stop.name,
+                    kind = kind,
+                    dwellMinutes = stop.suggestedDwellMinutes,
+                    locked = true,
+                    mustVisit = true,
+                    point = stop.point,
+                    rating = stop.rating,
+                    ratingCount = stop.ratingCount,
+                    subtype = stop.subtype,
+                )
+            )
+        }
+        if (routePlan != null) routeDirty = true
     }
 
     Box(Modifier.fillMaxSize()) {
@@ -145,7 +168,10 @@ fun ScenicExperienceRoot(
             routePoints = activeRoute?.points.orEmpty(),
             stops = plan.stops,
             highlights = activeRoute?.scenePoints.orEmpty(),
+            routeDirty = routeDirty,
             recenterToken = recenterToken,
+            onToggleRouteStop = ::toggleMapStop,
+            onRecalculateRoute = ::buildRoute,
             onMapError = { mapError = it },
         )
 
