@@ -16,6 +16,10 @@ Start and destination search supports towns, landmarks, streets and exact house 
 
 Scenic markers use the same category symbols as Smart Stops. Rich popups can expose official links, contact information, opening hours and provider-backed ratings where available. Suggested locations can be added to or removed from the route directly from the popup and the route can then be recalculated without intentionally discarding the current valid map state.
 
+### Validation
+
+The v0.5.5 APK is built from app-code head `1ed7ae17660b49f12c3b09731997122f166f78e5`. Android CI #201, Backend tests #201 and POI provider smoke #27 passed for that build. Later README-only commits do not alter the validated APK source.
+
 ## Development infrastructure
 
 Public OpenStreetMap, Photon, Nominatim, Overpass and routing services are used only as development/test infrastructure. Production deployment should use controlled/self-hosted or contracted providers and comply with each provider's usage, attribution and branding requirements.
