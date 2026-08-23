@@ -2,6 +2,7 @@ package cloud.kosch.scenicpath
 
 import kotlin.math.floor
 import kotlin.math.max
+import kotlin.math.roundToInt
 
 /**
  * Waypoint-aware planner with three hard invariants:
