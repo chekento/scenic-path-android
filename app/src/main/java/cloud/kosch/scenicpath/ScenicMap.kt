@@ -61,9 +61,8 @@ private const val MAX_SCENIC_MARKERS = 240
 /**
  * MapLibre host.
  *
- * Important invariant: a successful route replacement must never blank the discoverable POIs.
- * We keep the last valid marker set visible and clickable while the new route corridor is being
- * enriched. The marker set is replaced only after the new discovery produced actual results.
+ * Marker population is committed display state just like the route itself. A provider timeout,
+ * reroute geometry change or transient empty Compose frame must never erase a valid POI layer.
  */
 @Suppress("DEPRECATION")
 @Composable
@@ -87,9 +86,10 @@ fun ScenicMap(
     var lastHandledRecenterToken by remember { mutableIntStateOf(0) }
     var initialLocationFocused by remember { mutableStateOf(false) }
 
-    // Deliberately NOT keyed by routePoints. Re-keying this state was the reason all clickable
-    // Scenic icons vanished the instant a waypoint produced a replacement route.
+    // Both states intentionally survive a route-geometry change. The exact new population replaces
+    // them only after useful data has arrived.
     var localHighlights by remember { mutableStateOf<List<ScenePointUi>>(emptyList()) }
+    var retainedHighlights by remember { mutableStateOf<List<ScenePointUi>>(emptyList()) }
     var selectedHighlight by remember { mutableStateOf<ScenePointUi?>(null) }
     var selectedDetails by remember { mutableStateOf<ScenicPoiDetails?>(null) }
     var detailsLoading by remember { mutableStateOf(false) }
@@ -98,13 +98,19 @@ fun ScenicMap(
     val sharedHighlights = ScenicPoiSharedState.pointsFor(routePoints)
     val plannedStopIds = remember(stops) { stops.mapTo(mutableSetOf()) { it.id } }
 
-    val visibleHighlights = remember(highlights, sharedHighlights, localHighlights) {
+    val candidateHighlights = remember(highlights, sharedHighlights, localHighlights) {
         PrecisionRoutePoiDiscovery.mergeForDisplay(
             first = highlights + sharedHighlights,
             second = localHighlights,
             maxResults = MAX_SCENIC_MARKERS,
         )
     }
+
+    LaunchedEffect(candidateHighlights) {
+        if (candidateHighlights.isNotEmpty()) retainedHighlights = candidateHighlights
+    }
+
+    val visibleHighlights = if (candidateHighlights.isNotEmpty()) candidateHighlights else retainedHighlights
     val latestVisibleHighlights by rememberUpdatedState(visibleHighlights)
 
     LaunchedEffect(selectedHighlight?.id) {
@@ -134,9 +140,13 @@ fun ScenicMap(
         selectedHighlight = null
         if (routePoints.size < 2) {
             localHighlights = emptyList()
+            retainedHighlights = emptyList()
+            mapRef?.removeAnnotations()
             return@LaunchedEffect
         }
 
+        // Route-plan scenePoints and the shared fast POI bridge can paint immediately. This deeper
+        // pass enriches them, but an empty/failed request is never allowed to blank the map.
         val discovered = withContext(Dispatchers.IO) {
             runCatching {
                 val (fast, precision) = coroutineScope {
@@ -166,9 +176,11 @@ fun ScenicMap(
             }.getOrElse { emptyList() }
         }
 
-        // Never replace a useful marker set with an empty provider response. The old POIs stay
-        // interactive until the current corridor has delivered a valid replacement population.
-        if (discovered.isNotEmpty()) localHighlights = discovered
+        if (discovered.isNotEmpty()) {
+            localHighlights = discovered
+            retainedHighlights = discovered
+            ScenicPoiSharedState.publish(routePoints, discovered)
+        }
     }
 
     val mapView = remember(context) {
@@ -256,7 +268,6 @@ fun ScenicMap(
                             } else false
                         }
 
-                        // Keep a generous touch target for overlapping Scenic markers.
                         map.addOnMapClickListener { latLng ->
                             val tap = map.projection.toScreenLocation(latLng)
                             val hit = latestVisibleHighlights
@@ -331,7 +342,9 @@ fun ScenicMap(
         if (styleLoaded) mapRef?.let { updateBaseMapData(it, userLocation, routePoints, stops) }
     }
     LaunchedEffect(visibleHighlights, styleLoaded) {
-        if (styleLoaded) mapRef?.let { syncScenicMarkers(it, context, visibleHighlights) }
+        if (styleLoaded && visibleHighlights.isNotEmpty()) {
+            mapRef?.let { syncScenicMarkers(it, context, visibleHighlights) }
+        }
     }
     LaunchedEffect(userLocation, routePoints, styleLoaded) {
         if (styleLoaded && routePoints.size < 2 && !initialLocationFocused) {
@@ -409,8 +422,10 @@ private fun updateBaseMapData(map: MapLibreMap, userLocation: GeoPoint?, routePo
 
 @Suppress("DEPRECATION")
 private fun syncScenicMarkers(map: MapLibreMap, context: Context, highlights: List<ScenePointUi>) {
-    map.removeAnnotations()
+    // Never erase an already rendered population because a provider/Compose frame is empty.
+    // Route removal clears annotations explicitly in the routePoints effect above.
     if (highlights.isEmpty()) return
+    map.removeAnnotations()
 
     val included = highlights.filter { it.includedInRoute }
     val includedOrder = included.mapIndexed { index, point -> point.id to (index + 1).toString() }.toMap()
