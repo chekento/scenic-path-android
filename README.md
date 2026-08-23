@@ -2,40 +2,50 @@
 
 Native Android implementation of **Scenic Path** — a map-first journey planner for intentionally beautiful routes, scenic categories and Smart Stops.
 
-## Current development build: v0.5.7
+## Current development build: v0.5.8
 
-### Durable Scenic marker population
+### Reliable Scenic POI rendering
 
-The map keeps the full, category-balanced Scenic POI population visible while route geometry is recalculated. A sparse route response containing only one waypoint can no longer replace a rich corridor result with one or two markers. POI state is merged for the same start/destination journey and only reset when a genuinely different route arrives.
+v0.5.8 removes the full Scenic marker population from MapLibre's deprecated legacy annotation lifecycle. The base map, current-position puck and route remain native MapLibre layers, while Scenic POIs are rendered as a Compose overlay projected through the live MapLibre camera.
 
-Fast corridor POIs are painted as soon as they are available while the deeper precision pass continues. Temporary empty route frames or provider failures do not clear an already useful map. Museums, restaurants, castles, viewpoints, art, architecture, nature, water and the other enabled Scenic categories therefore remain visible as in the established mixed-marker map.
+This fixes the regression where the blue route remained visible but all clickable Scenic location markers disappeared. Markers now survive route replacement, candidate switching, Smart Stop changes and waypoint recalculation independently from `removeAnnotations()` / `addMarkers()` churn.
+
+The marker overlay follows pan and zoom continuously and keeps the established white/green category-symbol design. Fixed route waypoints retain their original category symbol and receive a larger luminous frame instead of becoming a generic yellow circle.
+
+### Restored multi-provider POI discovery
+
+The map now races three independent discovery paths for every valid route:
+
+- `RapidRoutePoiDiscovery` — bounded Overpass windows for fast human-interest coverage
+- `FastRoutePoiDiscovery` — Photon/category-first route discovery
+- `PrecisionRoutePoiDiscovery` — deeper balanced coverage for the complete Scenic taxonomy
+
+Any successful path can populate the map immediately; later results are merged into the committed journey reservoir rather than replacing it. This restores the mixed marker landscape with museums, restaurants, castles, viewpoints, art, worship, architecture, nature, parks, water and the other enabled Scenic categories.
 
 ### Hard route waypoints
 
-User-added `mustVisit` waypoints remain hard routing breaks. Recalculated routes are stitched through those coordinates and validated against the resulting polyline. A route that bypasses a fixed waypoint is rejected.
-
-### Waypoint marker design
-
-A waypoint keeps its original Scenic category emoji and receives a luminous teal/green multi-ring frame instead of becoming a generic yellow circle. Removing the waypoint removes the emphasis while the location can remain on the map as a normal Scenic POI.
+User-added `mustVisit` waypoints remain hard routing breaks. Recalculated routes are stitched through those coordinates and validated against the resulting polyline.
 
 ### Start and destination address search
 
 Start and destination search supports towns, landmarks, streets and exact house numbers. Type-ahead combines the device geocoder with Photon/OpenStreetMap. Pressing Search additionally performs an explicit OpenStreetMap Nominatim address lookup.
 
-### Map interaction
+### Rich POI interaction
 
-Scenic markers use the same category symbols as Smart Stops. Rich popups can expose official links, contact information, opening hours and provider-backed ratings where available. Suggested locations can be added to or removed from the route directly from the popup and the route can then be recalculated without discarding the current valid map state.
+Scenic markers use the same category symbols as Smart Stops. Popups can expose official links, contact information, opening hours and provider-backed ratings where available. Suggested locations can be added to or removed from the route directly from the popup and the route can then be recalculated.
 
 ### Validation
 
-Validated v0.5.7 APK source head: `e1e5298233e0e5d4245bc3a21174d2f0f6ba6098`.
+Validated v0.5.8 APK source head: `7707596c157a5392bada9b396362da042341e9d8`.
 
-- Android CI #214: passed
-- Backend tests #214: passed
-- POI provider smoke #40: passed
-- direct APK SHA-256: `06c0b8a9877423b8af449cced971c50f5c6ea5c3c7abb751e1d145ace939c920`
+- versionCode: `28`
+- Android CI #218: passed
+- Backend tests #218: passed
+- POI provider smoke #44: passed
+- workflow artifact ZIP SHA-256: `ed85ceda7a9ee6d5cb3df28308044ce04be19c4bcf82dd2d6a1a72104155fe6f`
+- direct APK SHA-256: `10a0fa73ffed1d4d22f3b0ccbb0709bba70d6b63c5814ee42a8f26530759ca1b`
 
-The subsequent README-only commit does not alter the validated APK source.
+Subsequent documentation-only commits do not alter the validated APK source.
 
 ## Development infrastructure
 
