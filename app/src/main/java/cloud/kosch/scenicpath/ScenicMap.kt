@@ -90,7 +90,6 @@ fun ScenicMap(
 
     var localHighlights by remember { mutableStateOf<List<ScenePointUi>>(emptyList()) }
     var retainedHighlights by remember { mutableStateOf<List<ScenePointUi>>(emptyList()) }
-    var retainedJourneyKey by remember { mutableStateOf<String?>(null) }
     var selectedHighlight by remember { mutableStateOf<ScenePointUi?>(null) }
     var selectedDetails by remember { mutableStateOf<ScenicPoiDetails?>(null) }
     var detailsLoading by remember { mutableStateOf(false) }
@@ -197,24 +196,30 @@ fun ScenicMap(
     }
 
     // Route-wide multi-provider POI population. Any provider can paint first; later results enrich.
-    // Recalculated waypoint routes search their new corridor too. ScenicPoiSharedState merges those
-    // discoveries with the previous corridor so a deliberate detour grows the exploration space.
+    // A non-empty -> non-empty route change is a recalculation inside the same planning session,
+    // so existing POIs are NEVER flushed. The session is reset only when the route becomes empty,
+    // which is what ScenicExperienceRoot does when start/destination changes.
     LaunchedEffect(routePoints) {
         selectedHighlight = null
         if (routePoints.size < 2) {
             navigationActive = false
+            localHighlights = emptyList()
+            retainedHighlights = emptyList()
+            ScenicPoiSharedState.clear()
             return@LaunchedEffect
         }
 
-        val journeyKey = routeJourneyKey(routePoints)
-        if (retainedJourneyKey != null && retainedJourneyKey != journeyKey) {
-            // Local provider results may reset after a materially different endpoint snap, but the
-            // shared journey pool remains authoritative and immediately repopulates the map when
-            // this is still the same planning journey.
-            localHighlights = emptyList()
-            retainedHighlights = emptyList()
+        // Seed the durable pool immediately from the route planner's own candidates. This makes
+        // the very first calculated route show POIs even before the deeper map discovery finishes.
+        if (highlights.isNotEmpty()) {
+            retainedHighlights = PrecisionRoutePoiDiscovery.mergeForDisplay(
+                first = highlights,
+                second = retainedHighlights,
+                maxResults = MAX_SCENIC_MARKERS,
+            )
+            ScenicPoiSharedState.publish(routePoints, retainedHighlights)
         }
-        retainedJourneyKey = journeyKey
+
         val enabledKinds = prototypeSelectableSceneKinds.ifEmpty { allSelectableSceneKinds }
 
         suspend fun commit(points: List<ScenePointUi>) {
@@ -516,17 +521,6 @@ private fun ScenicPoiOverlayMarker(
             Text(symbol, fontSize = 20.sp, fontWeight = FontWeight.Normal, maxLines = 1)
         }
     }
-}
-
-private fun routeJourneyKey(route: List<GeoPoint>): String? {
-    if (route.size < 2) return null
-    // This is only a *local cache* hint. Use a coarser bucket than older 11 m buckets so ordinary
-    // Valhalla road snapping does not constantly flush the local provider cache. The authoritative
-    // journey-preservation decision lives in ScenicPoiSharedState's distance-based endpoint check.
-    fun bucket(value: Double): Int = (value * 1_000.0).roundToInt()
-    val first = route.first()
-    val last = route.last()
-    return "${bucket(first.lat)},${bucket(first.lon)}:${bucket(last.lat)},${bucket(last.lon)}"
 }
 
 private fun ensureBaseLayers(style: Style) {
