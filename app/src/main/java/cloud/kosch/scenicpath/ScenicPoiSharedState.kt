@@ -13,29 +13,48 @@ import kotlin.math.roundToInt
  * 1. an exact route signature for the current geometry;
  * 2. a stable endpoint signature for equivalent A -> B reroutes.
  *
- * POIs from the previous geometry remain available while the replacement corridor is being
- * enriched, but they are not leaked into an unrelated trip with different endpoints.
+ * v0.5.7 additionally treats a populated POI set as durable journey state. A later sparse provider
+ * response (for example only the newly added waypoint) is merged into the existing population
+ * instead of replacing 100+ useful markers with one or two points.
  */
 object ScenicPoiSharedState {
+    private const val MAX_SHARED_POINTS = 240
+
     private val routeSignature = mutableStateOf<String?>(null)
     private val endpointSignature = mutableStateOf<String?>(null)
     private val publishedPoints = mutableStateOf<List<ScenePointUi>>(emptyList())
 
     fun publish(route: List<GeoPoint>, points: List<ScenePointUi>) {
         val exact = signature(route) ?: return
+        val endpoint = endpointSignature(route) ?: return
         if (points.isEmpty()) return
 
+        val sameJourney = endpointSignature.value == endpoint
+        val next = if (sameJourney && publishedPoints.value.isNotEmpty()) {
+            PrecisionRoutePoiDiscovery.mergeForDisplay(
+                first = points,
+                second = publishedPoints.value,
+                maxResults = MAX_SHARED_POINTS,
+            )
+        } else {
+            PrecisionRoutePoiDiscovery.mergeForDisplay(
+                first = points,
+                second = emptyList(),
+                maxResults = MAX_SHARED_POINTS,
+            )
+        }
+
+        if (next.isEmpty()) return
         routeSignature.value = exact
-        endpointSignature.value = endpointSignature(route)
-        publishedPoints.value = points
-            .distinctBy { it.id }
-            .take(240)
+        endpointSignature.value = endpoint
+        publishedPoints.value = next
     }
 
     fun pointsFor(route: List<GeoPoint>): List<ScenePointUi> {
         val exact = signature(route) ?: return emptyList()
+        val endpoint = endpointSignature(route) ?: return emptyList()
         val sameGeometry = routeSignature.value == exact
-        val sameJourney = endpointSignature.value != null && endpointSignature.value == endpointSignature(route)
+        val sameJourney = endpointSignature.value != null && endpointSignature.value == endpoint
         return if (sameGeometry || sameJourney) publishedPoints.value else emptyList()
     }
 
