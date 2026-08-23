@@ -82,6 +82,8 @@ fun ScenicMap(
     var initialLocationFocused by remember { mutableStateOf(false) }
     var localHighlights by remember(routePoints) { mutableStateOf<List<ScenePointUi>>(emptyList()) }
     var selectedHighlight by remember { mutableStateOf<ScenePointUi?>(null) }
+    var selectedDetails by remember { mutableStateOf<ScenicPoiDetails?>(null) }
+    var detailsLoading by remember { mutableStateOf(false) }
     val latestUserLocation by rememberUpdatedState(userLocation)
     val sharedHighlights = ScenicPoiSharedState.pointsFor(routePoints)
 
@@ -93,6 +95,29 @@ fun ScenicMap(
         )
     }
     val latestVisibleHighlights by rememberUpdatedState(visibleHighlights)
+
+    LaunchedEffect(selectedHighlight?.id) {
+        val selected = selectedHighlight
+        if (selected == null) {
+            selectedDetails = null
+            detailsLoading = false
+        } else {
+            selectedDetails = ScenicPoiDetails(
+                rating = selected.rating,
+                ratingCount = selected.ratingCount,
+                ratingSource = if (selected.rating != null) selected.attribution else null,
+                openNow = selected.openNow,
+            )
+            detailsLoading = true
+            val resolved = runCatching { PoiDetailsResolver.resolve(selected) }.getOrElse {
+                selectedDetails ?: ScenicPoiDetails()
+            }
+            if (selectedHighlight?.id == selected.id) {
+                selectedDetails = resolved
+                detailsLoading = false
+            }
+        }
+    }
 
     LaunchedEffect(routePoints) {
         selectedHighlight = null
@@ -257,17 +282,26 @@ fun ScenicMap(
         mapError?.let { MapStatusBadge(it, Modifier.align(Alignment.BottomStart).padding(12.dp)) }
 
         selectedHighlight?.let { highlight ->
-            ScenicLocationCard(
+            ScenicLocationDetailsCard(
                 highlight = highlight,
+                details = selectedDetails ?: ScenicPoiDetails(
+                    rating = highlight.rating,
+                    ratingCount = highlight.ratingCount,
+                    ratingSource = if (highlight.rating != null) highlight.attribution else null,
+                    openNow = highlight.openNow,
+                ),
+                detailsLoading = detailsLoading,
                 onClose = { selectedHighlight = null },
-                onOpenWebsite = highlight.url?.let { url -> { openExternal(context, url) } },
+                onOpenUrl = { url -> openExternal(context, url) },
+                onCall = { phone -> openExternal(context, "tel:${Uri.encode(phone)}") },
+                onEmail = { email -> openExternal(context, "mailto:${Uri.encode(email)}") },
                 onOpenOsm = {
                     openExternal(
                         context,
                         "https://www.openstreetmap.org/?mlat=${highlight.point.lat}&mlon=${highlight.point.lon}#map=17/${highlight.point.lat}/${highlight.point.lon}",
                     )
                 },
-                modifier = Modifier.align(Alignment.Center).padding(horizontal = 18.dp).fillMaxWidth().widthIn(max = 420.dp),
+                modifier = Modifier.align(Alignment.Center).padding(horizontal = 18.dp).fillMaxWidth().widthIn(max = 430.dp),
             )
         }
     }
