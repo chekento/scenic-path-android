@@ -10,8 +10,11 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import java.util.Locale
+import kotlin.math.abs
 import kotlin.math.asin
 import kotlin.math.atan2
 import kotlin.math.cos
@@ -21,15 +24,26 @@ import kotlin.math.roundToInt
 import kotlin.math.sin
 import kotlin.math.sqrt
 
-/**
- * First native live-navigation layer for Scenic Path.
- *
- * It follows the committed route geometry and deliberately does not invent street names or turn
- * instructions that are not present in the current routing model. The HUD is already useful on a
- * real drive: route progress, remaining distance/time, speed, heading, off-route distance and the
- * next fixed Scenic POI are derived continuously from GPS. Provider maneuvers can be plugged into
- * the same model later without replacing the UI.
- */
+enum class NavigationTurn {
+    STRAIGHT,
+    SLIGHT_LEFT,
+    LEFT,
+    SHARP_LEFT,
+    U_TURN,
+    SHARP_RIGHT,
+    RIGHT,
+    SLIGHT_RIGHT,
+    ARRIVE,
+}
+
+data class NavigationManeuver(
+    val turn: NavigationTurn,
+    val instruction: String,
+    val distanceMeters: Double,
+    val routeIndex: Int,
+    val angleDegrees: Double = 0.0,
+)
+
 data class NavigationSnapshot(
     val routeIndex: Int,
     val progress: Double,
@@ -40,11 +54,20 @@ data class NavigationSnapshot(
     val speedKmh: Int,
     val nextStop: PlannedStop?,
     val nextStopDistanceMeters: Double?,
+    val nextManeuver: NavigationManeuver?,
     val arrived: Boolean,
 ) {
     val offRoute: Boolean get() = offRouteMeters > 90.0
 }
 
+/**
+ * GPS matcher and route-geometry guidance engine.
+ *
+ * Until every routing provider returns a normalized maneuver list, turn guidance is extracted
+ * from the actual committed route polyline. The detector uses a distance window around a bend,
+ * ignores ordinary road curvature and only surfaces meaningful heading changes. It never invents
+ * street names. Provider maneuvers can later override these geometry instructions one-for-one.
+ */
 object LiveNavigationEngine {
     fun snapshot(
         route: List<GeoPoint>,
@@ -54,10 +77,10 @@ object LiveNavigationEngine {
         stops: List<PlannedStop>,
     ): NavigationSnapshot {
         if (route.size < 2) {
-            return NavigationSnapshot(0, 0.0, 0.0, 0, 0.0, 0.0, 0, null, null, true)
+            return NavigationSnapshot(0, 0.0, 0.0, 0, 0.0, 0.0, 0, null, null, null, true)
         }
 
-        val nearestIndex = route.indices.minByOrNull { haversineMeters(route[it], location) } ?: 0
+        val nearestIndex = nearestRouteIndex(route, location)
         val offRoute = haversineMeters(route[nearestIndex], location)
         val cumulative = cumulativeMeters(route)
         val total = cumulative.last().coerceAtLeast(1.0)
@@ -66,24 +89,29 @@ object LiveNavigationEngine {
         val progress = (progressMeters / total).coerceIn(0.0, 1.0)
 
         val routeBearing = when {
-            nearestIndex < route.lastIndex -> bearing(route[nearestIndex], route[nearestIndex + 1])
+            nearestIndex < route.lastIndex -> bearing(route[nearestIndex], route[(nearestIndex + 1).coerceAtMost(route.lastIndex)])
             nearestIndex > 0 -> bearing(route[nearestIndex - 1], route[nearestIndex])
             else -> gpsBearingDegrees?.toDouble() ?: 0.0
         }
-        val speedMps = speedMetersPerSecond?.takeIf { it >= 1.5f }?.toDouble()
-            ?: 16.67
+        val speedMps = speedMetersPerSecond?.takeIf { it >= 1.5f }?.toDouble() ?: 16.67
         val etaMinutes = (remaining / speedMps / 60.0).roundToInt().coerceAtLeast(0)
         val speedKmh = ((speedMetersPerSecond ?: 0f) * 3.6f).roundToInt().coerceAtLeast(0)
 
         val stopProgress = stops.mapNotNull { stop ->
             val point = stop.point ?: return@mapNotNull null
-            val index = route.indices.minByOrNull { haversineMeters(route[it], point) } ?: return@mapNotNull null
+            val index = nearestRouteIndex(route, point)
             Triple(stop, index, cumulative[index])
         }
         val next = stopProgress
             .filter { (_, index, _) -> index >= nearestIndex - 2 }
             .minByOrNull { (_, index, _) -> index }
         val nextDistance = next?.let { (_, _, meters) -> (meters - progressMeters).coerceAtLeast(0.0) }
+        val arrived = remaining < 80.0
+        val maneuver = if (arrived) {
+            NavigationManeuver(NavigationTurn.ARRIVE, "You have reached your destination", remaining, route.lastIndex)
+        } else {
+            findNextManeuver(route, cumulative, nearestIndex, progressMeters)
+        }
 
         return NavigationSnapshot(
             routeIndex = nearestIndex,
@@ -95,8 +123,133 @@ object LiveNavigationEngine {
             speedKmh = speedKmh,
             nextStop = next?.first,
             nextStopDistanceMeters = nextDistance,
-            arrived = remaining < 80.0,
+            nextManeuver = maneuver,
+            arrived = arrived,
         )
+    }
+
+    private fun findNextManeuver(
+        route: List<GeoPoint>,
+        cumulative: List<Double>,
+        currentIndex: Int,
+        progressMeters: Double,
+    ): NavigationManeuver? {
+        if (route.size < 5) return null
+        val scanEndMeters = progressMeters + 8_000.0
+        var candidateIndex = currentIndex + 1
+
+        while (candidateIndex < route.lastIndex - 1 && cumulative[candidateIndex] <= scanEndMeters) {
+            val ahead = cumulative[candidateIndex] - progressMeters
+            if (ahead < 35.0) {
+                candidateIndex++
+                continue
+            }
+
+            val before = indexAtDistanceBefore(cumulative, candidateIndex, 65.0)
+            val after = indexAtDistanceAfter(cumulative, candidateIndex, 85.0)
+            if (before == candidateIndex || after == candidateIndex || before == after) {
+                candidateIndex++
+                continue
+            }
+
+            val incoming = bearing(route[before], route[candidateIndex])
+            val outgoing = bearing(route[candidateIndex], route[after])
+            val delta = signedHeadingDelta(incoming, outgoing)
+            val magnitude = abs(delta)
+
+            // Below ~32 degrees this is normally a bend, not a driver decision. Requiring enough
+            // road length on both sides also suppresses dense-polyline noise at roundabouts/curves.
+            if (magnitude >= 32.0) {
+                val turn = classifyTurn(delta)
+                return NavigationManeuver(
+                    turn = turn,
+                    instruction = maneuverInstruction(turn),
+                    distanceMeters = ahead,
+                    routeIndex = candidateIndex,
+                    angleDegrees = delta,
+                )
+            }
+            candidateIndex++
+        }
+
+        return if (route.lastIndex > currentIndex) {
+            NavigationManeuver(
+                turn = NavigationTurn.STRAIGHT,
+                instruction = "Continue on the route",
+                distanceMeters = (cumulative.last() - progressMeters).coerceAtLeast(0.0),
+                routeIndex = route.lastIndex,
+            )
+        } else null
+    }
+
+    private fun classifyTurn(delta: Double): NavigationTurn {
+        val magnitude = abs(delta)
+        if (magnitude >= 150.0) return NavigationTurn.U_TURN
+        return if (delta < 0) {
+            when {
+                magnitude >= 105.0 -> NavigationTurn.SHARP_LEFT
+                magnitude >= 48.0 -> NavigationTurn.LEFT
+                else -> NavigationTurn.SLIGHT_LEFT
+            }
+        } else {
+            when {
+                magnitude >= 105.0 -> NavigationTurn.SHARP_RIGHT
+                magnitude >= 48.0 -> NavigationTurn.RIGHT
+                else -> NavigationTurn.SLIGHT_RIGHT
+            }
+        }
+    }
+
+    private fun maneuverInstruction(turn: NavigationTurn): String = when (turn) {
+        NavigationTurn.SLIGHT_LEFT -> "Bear slightly left"
+        NavigationTurn.LEFT -> "Turn left"
+        NavigationTurn.SHARP_LEFT -> "Turn sharp left"
+        NavigationTurn.U_TURN -> "Make a U-turn"
+        NavigationTurn.SHARP_RIGHT -> "Turn sharp right"
+        NavigationTurn.RIGHT -> "Turn right"
+        NavigationTurn.SLIGHT_RIGHT -> "Bear slightly right"
+        NavigationTurn.ARRIVE -> "Destination reached"
+        NavigationTurn.STRAIGHT -> "Continue straight"
+    }
+
+    private fun nearestRouteIndex(route: List<GeoPoint>, point: GeoPoint): Int {
+        if (route.isEmpty()) return 0
+        // Dense long routes can contain thousands of points. Coarse scan first, then refine locally.
+        val step = max(1, route.size / 700)
+        var coarseBest = 0
+        var coarseDistance = Double.POSITIVE_INFINITY
+        var index = 0
+        while (index < route.size) {
+            val distance = haversineMeters(route[index], point)
+            if (distance < coarseDistance) {
+                coarseDistance = distance
+                coarseBest = index
+            }
+            index += step
+        }
+        val start = (coarseBest - step * 2).coerceAtLeast(0)
+        val end = (coarseBest + step * 2).coerceAtMost(route.lastIndex)
+        return (start..end).minByOrNull { haversineMeters(route[it], point) } ?: coarseBest
+    }
+
+    private fun indexAtDistanceBefore(cumulative: List<Double>, index: Int, meters: Double): Int {
+        val target = cumulative[index] - meters
+        var i = index
+        while (i > 0 && cumulative[i] > target) i--
+        return i
+    }
+
+    private fun indexAtDistanceAfter(cumulative: List<Double>, index: Int, meters: Double): Int {
+        val target = cumulative[index] + meters
+        var i = index
+        while (i < cumulative.lastIndex && cumulative[i] < target) i++
+        return i
+    }
+
+    private fun signedHeadingDelta(from: Double, to: Double): Double {
+        var delta = (to - from + 540.0) % 360.0 - 180.0
+        if (delta <= -180.0) delta += 360.0
+        return delta
     }
 
     private fun cumulativeMeters(route: List<GeoPoint>): List<Double> {
@@ -143,6 +296,8 @@ fun LiveNavigationHud(
 ) {
     val nextStop = snapshot.nextStop
     val nextDistance = snapshot.nextStopDistanceMeters
+    val maneuver = snapshot.nextManeuver
+
     Column(modifier, verticalArrangement = Arrangement.spacedBy(10.dp)) {
         Card(
             colors = CardDefaults.cardColors(
@@ -151,34 +306,60 @@ fun LiveNavigationHud(
             ),
             elevation = CardDefaults.cardElevation(defaultElevation = 10.dp),
         ) {
-            Column(Modifier.fillMaxWidth().padding(14.dp), verticalArrangement = Arrangement.spacedBy(7.dp)) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Icon(if (snapshot.offRoute) Icons.Default.ReportProblem else Icons.Default.Navigation, null)
-                    Spacer(Modifier.width(9.dp))
-                    Column(Modifier.weight(1f)) {
+            Row(
+                Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 12.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Surface(
+                    shape = MaterialTheme.shapes.large,
+                    color = MaterialTheme.colorScheme.surface.copy(alpha = 0.75f),
+                    modifier = Modifier.size(70.dp),
+                ) {
+                    Box(contentAlignment = Alignment.Center) {
                         Text(
-                            when {
-                                snapshot.arrived -> "Destination reached"
-                                snapshot.offRoute -> "Off route · ${formatDistance(snapshot.offRouteMeters)}"
-                                nextStop != null -> "${nextStop.kind.emoji} ${nextStop.name}"
-                                else -> "Continue on Scenic Path"
-                            },
-                            style = MaterialTheme.typography.titleLarge,
-                            fontWeight = FontWeight.Bold,
-                            maxLines = 1,
-                        )
-                        Text(
-                            if (nextDistance != null) "Next Scenic stop in ${formatDistance(nextDistance)}"
-                            else "Follow the highlighted route",
-                            style = MaterialTheme.typography.bodyMedium,
+                            text = if (snapshot.offRoute) "!" else maneuverSymbol(maneuver?.turn ?: NavigationTurn.STRAIGHT),
+                            fontSize = 39.sp,
+                            fontWeight = FontWeight.Black,
+                            textAlign = TextAlign.Center,
                         )
                     }
-                    Text("${snapshot.speedKmh}\nkm/h", style = MaterialTheme.typography.labelLarge)
                 }
-                LinearProgressIndicator(
-                    progress = { snapshot.progress.toFloat() },
-                    modifier = Modifier.fillMaxWidth(),
-                )
+                Spacer(Modifier.width(12.dp))
+                Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                    Text(
+                        when {
+                            snapshot.arrived -> "Destination reached"
+                            snapshot.offRoute -> "Off route · ${formatDistance(snapshot.offRouteMeters)}"
+                            maneuver != null -> maneuver.instruction
+                            else -> "Continue on Scenic Path"
+                        },
+                        style = MaterialTheme.typography.titleLarge,
+                        fontWeight = FontWeight.Bold,
+                        maxLines = 1,
+                    )
+                    Text(
+                        when {
+                            snapshot.offRoute -> "Rerouting is available"
+                            maneuver != null && maneuver.turn != NavigationTurn.ARRIVE -> "in ${formatDistance(maneuver.distanceMeters)}"
+                            else -> "Follow the highlighted route"
+                        },
+                        style = MaterialTheme.typography.titleMedium,
+                    )
+                    if (nextStop != null && nextDistance != null) {
+                        Text(
+                            "${nextStop.kind.emoji} ${nextStop.name} · ${formatDistance(nextDistance)}",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1,
+                        )
+                    }
+                }
+                Surface(shape = MaterialTheme.shapes.large, color = MaterialTheme.colorScheme.surface.copy(alpha = 0.72f)) {
+                    Column(Modifier.padding(horizontal = 10.dp, vertical = 7.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+                        Text(snapshot.speedKmh.toString(), fontWeight = FontWeight.Black, style = MaterialTheme.typography.titleLarge)
+                        Text("km/h", style = MaterialTheme.typography.labelSmall)
+                    }
+                }
             }
         }
 
@@ -186,9 +367,10 @@ fun LiveNavigationHud(
             Column(Modifier.fillMaxWidth().padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     NavigationMetric("Remaining", formatDistance(snapshot.remainingMeters), Modifier.weight(1f))
-                    NavigationMetric("ETA", if (snapshot.etaMinutes < 60) "${snapshot.etaMinutes} min" else "${snapshot.etaMinutes / 60}h ${snapshot.etaMinutes % 60}m", Modifier.weight(1f))
+                    NavigationMetric("ETA", formatEta(snapshot.etaMinutes), Modifier.weight(1f))
                     NavigationMetric("Progress", "${(snapshot.progress * 100).roundToInt()}%", Modifier.weight(1f))
                 }
+                LinearProgressIndicator(progress = { snapshot.progress.toFloat() }, modifier = Modifier.fillMaxWidth())
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                     FilledTonalIconButton(onClick = onVoiceToggle) {
                         Icon(if (voiceEnabled) Icons.Default.VolumeUp else Icons.Default.VolumeOff, "Voice guidance")
@@ -232,23 +414,58 @@ fun NavigationVoiceGuide(snapshot: NavigationSnapshot, enabled: Boolean) {
 
     val nextStop = snapshot.nextStop
     val nextDistance = snapshot.nextStopDistanceMeters
-    LaunchedEffect(enabled, ready, snapshot.offRoute, snapshot.arrived, nextStop?.id, nextDistance?.roundToInt()) {
-        if (!enabled || !ready) return@LaunchedEffect
-        val message = when {
-            snapshot.arrived -> "You have reached your destination."
-            snapshot.offRoute && snapshot.offRouteMeters > 150 -> "You are off the planned route. Please recalculate when safe."
-            nextStop != null && nextDistance != null && nextDistance < 250 ->
-                "Your Scenic stop, ${nextStop.name}, is just ahead."
-            nextStop != null && nextDistance != null && nextDistance in 900.0..1100.0 ->
-                "In about one kilometer, Scenic stop ${nextStop.name}."
-            else -> null
-        } ?: return@LaunchedEffect
-        val key = when {
-            snapshot.arrived -> "arrived"
-            snapshot.offRoute -> "offroute"
-            nextStop != null && nextDistance != null && nextDistance < 250 -> "${nextStop.id}-near"
-            else -> "${nextStop?.id}-1km"
+    val maneuver = snapshot.nextManeuver
+    val maneuverBucket = maneuver?.let {
+        when {
+            it.distanceMeters <= 90 -> 90
+            it.distanceMeters <= 260 -> 260
+            it.distanceMeters <= 850 -> 850
+            else -> 0
         }
+    } ?: 0
+
+    LaunchedEffect(
+        enabled,
+        ready,
+        snapshot.offRoute,
+        snapshot.arrived,
+        nextStop?.id,
+        nextDistance?.roundToInt(),
+        maneuver?.routeIndex,
+        maneuverBucket,
+    ) {
+        if (!enabled || !ready) return@LaunchedEffect
+        val message: String
+        val key: String
+
+        when {
+            snapshot.arrived -> {
+                message = "You have reached your destination."
+                key = "arrived"
+            }
+            snapshot.offRoute && snapshot.offRouteMeters > 150 -> {
+                message = "You are off the planned route. A new route can be calculated."
+                key = "offroute"
+            }
+            maneuver != null && maneuver.turn != NavigationTurn.STRAIGHT && maneuverBucket > 0 -> {
+                message = when (maneuverBucket) {
+                    850 -> "In about 800 meters, ${maneuver.instruction.lowercase()}."
+                    260 -> "In about 250 meters, ${maneuver.instruction.lowercase()}."
+                    else -> maneuver.instruction + "."
+                }
+                key = "turn-${maneuver.routeIndex}-$maneuverBucket"
+            }
+            nextStop != null && nextDistance != null && nextDistance < 250 -> {
+                message = "Your Scenic stop, ${nextStop.name}, is just ahead."
+                key = "${nextStop.id}-near"
+            }
+            nextStop != null && nextDistance != null && nextDistance in 900.0..1100.0 -> {
+                message = "In about one kilometer, Scenic stop ${nextStop.name}."
+                key = "${nextStop.id}-1km"
+            }
+            else -> return@LaunchedEffect
+        }
+
         if (key != lastMessageKey) {
             lastMessageKey = key
             runCatching {
@@ -257,6 +474,23 @@ fun NavigationVoiceGuide(snapshot: NavigationSnapshot, enabled: Boolean) {
             }
         }
     }
+}
+
+private fun maneuverSymbol(turn: NavigationTurn): String = when (turn) {
+    NavigationTurn.STRAIGHT -> "↑"
+    NavigationTurn.SLIGHT_LEFT -> "↖"
+    NavigationTurn.LEFT -> "←"
+    NavigationTurn.SHARP_LEFT -> "↰"
+    NavigationTurn.U_TURN -> "↶"
+    NavigationTurn.SHARP_RIGHT -> "↱"
+    NavigationTurn.RIGHT -> "→"
+    NavigationTurn.SLIGHT_RIGHT -> "↗"
+    NavigationTurn.ARRIVE -> "◎"
+}
+
+private fun formatEta(minutes: Int): String = when {
+    minutes < 60 -> "$minutes min"
+    else -> "${minutes / 60}h ${minutes % 60}m"
 }
 
 fun formatDistance(meters: Double): String = when {
