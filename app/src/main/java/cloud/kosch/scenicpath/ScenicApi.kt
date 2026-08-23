@@ -114,12 +114,17 @@ object ScenicApi {
     ): Result<RoutePlanUi> = withContext(Dispatchers.IO) {
         val effectivePreferences = preferences.forCharacter(plan.routeCharacter)
 
-        // Physical-device/debug builds exercise the v0.4 Journey Optimizer directly.
-        // The segmented transport guard keeps long journeys below public development
-        // provider path limits while presenting one continuous trip to the user.
+        // Manual route stops are hard constraints, not mere POI decorations. On physical/debug
+        // builds route them as explicit breaks so a recalculation must physically pass through
+        // every selected waypoint. The wrapper delegates each leg back to the existing segmented
+        // Journey Optimizer and keeps one shared budget across the complete trip.
         if (BuildConfig.DEBUG) {
             return@withContext runCatching {
-                SegmentedJourneyOptimizer.plan(origin, destination, plan, effectivePreferences)
+                if (plan.stops.any { it.mustVisit && it.point != null }) {
+                    WaypointAwareJourneyOptimizer.plan(origin, destination, plan, effectivePreferences)
+                } else {
+                    SegmentedJourneyOptimizer.plan(origin, destination, plan, effectivePreferences)
+                }
             }
         }
 
