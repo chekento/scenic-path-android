@@ -45,24 +45,22 @@ fun PlacePickerSheet(
             return@LaunchedEffect
         }
 
-        // Protect type-ahead services from request spam while keeping the UI responsive.
-        delay(if (searchNonce > 0) 80 else 380)
+        // Debounce normal typing. An explicit keyboard/search-button request runs immediately.
+        delay(if (searchNonce > 0) 70 else 360)
         searching = true
         error = null
 
-        val found = if (BuildConfig.DEBUG) {
-            // On a physical phone the default 10.0.2.2 backend address points nowhere.
-            // Use OSM/Photon directly for development so place selection remains testable.
-            runCatching { OsmPlaceSearch.search(normalized, bias) }.getOrNull().orEmpty()
-                .ifEmpty {
-                    runCatching { ScenicApi.searchPlaces(context, normalized, bias) }.getOrNull().orEmpty()
-                }
-        } else {
-            runCatching { ScenicApi.searchPlaces(context, normalized, bias) }.getOrNull().orEmpty()
-        }
+        // ScenicApi owns the provider fallback order. On physical debug devices it deliberately
+        // skips the emulator-only backend, tries Android's geocoder first, then Photon/OSM.
+        // This prevents a temporarily throttled POI provider from also breaking destination entry.
+        val found = runCatching {
+            ScenicApi.searchPlaces(context, normalized, bias)
+        }.getOrNull().orEmpty()
 
         results = found
-        error = if (found.isEmpty()) "No matching places found — try city + street or a landmark name." else null
+        error = if (found.isEmpty()) {
+            "No matching places found. Try the city name, postcode, street or a landmark."
+        } else null
         searching = false
     }
 
@@ -78,7 +76,7 @@ fun PlacePickerSheet(
                 Column(Modifier.weight(1f)) {
                     Text(title, style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
                     Text(
-                        if (BuildConfig.DEBUG) "Search OpenStreetMap places, addresses and landmarks" else "Search and choose the exact place",
+                        if (BuildConfig.DEBUG) "Search device geocoder + OpenStreetMap/Photon" else "Search and choose the exact place",
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
@@ -142,7 +140,7 @@ fun PlacePickerSheet(
 
             if (BuildConfig.DEBUG) {
                 Text(
-                    "Search data © OpenStreetMap contributors · Photon development service",
+                    "Place search uses the device geocoder and OpenStreetMap/Photon as independent fallbacks.",
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
