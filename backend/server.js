@@ -3,6 +3,7 @@ import { rankRoutes } from "./scenic-score.js";
 import { analyzeCorridor } from "./corridor-analyzer.js";
 import { enrichRouteFromOsm } from "./osm-enrichment.js";
 import { enrichTopFoodAlongRoute } from "./food-enrichment.js";
+import { findPlaceDetails } from "./google-places.js";
 import { selectSceneSuggestions } from "./scene-suggestions.js";
 import { orderRoutesForCharacter } from "./route-selection.js";
 import { photonSearch } from "./photon-search.js";
@@ -153,10 +154,11 @@ const server = http.createServer(async (req, res) => {
     return json(res, 200, {
       ok: true,
       service: "scenic-path-backend",
-      version: "0.3.1",
+      version: "0.3.2",
       placeSearch: process.env.PHOTON_URL ? "OpenStreetMap/Photon" : "TomTom fallback",
       corridorEnrichment: process.env.OSM_ENRICHMENT_URL ? "configured" : "geometry-only",
-      verifiedFood: process.env.GOOGLE_PLACES_API_KEY ? "configured" : "disabled"
+      verifiedFood: process.env.GOOGLE_PLACES_API_KEY ? "configured" : "disabled",
+      popupRatings: process.env.GOOGLE_PLACES_API_KEY ? "Google Places" : "disabled"
     });
   }
 
@@ -170,6 +172,29 @@ const server = http.createServer(async (req, res) => {
       return json(res, 200, { results });
     } catch (error) {
       console.error(error);
+      return json(res, 502, { error: error.message });
+    }
+  }
+
+  if (req.method === "GET" && requestUrl.pathname === "/v1/poi-details") {
+    try {
+      const name = requestUrl.searchParams.get("name")?.trim();
+      const lat = Number(requestUrl.searchParams.get("lat"));
+      const lon = Number(requestUrl.searchParams.get("lon"));
+      if (!name || !Number.isFinite(lat) || !Number.isFinite(lon)) {
+        return json(res, 400, { error: "name, lat and lon are required" });
+      }
+      if (!process.env.GOOGLE_PLACES_API_KEY) {
+        return json(res, 200, { ratingSource: null, providerConfigured: false });
+      }
+      const details = await findPlaceDetails({
+        apiKey: process.env.GOOGLE_PLACES_API_KEY,
+        name,
+        center: { lat, lon },
+      });
+      return json(res, 200, details ? { ...details, providerConfigured: true } : { providerConfigured: true });
+    } catch (error) {
+      console.error("poi-details:", error);
       return json(res, 502, { error: error.message });
     }
   }
