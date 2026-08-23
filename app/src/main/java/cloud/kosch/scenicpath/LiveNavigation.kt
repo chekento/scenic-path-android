@@ -71,7 +71,7 @@ object LiveNavigationEngine {
             else -> gpsBearingDegrees?.toDouble() ?: 0.0
         }
         val speedMps = speedMetersPerSecond?.takeIf { it >= 1.5f }?.toDouble()
-            ?: 16.67 // stable fallback ~60 km/h until GPS has a reliable moving speed
+            ?: 16.67
         val etaMinutes = (remaining / speedMps / 60.0).roundToInt().coerceAtLeast(0)
         val speedKmh = ((speedMetersPerSecond ?: 0f) * 3.6f).roundToInt().coerceAtLeast(0)
 
@@ -141,6 +141,8 @@ fun LiveNavigationHud(
     onStop: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    val nextStop = snapshot.nextStop
+    val nextDistance = snapshot.nextStopDistanceMeters
     Column(modifier, verticalArrangement = Arrangement.spacedBy(10.dp)) {
         Card(
             colors = CardDefaults.cardColors(
@@ -158,7 +160,7 @@ fun LiveNavigationHud(
                             when {
                                 snapshot.arrived -> "Destination reached"
                                 snapshot.offRoute -> "Off route · ${formatDistance(snapshot.offRouteMeters)}"
-                                snapshot.nextStop != null -> "${snapshot.nextStop.kind.emoji} ${snapshot.nextStop.name}"
+                                nextStop != null -> "${nextStop.kind.emoji} ${nextStop.name}"
                                 else -> "Continue on Scenic Path"
                             },
                             style = MaterialTheme.typography.titleLarge,
@@ -166,10 +168,8 @@ fun LiveNavigationHud(
                             maxLines = 1,
                         )
                         Text(
-                            when {
-                                snapshot.nextStopDistanceMeters != null -> "Next Scenic stop in ${formatDistance(snapshot.nextStopDistanceMeters)}"
-                                else -> "Follow the highlighted route"
-                            },
+                            if (nextDistance != null) "Next Scenic stop in ${formatDistance(nextDistance)}"
+                            else "Follow the highlighted route",
                             style = MaterialTheme.typography.bodyMedium,
                         )
                     }
@@ -230,22 +230,24 @@ fun NavigationVoiceGuide(snapshot: NavigationSnapshot, enabled: Boolean) {
         onDispose { runCatching { engine.stop(); engine.shutdown() } }
     }
 
-    LaunchedEffect(enabled, ready, snapshot.offRoute, snapshot.arrived, snapshot.nextStop?.id, snapshot.nextStopDistanceMeters?.roundToInt()) {
+    val nextStop = snapshot.nextStop
+    val nextDistance = snapshot.nextStopDistanceMeters
+    LaunchedEffect(enabled, ready, snapshot.offRoute, snapshot.arrived, nextStop?.id, nextDistance?.roundToInt()) {
         if (!enabled || !ready) return@LaunchedEffect
         val message = when {
             snapshot.arrived -> "You have reached your destination."
             snapshot.offRoute && snapshot.offRouteMeters > 150 -> "You are off the planned route. Please recalculate when safe."
-            snapshot.nextStop != null && snapshot.nextStopDistanceMeters != null && snapshot.nextStopDistanceMeters < 250 ->
-                "Your Scenic stop, ${snapshot.nextStop.name}, is just ahead."
-            snapshot.nextStop != null && snapshot.nextStopDistanceMeters != null && snapshot.nextStopDistanceMeters in 900.0..1100.0 ->
-                "In about one kilometer, Scenic stop ${snapshot.nextStop.name}."
+            nextStop != null && nextDistance != null && nextDistance < 250 ->
+                "Your Scenic stop, ${nextStop.name}, is just ahead."
+            nextStop != null && nextDistance != null && nextDistance in 900.0..1100.0 ->
+                "In about one kilometer, Scenic stop ${nextStop.name}."
             else -> null
         } ?: return@LaunchedEffect
         val key = when {
             snapshot.arrived -> "arrived"
             snapshot.offRoute -> "offroute"
-            snapshot.nextStopDistanceMeters != null && snapshot.nextStopDistanceMeters < 250 -> "${snapshot.nextStop.id}-near"
-            else -> "${snapshot.nextStop?.id}-1km"
+            nextStop != null && nextDistance != null && nextDistance < 250 -> "${nextStop.id}-near"
+            else -> "${nextStop?.id}-1km"
         }
         if (key != lastMessageKey) {
             lastMessageKey = key
