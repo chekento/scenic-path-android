@@ -43,7 +43,7 @@ Validated v0.5.9 APK source head: `35afcbe234697011a28660afff75f9ffa96b8f77`.
 - workflow artifact ZIP SHA-256: `bdf04d75aed913a486188c502699e4552ee1aa36208974ebb96b59884192397a`
 - direct APK SHA-256: `205b8e359f47131ad0e4670fd642b98fc30269b00c52f59fb76f141241642d18`
 
-Subsequent documentation-only commits do not alter the validated APK source.
+Documentation-only commits after that source head do not alter the validated APK.
 
 ## Development infrastructure
 
