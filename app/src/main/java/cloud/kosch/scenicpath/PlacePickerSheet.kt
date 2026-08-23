@@ -18,7 +18,10 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
+import java.util.Locale
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -34,9 +37,16 @@ fun PlacePickerSheet(
     var results by remember { mutableStateOf<List<PlaceSuggestion>>(emptyList()) }
     var searching by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
-    var searchNonce by remember { mutableIntStateOf(0) }
+    var submitNonce by remember { mutableIntStateOf(0) }
+    var handledSubmitNonce by remember { mutableIntStateOf(0) }
+    var submittedQuery by remember { mutableStateOf("") }
 
-    LaunchedEffect(query, bias, searchNonce) {
+    fun submitSearch() {
+        submittedQuery = query.trim()
+        submitNonce++
+    }
+
+    LaunchedEffect(query, bias, submitNonce) {
         val normalized = query.trim()
         if (normalized.length < 2) {
             results = emptyList()
@@ -45,21 +55,38 @@ fun PlacePickerSheet(
             return@LaunchedEffect
         }
 
-        // Debounce normal typing. An explicit keyboard/search-button request runs immediately.
-        delay(if (searchNonce > 0) 70 else 360)
+        val explicit = submitNonce > handledSubmitNonce && submittedQuery == normalized
+        delay(if (explicit) 20 else 340)
         searching = true
         error = null
 
-        // ScenicApi owns the provider fallback order. On physical debug devices it deliberately
-        // skips the emulator-only backend, tries Android's geocoder first, then Photon/OSM.
-        // This prevents a temporarily throttled POI provider from also breaking destination entry.
-        val found = runCatching {
-            ScenicApi.searchPlaces(context, normalized, bias)
-        }.getOrNull().orEmpty()
+        val found = coroutineScope {
+            // Keep the ordinary device/backend route search and Photon type-ahead independent.
+            // The direct Photon lane is important for street names because Android Geocoder can
+            // otherwise return only the containing town and short-circuit richer suggestions.
+            val standardJob = async {
+                runCatching { ScenicApi.searchPlaces(context, normalized, bias) }.getOrNull().orEmpty()
+            }
+            val photonJob = async {
+                runCatching { OsmPlaceSearch.search(normalized, bias) }.getOrNull().orEmpty()
+            }
+            val exactJob = async {
+                if (explicit) {
+                    runCatching { OsmAddressSearch.search(normalized, bias) }.getOrNull().orEmpty()
+                } else emptyList()
+            }
 
+            mergePlaceSuggestions(
+                exact = exactJob.await(),
+                photon = photonJob.await(),
+                standard = standardJob.await(),
+            )
+        }
+
+        if (explicit) handledSubmitNonce = submitNonce
         results = found
         error = if (found.isEmpty()) {
-            "No matching places found. Try the city name, postcode, street or a landmark."
+            "No matching address found. Try street + house number + town/postcode, or a landmark."
         } else null
         searching = false
     }
@@ -76,7 +103,7 @@ fun PlacePickerSheet(
                 Column(Modifier.weight(1f)) {
                     Text(title, style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
                     Text(
-                        if (BuildConfig.DEBUG) "Search device geocoder + OpenStreetMap/Photon" else "Search and choose the exact place",
+                        "Search towns, exact streets, house numbers, addresses and landmarks",
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
@@ -88,19 +115,26 @@ fun PlacePickerSheet(
                 onValueChange = { query = it },
                 modifier = Modifier.fillMaxWidth(),
                 singleLine = true,
-                label = { Text("Place, address or landmark") },
+                label = { Text("Street, house number, place or landmark") },
+                placeholder = { Text("e.g. Hamburger Straße 12, Ahrensburg") },
                 leadingIcon = { Icon(Icons.Default.Search, null) },
                 keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
-                keyboardActions = KeyboardActions(onSearch = { searchNonce++ }),
+                keyboardActions = KeyboardActions(onSearch = { submitSearch() }),
                 trailingIcon = {
                     if (searching) {
                         CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
                     } else if (query.trim().length >= 2) {
-                        IconButton(onClick = { searchNonce++ }) {
-                            Icon(Icons.Default.Search, "Search now")
+                        IconButton(onClick = { submitSearch() }) {
+                            Icon(Icons.Default.Search, "Search exact address")
                         }
                     }
                 },
+            )
+
+            Text(
+                "Tip: press Search for exact street + house-number lookup.",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
 
             error?.let {
@@ -140,11 +174,27 @@ fun PlacePickerSheet(
 
             if (BuildConfig.DEBUG) {
                 Text(
-                    "Place search uses the device geocoder and OpenStreetMap/Photon as independent fallbacks.",
+                    "Type-ahead: device geocoder + Photon/OpenStreetMap · explicit exact-address search: OpenStreetMap Nominatim.",
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
         }
     }
+}
+
+private fun mergePlaceSuggestions(
+    exact: List<PlaceSuggestion>,
+    photon: List<PlaceSuggestion>,
+    standard: List<PlaceSuggestion>,
+): List<PlaceSuggestion> {
+    val seen = mutableSetOf<String>()
+    return buildList {
+        (exact + photon + standard).forEach { suggestion ->
+            val coordinateKey = "%.5f,%.5f".format(Locale.US, suggestion.point.lat, suggestion.point.lon)
+            val titleKey = suggestion.title.trim().lowercase(Locale.ROOT)
+            val key = "$coordinateKey:$titleKey"
+            if (seen.add(key)) add(suggestion)
+        }
+    }.take(16)
 }
