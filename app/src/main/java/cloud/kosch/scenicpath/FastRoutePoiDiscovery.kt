@@ -9,11 +9,10 @@ import kotlinx.coroutines.withTimeoutOrNull
 /**
  * Fast first-stage discovery.
  *
- * Photon is excellent as a cheap OSM fallback but reverse lookups naturally favour the
- * nearest large feature, which is why long routes could initially show almost only trees,
- * water and mountains. The quick path now always runs a category-first bounding-box coverage
- * scan in parallel, so museums, food, heritage, art, worship, architecture and viewpoints
- * can reach the route candidate and the map before the deeper precision scan finishes.
+ * Photon is kept as an independent OSM fallback, while RapidRoutePoiDiscovery explicitly
+ * asks for the human-interest categories Photon reverse lookups tend to miss. Both complete
+ * inside the long-route planner's latency budget; the deeper precision scan remains a later
+ * enrichment layer rather than blocking the first useful map.
  */
 object FastRoutePoiDiscovery {
     suspend fun discover(
@@ -23,7 +22,7 @@ object FastRoutePoiDiscovery {
     ): List<ScenePointUi> = withContext(Dispatchers.IO) {
         if (route.size < 2 || enabledKinds.isEmpty() || maxResults <= 0) return@withContext emptyList()
 
-        val (photon, coverage) = coroutineScope {
+        val (photon, rapid) = coroutineScope {
             val photonJob = async(Dispatchers.IO) {
                 runCatching {
                     PhotonSceneFallback.discover(
@@ -35,33 +34,28 @@ object FastRoutePoiDiscovery {
                     )
                 }.getOrElse { emptyList() }
             }
-            val coverageJob = async(Dispatchers.IO) {
-                withTimeoutOrNull(12_000) {
+            val rapidJob = async(Dispatchers.IO) {
+                withTimeoutOrNull(7_000) {
                     runCatching {
-                        RoutePoiCoverageDiscovery.discover(
+                        RapidRoutePoiDiscovery.discover(
                             route = route,
                             enabledKinds = enabledKinds,
                             maxResults = maxOf(72, minOf(maxResults, 140)),
-                            corridorMeters = 12_000,
                         )
                     }.getOrElse { emptyList() }
                 }.orEmpty()
             }
-            photonJob.await() to coverageJob.await()
+            photonJob.await() to rapidJob.await()
         }
 
         mergeResults(
-            first = coverage,
+            first = rapid,
             second = photon,
             enabledKinds = enabledKinds,
             maxResults = maxResults,
         )
     }
 
-    /**
-     * Missing-category rescue used by slower fallbacks. Start with the cheap coverage scanner;
-     * only use the continuous corridor as a second attempt when a requested kind is still absent.
-     */
     internal suspend fun discoverTargetedOnly(
         route: List<GeoPoint>,
         enabledKinds: Set<StopKind>,
@@ -72,13 +66,12 @@ object FastRoutePoiDiscovery {
     ): List<ScenePointUi> = withContext(Dispatchers.IO) {
         if (route.size < 2 || enabledKinds.isEmpty() || maxResults <= 0) return@withContext emptyList()
 
-        val normal = withTimeoutOrNull(11_000) {
+        val normal = withTimeoutOrNull(7_000) {
             runCatching {
-                RoutePoiCoverageDiscovery.discover(
+                RapidRoutePoiDiscovery.discover(
                     route = route,
                     enabledKinds = enabledKinds,
                     maxResults = maxResults,
-                    corridorMeters = radiusMeters.coerceIn(8_000, 20_000),
                 )
             }.getOrElse { emptyList() }
         }.orEmpty()
