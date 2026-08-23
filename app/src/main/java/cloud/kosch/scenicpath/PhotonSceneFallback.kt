@@ -22,10 +22,9 @@ import kotlin.math.sqrt
 /**
  * Fast OSM-backed route discovery used by the long-route planner.
  *
- * Photon remains the cheap first pass. When enabled, a small targeted Overpass rescue is
- * run only for categories Photon missed. That keeps long-route generation bounded while
- * still allowing castles, museums, monuments, worship, architecture and FOOD to enter the
- * actual auto-stop candidate pool.
+ * Important: even the fast reverse pass is category-filtered. The old `layer=other` request
+ * was the concrete reason nature, water and parks dominated physical-device maps: Photon
+ * simply returned the nearest large feature regardless of the user's Scenic categories.
  */
 object PhotonSceneFallback {
     private const val ENDPOINT = "https://photon.komoot.io/reverse"
@@ -82,7 +81,7 @@ object PhotonSceneFallback {
 
                     val point = GeoPoint(lat, lon)
                     val distance = routeForDistance.minOfOrNull { haversineMeters(point, it) } ?: continue
-                    if (distance > 13_000) continue
+                    if (distance > 15_000) continue
 
                     val name = properties.optString("name").ifBlank {
                         rawType.replace('_', ' ').replaceFirstChar { it.uppercase() }
@@ -92,7 +91,7 @@ object PhotonSceneFallback {
                     val id = if (osmId >= 0) "photon-$osmType-$osmId" else "photon-${lat}-${lon}-${name.hashCode()}"
                     val relevance = relevance(kind, rawType)
                     val restaurantBonus = if (rawType == "restaurant") 9.0 else 0.0
-                    val score = (relevance * 100.0 + restaurantBonus - distance / 280.0).coerceAtLeast(1.0)
+                    val score = (relevance * 100.0 + restaurantBonus - distance / 320.0).coerceAtLeast(1.0)
 
                     found.putIfAbsent(
                         id,
@@ -119,9 +118,6 @@ object PhotonSceneFallback {
         val photon = coverageSelect(found.values.toList(), enabledKinds, maxResults)
         if (!includeTargetedBackfill) return@withContext photon
 
-        // Rescue only categories that Photon missed. Three broad route anchors are enough
-        // for this planning-time pass; the post-route UI enrichment performs the deeper
-        // 8-10 anchor search after the road is already visible.
         val missingKinds = enabledKinds
             .filter { kind -> kind.autoDiscoverable && photon.none { it.kind == kind.name } }
             .toSet()
@@ -146,11 +142,8 @@ object PhotonSceneFallback {
         enabledKinds: Set<StopKind>,
         maxResults: Int,
     ): List<ScenePointUi> {
-        val deduped = values
-            .distinctBy { "${it.name.lowercase(Locale.ROOT)}:${it.kind}" }
-        val grouped = deduped
-            .groupBy { it.kind }
-            .mapValues { (_, value) -> value.sortedByDescending { it.suggestionScore } }
+        val deduped = values.distinctBy { "${it.name.lowercase(Locale.ROOT)}:${it.kind}" }
+        val grouped = deduped.groupBy { it.kind }.mapValues { (_, value) -> value.sortedByDescending { it.suggestionScore } }
         val selected = mutableListOf<ScenePointUi>()
 
         prototypeSelectableSceneKinds.filter { it in enabledKinds }.forEach { kind ->
@@ -169,16 +162,14 @@ object PhotonSceneFallback {
         categories: List<String>,
         fast: Boolean,
     ): org.json.JSONArray {
-        val url = if (fast) {
-            "$ENDPOINT?lon=${sample.lon}&lat=${sample.lat}&radius=20&limit=60&lang=de&layer=other"
-        } else {
-            val include = URLEncoder.encode(categories.joinToString(","), Charsets.UTF_8.name())
-            "$ENDPOINT?lon=${sample.lon}&lat=${sample.lat}&radius=20&limit=30&lang=de&include=$include"
-        }
+        val include = URLEncoder.encode(categories.joinToString(","), Charsets.UTF_8.name())
+        val radius = if (fast) 25 else 30
+        val limit = if (fast) 70 else 50
+        val url = "$ENDPOINT?lon=${sample.lon}&lat=${sample.lat}&radius=$radius&limit=$limit&lang=de&dedupe=1&include=$include"
         val connection = (URL(url).openConnection() as HttpURLConnection).apply {
             requestMethod = "GET"
             connectTimeout = if (fast) 2_000 else 3_500
-            readTimeout = if (fast) 3_500 else 6_500
+            readTimeout = if (fast) 3_800 else 6_500
             setRequestProperty("Accept", "application/json")
             setRequestProperty("User-Agent", "ScenicPath-Android/${BuildConfig.VERSION_NAME} development")
         }
@@ -200,6 +191,7 @@ object PhotonSceneFallback {
             add("osm.tourism.artwork")
             add("osm.tourism.gallery")
             add("osm.amenity.arts_centre")
+            add("osm.amenity.theatre")
         }
         if (StopKind.MONUMENT in enabledKinds) {
             add("osm.historic.castle")
@@ -210,11 +202,13 @@ object PhotonSceneFallback {
             add("osm.historic.monument")
             add("osm.historic.memorial")
             add("osm.historic.archaeological_site")
+            add("osm.historic.battlefield")
         }
         if (StopKind.NATURE in enabledKinds) {
             add("osm.natural.peak")
             add("osm.natural.cape")
             add("osm.natural.stone")
+            add("osm.natural.rock")
         }
         if (StopKind.WATER in enabledKinds) {
             add("osm.natural.beach")
@@ -231,28 +225,34 @@ object PhotonSceneFallback {
         if (StopKind.FOOD in enabledKinds) {
             add("osm.amenity.restaurant")
             add("osm.amenity.cafe")
+            add("osm.amenity.biergarten")
         }
         if (StopKind.ARCHITECTURE in enabledKinds) {
             add("osm.man_made.lighthouse")
             add("osm.man_made.tower")
             add("osm.man_made.water_tower")
+            add("osm.man_made.observation_tower")
             add("osm.bridge.yes")
         }
         add("osm.tourism.attraction")
+        add("osm.tourism.zoo")
+        add("osm.tourism.theme_park")
     }
 
     private fun photonRawType(key: String, value: String): String? = when {
-        key == "tourism" && value in setOf("viewpoint", "museum", "artwork", "gallery", "attraction") -> value
-        key == "amenity" && value == "arts_centre" -> "artwork"
+        key == "tourism" && value in setOf("viewpoint", "museum", "artwork", "gallery", "attraction", "zoo", "theme_park") -> value
+        key == "amenity" && value in setOf("arts_centre", "theatre") -> "artwork"
         key == "amenity" && value == "place_of_worship" -> "worship"
         key == "amenity" && value == "restaurant" -> "restaurant"
         key == "amenity" && value == "cafe" -> "cafe"
-        key == "historic" && value in setOf("castle", "manor", "palace", "fort", "ruins", "monument", "memorial", "archaeological_site") -> value
+        key == "amenity" && value == "biergarten" -> "restaurant"
+        key == "historic" && value in setOf("castle", "manor", "palace", "fort", "ruins", "monument", "memorial", "archaeological_site", "battlefield") -> value
         key == "natural" && value in setOf("peak", "cape", "stone", "rock", "beach") -> value
         key == "natural" && value == "water" -> "lake"
         key == "waterway" && value == "waterfall" -> "waterfall"
         key == "waterway" && value == "river" -> "river"
         key == "leisure" && value in setOf("park", "garden", "nature_reserve") -> value
+        key == "man_made" && value == "observation_tower" -> "observation_tower"
         key == "man_made" && value in setOf("lighthouse", "tower") -> value
         key == "man_made" && value == "water_tower" -> "tower"
         key == "bridge" && value == "yes" -> "bridge"
@@ -263,26 +263,29 @@ object PhotonSceneFallback {
         var score = when (kind) {
             StopKind.VIEWPOINT -> 1.0
             StopKind.MONUMENT -> 0.98
-            StopKind.WATER -> 0.92
-            StopKind.NATURE -> 0.88
-            StopKind.MUSEUM -> 0.90
-            StopKind.FOOD -> 0.86
-            StopKind.PARK -> 0.78
-            StopKind.ARCHITECTURE -> 0.80
-            StopKind.ART -> 0.76
-            StopKind.WORSHIP -> 0.72
-            StopKind.SCENIC -> 0.65
+            StopKind.MUSEUM -> 0.96
+            StopKind.FOOD -> 0.94
+            StopKind.ARCHITECTURE -> 0.88
+            StopKind.ART -> 0.86
+            StopKind.WORSHIP -> 0.82
+            StopKind.WATER -> 0.80
+            StopKind.NATURE -> 0.78
+            StopKind.PARK -> 0.76
+            StopKind.SCENIC -> 0.82
             else -> 0.55
         }
         if (rawType in setOf("castle", "manor", "palace")) score += 0.14
-        if (rawType == "restaurant") score += 0.07
+        if (rawType == "restaurant") score += 0.08
         return score.coerceAtMost(1.2)
     }
 
     private fun dwellMinutes(kind: StopKind, rawType: String): Int = when (rawType) {
+        "museum" -> 50
         "castle", "manor", "palace", "fort", "ruins" -> 30
         "restaurant" -> 55
         "cafe" -> 35
+        "viewpoint", "observation_tower" -> 15
+        "zoo", "theme_park" -> 90
         else -> kind.defaultDwellMinutes
     }
 
