@@ -1,50 +1,21 @@
 # Scenic Path Android
 
-Native Android implementation of **Scenic Path** — a map-first scenic-route planner that optimizes for beautiful, interesting and customizable journeys instead of only the fastest path.
+Native Android implementation of **Scenic Path** — a map-first journey planner for intentionally beautiful routes, scenic categories and Smart Stops.
 
-The active development branch is `feat/m0-foundation`; work is kept behind Draft PR #1 until the native experience is ready to merge.
+## Current development build: v0.5.5
 
-## v0.5.4 — destination-search recovery, persistent POIs and popup route editing
+### Marker reliability
 
-The physical-device regression route is **Current Location / Ahrensburg → Detmold**. v0.5.4 addresses two issues exposed during that test:
+The map treats its Scenic POI population as committed display state. A valid marker set is retained while a waypoint reroute or deeper corridor enrichment is running. A transient empty provider result can no longer remove all clickable icons. The shared POI bridge now recognizes equivalent routes by stable start/destination endpoints even when the replacement polyline geometry changes.
 
-- Destination entry in debug builds no longer waits on the emulator-only `10.0.2.2` backend. Android Geocoder is used first for ordinary cities/addresses, with Photon/OpenStreetMap as an independent landmark/POI fallback.
-- Scenic POI markers are no longer reset to an empty list when adding a waypoint produces a replacement route. The last valid clickable POI population stays visible while the replacement corridor is enriched, and is replaced only when the new discovery produces useful results.
+### Start and destination address search
 
-Rich marker popups can now add a suggested Scenic location as a locked route waypoint, remove a previously selected waypoint, mark the current route as changed, and recalculate the route directly from the popup while the previous valid route remains visible until the replacement succeeds. Popups also keep the official/contact/rating enrichment introduced in v0.5.3.
+Start and destination search supports towns, landmarks, streets and exact house numbers. Type-ahead combines the device geocoder with Photon/OpenStreetMap. Pressing Search additionally performs an explicit OpenStreetMap Nominatim address lookup, so inputs such as `Hamburger Straße 12, Ahrensburg` can resolve to an exact point instead of only the containing town.
 
-Ratings are never fabricated. OpenStreetMap does not provide a general user-star-rating system; verified scores appear only when supplied by a configured rating provider, otherwise the popup links to live ratings.
+### Map interaction
 
-## Scenic discovery stack
-
-The current native discovery pipeline combines fast and deep route-corridor searches so long journeys do not collapse into only parks, mountains and water. Human-facing Scenic lanes include restaurants/cafés, museums, viewpoints, castles/fortresses, palaces/manor houses, ruins/archaeology, monuments/memorials, art/galleries, worship, towers/architecture, bridges, attractions, parks, water, forests and natural landmarks.
-
-Smart Stops and the map share discovered POIs, use category balancing and deduplication, and preserve the last valid route while settings or stops are edited.
-
-## Planner
-
-Current planner capabilities include Quick route / Day trip / Road trip, Beautiful / Balanced / Direct / Custom route character, configurable extra-time budget, Smart Stops, Scenic category filters, Scenic DNA weighting, manual locked waypoints, motorway/toll preferences, and route persistence during replacement calculations.
-
-## Validation
-
-The v0.5.4 app-code commit `a8a95ae538e2521021d3f34f5fb1f9b808cc3de4` passed Android CI #190, Backend tests #190 and POI provider smoke #16. Subsequent README-only commits do not modify the APK source.
+Scenic markers use the same category symbols as Smart Stops. Rich popups can expose official links, contact information, opening hours and provider-backed ratings where available. Suggested locations can be added to or removed from the route directly from the popup and the route can then be recalculated without intentionally discarding the current valid map state.
 
 ## Development infrastructure
 
-Public Photon, Overpass, OpenStreetMap and OpenFreeMap endpoints are development/testing infrastructure. A production Play Store release should use controlled/self-hosted or contracted providers and follow each provider's attribution, caching, quota and branding requirements. Google Places / verified rating integrations belong server-side; provider API keys must never be embedded in the APK.
-
-## Build
-
-Android CI produces a debug APK artifact on pull-request changes.
-
-```bash
-./gradlew assembleDebug
-```
-
-## Backend
-
-The optional Node backend supports production-oriented provider composition, search, routing and verified food/rating enrichment. See `backend/.env.example` for configuration placeholders.
-
-## Status
-
-Draft / unmerged. Scenic Path is under active iteration and is not yet a production release.
+Public OpenStreetMap, Photon, Nominatim, Overpass and routing services are used only as development/test infrastructure. Production deployment should use controlled/self-hosted or contracted providers and comply with each provider's usage, attribution and branding requirements.
