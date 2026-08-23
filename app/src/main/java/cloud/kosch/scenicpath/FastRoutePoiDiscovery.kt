@@ -6,6 +6,15 @@ import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 
+/**
+ * Fast first-stage discovery.
+ *
+ * Photon is excellent as a cheap OSM fallback but reverse lookups naturally favour the
+ * nearest large feature, which is why long routes could initially show almost only trees,
+ * water and mountains. The quick path now always runs a category-first bounding-box coverage
+ * scan in parallel, so museums, food, heritage, art, worship, architecture and viewpoints
+ * can reach the route candidate and the map before the deeper precision scan finishes.
+ */
 object FastRoutePoiDiscovery {
     suspend fun discover(
         route: List<GeoPoint>,
@@ -14,52 +23,45 @@ object FastRoutePoiDiscovery {
     ): List<ScenePointUi> = withContext(Dispatchers.IO) {
         if (route.size < 2 || enabledKinds.isEmpty() || maxResults <= 0) return@withContext emptyList()
 
-        // Planning calls are small (typically 24-40 results) and need the categories Photon
-        // tends to miss most. Nature remains available from Photon while the bounded precision
-        // pass concentrates on food, museums, heritage, art, worship and architecture.
-        val includePrecision = maxResults < 100
-        val planningPrecisionKinds = enabledKinds.intersect(
-            setOf(
-                StopKind.VIEWPOINT,
-                StopKind.MUSEUM,
-                StopKind.MONUMENT,
-                StopKind.ART,
-                StopKind.WORSHIP,
-                StopKind.FOOD,
-                StopKind.ARCHITECTURE,
-            )
-        )
-
-        val (photon, precision) = coroutineScope {
+        val (photon, coverage) = coroutineScope {
             val photonJob = async(Dispatchers.IO) {
                 runCatching {
                     PhotonSceneFallback.discover(
                         route = route,
                         enabledKinds = enabledKinds,
-                        maxResults = maxOf(28, maxResults),
+                        maxResults = maxOf(28, minOf(maxResults, 90)),
                         fast = true,
                         includeTargetedBackfill = false,
                     )
                 }.getOrElse { emptyList() }
             }
-            val precisionJob = async(Dispatchers.IO) {
-                if (!includePrecision || planningPrecisionKinds.isEmpty()) emptyList() else withTimeoutOrNull(8_500) {
+            val coverageJob = async(Dispatchers.IO) {
+                withTimeoutOrNull(12_000) {
                     runCatching {
-                        PrecisionRoutePoiDiscovery.discover(
+                        RoutePoiCoverageDiscovery.discover(
                             route = route,
-                            enabledKinds = planningPrecisionKinds,
-                            maxResults = maxOf(96, maxResults * 3),
-                            radiusMeters = 14_000,
-                            maxSamples = 10,
+                            enabledKinds = enabledKinds,
+                            maxResults = maxOf(72, minOf(maxResults, 140)),
+                            corridorMeters = 12_000,
                         )
                     }.getOrElse { emptyList() }
                 }.orEmpty()
             }
-            photonJob.await() to precisionJob.await()
+            photonJob.await() to coverageJob.await()
         }
-        mergeResults(precision, photon, enabledKinds, maxResults)
+
+        mergeResults(
+            first = coverage,
+            second = photon,
+            enabledKinds = enabledKinds,
+            maxResults = maxResults,
+        )
     }
 
+    /**
+     * Missing-category rescue used by slower fallbacks. Start with the cheap coverage scanner;
+     * only use the continuous corridor as a second attempt when a requested kind is still absent.
+     */
     internal suspend fun discoverTargetedOnly(
         route: List<GeoPoint>,
         enabledKinds: Set<StopKind>,
@@ -70,14 +72,13 @@ object FastRoutePoiDiscovery {
     ): List<ScenePointUi> = withContext(Dispatchers.IO) {
         if (route.size < 2 || enabledKinds.isEmpty() || maxResults <= 0) return@withContext emptyList()
 
-        val normal = withTimeoutOrNull(9_000) {
+        val normal = withTimeoutOrNull(11_000) {
             runCatching {
-                PrecisionRoutePoiDiscovery.discover(
+                RoutePoiCoverageDiscovery.discover(
                     route = route,
                     enabledKinds = enabledKinds,
                     maxResults = maxResults,
-                    radiusMeters = radiusMeters,
-                    maxSamples = maxSamples,
+                    corridorMeters = radiusMeters.coerceIn(8_000, 20_000),
                 )
             }.getOrElse { emptyList() }
         }.orEmpty()
@@ -88,7 +89,7 @@ object FastRoutePoiDiscovery {
         }
         if (missing.isEmpty()) return@withContext normal
 
-        val wider = withTimeoutOrNull(7_000) {
+        val wider = withTimeoutOrNull(9_000) {
             runCatching {
                 PrecisionRoutePoiDiscovery.discover(
                     route = route,
