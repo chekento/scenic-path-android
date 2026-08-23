@@ -19,19 +19,10 @@ import kotlin.math.roundToInt
 import kotlin.math.sin
 import kotlin.math.sqrt
 
-/**
- * Reliable human-interest POI discovery using Photon's indexed category filters.
- *
- * The public Photon service has already proved reachable on the physical test device, while
- * large public Overpass queries are not reliable enough to define the first visible marker
- * population. This pass therefore uses Photon's `/api` endpoint with `bbox` + `include`.
- * According to Photon v1, a text query is optional when include/exclude category filters are
- * present, and comma-separated include categories are OR-ed. That lets Scenic Path search a
- * complete route window for specific kinds instead of reverse-geocoding whatever large
- * natural feature happens to be nearest an anchor.
- */
+/** Category-filtered human-interest discovery using the Photon index. */
 object PhotonCorridorPoiDiscovery {
-    private const val ENDPOINT = "https://photon.komoot.io/api"
+    private const val SEARCH_ENDPOINT = "https://photon.komoot.io/api"
+    private const val REVERSE_ENDPOINT = "https://photon.komoot.io/reverse"
 
     private data class Pack(
         val id: String,
@@ -42,55 +33,38 @@ object PhotonCorridorPoiDiscovery {
 
     private val packs = listOf(
         Pack(
-            id = "food",
-            kinds = setOf(StopKind.FOOD),
-            categories = listOf(
-                "osm.amenity.restaurant",
-                "osm.amenity.cafe",
-                "osm.amenity.biergarten",
-                "osm.amenity.food_court",
+            "food",
+            setOf(StopKind.FOOD),
+            listOf(
+                "osm.amenity.restaurant", "osm.amenity.cafe",
+                "osm.amenity.biergarten", "osm.amenity.food_court",
             ),
-            limit = 55,
+            55,
         ),
         Pack(
-            id = "culture",
-            kinds = setOf(StopKind.MUSEUM, StopKind.ART, StopKind.WORSHIP, StopKind.SCENIC),
-            categories = listOf(
-                "osm.tourism.museum",
-                "osm.tourism.artwork",
-                "osm.tourism.gallery",
-                "osm.amenity.arts_centre",
-                "osm.amenity.theatre",
-                "osm.amenity.place_of_worship",
-                "osm.tourism.attraction",
-                "osm.tourism.zoo",
-                "osm.tourism.theme_park",
+            "culture",
+            setOf(StopKind.MUSEUM, StopKind.ART, StopKind.WORSHIP, StopKind.SCENIC),
+            listOf(
+                "osm.tourism.museum", "osm.tourism.artwork", "osm.tourism.gallery",
+                "osm.amenity.arts_centre", "osm.amenity.theatre", "osm.amenity.place_of_worship",
+                "osm.tourism.attraction", "osm.tourism.zoo", "osm.tourism.theme_park",
                 "osm.tourism.aquarium",
             ),
-            limit = 70,
+            70,
         ),
         Pack(
-            id = "heritage",
-            kinds = setOf(StopKind.VIEWPOINT, StopKind.MONUMENT, StopKind.ARCHITECTURE),
-            categories = listOf(
-                "osm.tourism.viewpoint",
-                "osm.historic.castle",
-                "osm.historic.manor",
-                "osm.historic.palace",
-                "osm.historic.fort",
-                "osm.historic.ruins",
-                "osm.historic.monument",
-                "osm.historic.memorial",
-                "osm.historic.archaeological_site",
-                "osm.historic.battlefield",
-                "osm.man_made.observation_tower",
-                "osm.man_made.tower",
-                "osm.man_made.lighthouse",
-                "osm.man_made.windmill",
-                "osm.man_made.watermill",
+            "heritage",
+            setOf(StopKind.VIEWPOINT, StopKind.MONUMENT, StopKind.ARCHITECTURE),
+            listOf(
+                "osm.tourism.viewpoint", "osm.historic.castle", "osm.historic.manor",
+                "osm.historic.palace", "osm.historic.fort", "osm.historic.ruins",
+                "osm.historic.monument", "osm.historic.memorial",
+                "osm.historic.archaeological_site", "osm.historic.battlefield",
+                "osm.man_made.observation_tower", "osm.man_made.tower",
+                "osm.man_made.lighthouse", "osm.man_made.windmill", "osm.man_made.watermill",
                 "osm.bridge.yes",
             ),
-            limit = 70,
+            70,
         ),
     )
 
@@ -101,22 +75,18 @@ object PhotonCorridorPoiDiscovery {
     ): List<ScenePointUi> = withContext(Dispatchers.IO) {
         if (route.size < 2 || enabledKinds.isEmpty() || maxResults <= 0) return@withContext emptyList()
 
-        val activePacks = packs.mapNotNull { pack ->
-            val enabled = pack.kinds.intersect(enabledKinds + StopKind.SCENIC)
-            if (enabled.isEmpty()) null else pack
+        val activePacks = packs.filter { pack ->
+            pack.kinds.any { it == StopKind.SCENIC || it in enabledKinds }
         }
         if (activePacks.isEmpty()) return@withContext emptyList()
 
         val routeForDistance = sampleRoute(route, 520)
-        // Four windows for a ~300 km journey keeps the public development endpoint load
-        // bounded while still covering the whole road corridor.
-        val windows = splitRoute(route, maxMeters = 90_000.0).take(6)
-
+        val windows = splitRoute(route, 90_000.0).take(6)
         val all = coroutineScope {
             windows.flatMapIndexed { windowIndex, segment ->
                 activePacks.map { pack ->
                     async(Dispatchers.IO) {
-                        withTimeoutOrNull(5_200) {
+                        withTimeoutOrNull(6_200) {
                             runCatching {
                                 queryWindow(windowIndex, segment, routeForDistance, enabledKinds, pack)
                             }.getOrElse { emptyList() }
@@ -138,19 +108,42 @@ object PhotonCorridorPoiDiscovery {
     ): List<ScenePointUi> {
         val box = bbox(segment, 13_000)
         val center = segment[segment.size / 2]
-        val include = URLEncoder.encode(pack.categories.joinToString(","), Charsets.UTF_8.name())
-        val bbox = "${box.west},${box.south},${box.east},${box.north}"
-        val url = buildString {
-            append(ENDPOINT)
-            append("?bbox=").append(URLEncoder.encode(bbox, Charsets.UTF_8.name()))
-            append("&lon=").append(center.lon)
-            append("&lat=").append(center.lat)
+        val includeRaw = pack.categories.joinToString(",")
+        val include = URLEncoder.encode(includeRaw, Charsets.UTF_8.name())
+        val boxRaw = "${box.west},${box.south},${box.east},${box.north}"
+
+        val searchUrl = buildString {
+            append(SEARCH_ENDPOINT)
+            append("?bbox=").append(URLEncoder.encode(boxRaw, Charsets.UTF_8.name()))
+            append("&lon=").append(center.lon).append("&lat=").append(center.lat)
             append("&zoom=10&location_bias_scale=0.05")
             append("&limit=").append(pack.limit)
             append("&lang=de&dedupe=1&include=").append(include)
         }
 
-        val features = fetch(url)
+        var features = runCatching { fetch(searchUrl) }.getOrElse { JSONArray() }
+        if (features.length() == 0) {
+            // Some Photon deployments are stricter about textless `/api` queries. Reverse is
+            // documented to accept the same include filter, so keep a category-filtered,
+            // route-centered fallback instead of reverting to unfiltered natural features.
+            val reverseUrl = buildString {
+                append(REVERSE_ENDPOINT)
+                append("?lon=").append(center.lon).append("&lat=").append(center.lat)
+                append("&radius=28&limit=").append(pack.limit)
+                append("&lang=de&dedupe=1&include=").append(include)
+            }
+            features = runCatching { fetch(reverseUrl) }.getOrElse { JSONArray() }
+        }
+
+        return parseFeatures(windowIndex, features, routeForDistance, enabledKinds)
+    }
+
+    private fun parseFeatures(
+        windowIndex: Int,
+        features: JSONArray,
+        routeForDistance: List<GeoPoint>,
+        enabledKinds: Set<StopKind>,
+    ): List<ScenePointUi> {
         val result = mutableListOf<ScenePointUi>()
         for (index in 0 until features.length()) {
             val feature = features.optJSONObject(index) ?: continue
@@ -171,7 +164,7 @@ object PhotonCorridorPoiDiscovery {
 
             val point = GeoPoint(lat, lon)
             val distance = routeForDistance.minOfOrNull { haversineMeters(point, it) } ?: continue
-            if (distance > 15_500) continue
+            if (distance > 16_500) continue
 
             val name = properties.optString("name").trim().ifBlank {
                 rawType.replace('_', ' ').replaceFirstChar { it.uppercase(Locale.ROOT) }
@@ -183,8 +176,6 @@ object PhotonCorridorPoiDiscovery {
                 "photon-corridor-$windowIndex-${point.lat}-${point.lon}-${name.hashCode()}"
             }
             val relevance = relevance(kind, rawType)
-            val score = (relevance * 100.0 + specialBonus(rawType) - distance / 650.0).coerceAtLeast(1.0)
-
             result += ScenePointUi(
                 id = id,
                 name = name,
@@ -192,7 +183,7 @@ object PhotonCorridorPoiDiscovery {
                 subtype = rawType,
                 point = point,
                 relevance = relevance,
-                suggestionScore = score,
+                suggestionScore = (relevance * 100.0 + specialBonus(rawType) - distance / 650.0).coerceAtLeast(1.0),
                 distanceFromRouteMeters = distance.roundToInt(),
                 suggestedDwellMinutes = dwell(kind, rawType),
                 attribution = "© OpenStreetMap contributors · Photon",
@@ -201,7 +192,7 @@ object PhotonCorridorPoiDiscovery {
                     StopKind.MUSEUM -> "category-filtered museum"
                     StopKind.MONUMENT -> "category-filtered heritage highlight"
                     StopKind.ART -> "category-filtered art/culture"
-                    StopKind.WORSHIP -> "category-filtered historic worship candidate"
+                    StopKind.WORSHIP -> "category-filtered worship candidate"
                     StopKind.ARCHITECTURE -> "category-filtered architecture"
                     StopKind.VIEWPOINT -> "category-filtered viewpoint"
                     else -> "category-filtered Scenic highlight"
@@ -215,7 +206,7 @@ object PhotonCorridorPoiDiscovery {
         val connection = (URL(url).openConnection() as HttpURLConnection).apply {
             requestMethod = "GET"
             connectTimeout = 2_200
-            readTimeout = 4_400
+            readTimeout = 4_800
             setRequestProperty("Accept", "application/json")
             setRequestProperty("User-Agent", "ScenicPath-Android/${BuildConfig.VERSION_NAME} development")
         }
