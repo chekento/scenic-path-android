@@ -10,20 +10,20 @@ v0.5.2 fixes the long-route marker population at the provider-query level after 
 
 ### Category-first POI pipeline
 
-- Photon reverse discovery is no longer allowed to use the broad `layer=other` request that biased results toward large nearby natural features.
-- Every Photon reverse request is now explicitly constrained to the currently enabled OSM categories.
-- A new `PhotonCorridorPoiDiscovery` searches the actual route in bounded windows using Photon's indexed `bbox` + `include` category filters.
+- Photon reverse discovery no longer uses the broad `layer=other` request that biased results toward large nearby natural features.
+- Every Photon reverse request is explicitly constrained to the currently enabled OSM categories.
+- `PhotonCorridorPoiDiscovery` searches the actual route in bounded windows using Photon's indexed `bbox` + `include` category filters.
 - Food has an independent result pack, so restaurants and cafés cannot be crowded out by nature, heritage or other categories.
 - Culture has its own pack for museums, artwork, galleries, arts centres/theatres, historic worship and attractions.
 - Heritage/architecture has its own pack for viewpoints, castles, palaces/manors, forts, ruins, monuments, memorials, archaeology, towers, lighthouses, mills and bridges.
 - If a textless bbox/category search returns nothing, the same category pack is retried through documented category-filtered Photon reverse search around the route window.
 - Returned places are post-filtered against the real route geometry before display.
-- Fast category results are published into the shared map POI state immediately, so restaurants/museums/heritage can appear while slower Overpass precision enrichment is still running.
-- Overpass remains a secondary enrichment source for the richer 23-lane taxonomy; it is no longer the only route to critical human-interest POIs.
+- Fast category results are published into shared map POI state immediately, so restaurants/museums/heritage can appear while slower Overpass precision enrichment is still running.
+- Overpass remains a secondary enrichment source for the richer 23-lane taxonomy; it is no longer the only path to critical human-interest POIs.
 
 ### Provider regression smoke
 
-The branch contains a small provider smoke workflow for this regression. On 2026-08-23 it confirmed against the same public Photon service used by the APK:
+The branch contains a provider smoke workflow for this regression. On 2026-08-23 it confirmed against the same public Photon service used by the APK:
 
 - 10 `amenity=restaurant` results around Ahrensburg from category-filtered reverse search (sample: `7Fuji Sushi & Ramen`).
 - 19 `tourism=museum` results in the Detmold test box from textless `bbox` + `include` search (sample returned by Photon: `Fürstliches Residenzschloss Detmold`).
@@ -44,7 +44,7 @@ This verifies the actual provider queries independently of MapLibre rendering.
 - OSM-native Valhalla development routing with long-route segmentation
 - time-budget-aware Journey Optimizer with several journey variants
 - calculated routes remain visible while the user edits filters, weights or stops; a valid route is replaced only after a successful rebuild
-- planner rebuild waits until the edited plan/preferences are committed, preventing stale first-build behavior
+- planner rebuild waits until edited plan/preferences are committed, preventing stale first-build behavior
 - route optimizer, Smart Stops and map consume one committed Scenic category selection
 - stable full category catalogue remains available in the planner even when categories are disabled
 - Quick / Day Trip / Road Trip modes and Beautiful / Balanced / Direct / Custom route character
@@ -61,7 +61,7 @@ The WebSim version remains an interaction prototype, but the Android app is the 
 
 ## Development provider note
 
-Public Photon, Overpass and Valhalla endpoints are used only for development/testing. Photon explicitly allows project use under a fair-use expectation and does not guarantee availability. A production release must use controlled/self-hosted or contracted infrastructure with appropriate capacity, policies and attribution.
+Public Photon, Overpass and Valhalla endpoints are used only for development/testing. Photon allows project use under a fair-use expectation and does not guarantee availability. A production release must use controlled/self-hosted or contracted infrastructure with appropriate capacity, policies and attribution.
 
 Provider secrets such as Google Places or routing keys belong in backend/deployment secret storage and must never be embedded in the Android APK.
 
