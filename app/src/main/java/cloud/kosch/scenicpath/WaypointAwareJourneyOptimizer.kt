@@ -49,8 +49,6 @@ object WaypointAwareJourneyOptimizer {
             val legCharacter = if (plan.routeCharacter == RouteCharacter.DIRECT) {
                 RouteCharacter.DIRECT
             } else {
-                // Preferences already carry the requested Scenic DNA/constraints. CUSTOM avoids
-                // re-applying a preset floor independently to every leg and inflating the budget.
                 RouteCharacter.CUSTOM
             }
             val legPlan = plan.copy(
@@ -69,6 +67,7 @@ object WaypointAwareJourneyOptimizer {
         val directPieces = legResults.map(::pickDirect)
         val scenicPieces = legResults.map { pickScenic(it, plan.routeCharacter) }
         val manualHighlights = mandatoryStops.map(::toHighlight)
+        val manualDwell = mandatoryStops.sumOf { it.dwellMinutes }
 
         val direct = stitch(
             id = "waypoint-direct",
@@ -76,7 +75,7 @@ object WaypointAwareJourneyOptimizer {
             pieces = directPieces,
             requestedCharacter = RouteCharacter.DIRECT,
             manualHighlights = manualHighlights,
-            manualDwellMinutes = mandatoryStops.sumOf { it.dwellMinutes },
+            manualDwellMinutes = manualDwell,
             direct = true,
         )
         val scenicBase = stitch(
@@ -85,9 +84,15 @@ object WaypointAwareJourneyOptimizer {
             pieces = scenicPieces,
             requestedCharacter = plan.routeCharacter,
             manualHighlights = manualHighlights,
-            manualDwellMinutes = mandatoryStops.sumOf { it.dwellMinutes },
+            manualDwellMinutes = manualDwell,
             direct = plan.routeCharacter == RouteCharacter.DIRECT,
         )
+
+        // The fixed points are routing invariants. If a provider ever returns a shape that is not
+        // even close to one of the requested breaks, reject the replacement journey. The UI then
+        // keeps the previous valid route instead of silently pretending that the waypoint was used.
+        validateMandatoryStops(direct.points, mandatoryStops)
+        validateMandatoryStops(scenicBase.points, mandatoryStops)
 
         val driveExtra = max(0.0, (scenicBase.durationSeconds - direct.durationSeconds) / 60.0)
         val scenic = scenicBase.copy(
@@ -159,7 +164,6 @@ object WaypointAwareJourneyOptimizer {
 
         val manualIds = manualHighlights.mapTo(mutableSetOf()) { it.id }
         val scenePoints = buildList {
-            // Manual points go first so deduplication always retains the included/glowing copy.
             addAll(manualHighlights)
             pieces.flatMap { it.scenePoints }.forEach { point ->
                 if (point.id !in manualIds) add(point)
@@ -208,7 +212,19 @@ object WaypointAwareJourneyOptimizer {
         estimatedDetourMinutes = 0.0,
     )
 
-    /** Integer proportional allocation whose parts always sum to [total]. */
+    private fun validateMandatoryStops(route: List<GeoPoint>, stops: List<PlannedStop>) {
+        stops.forEach { stop ->
+            val point = stop.point ?: return@forEach
+            val nearest = route.minOfOrNull { haversineMeters(it, point) } ?: Double.POSITIVE_INFINITY
+            // OSM POIs are often mapped at the building/park centroid while Valhalla snaps the
+            // break to a navigable road/entrance. 900 m allows that legitimate snap but rejects
+            // the kind of multi-kilometre bypass seen in the regression screenshots.
+            if (nearest > 900.0) {
+                error("Recalculated route bypassed fixed waypoint: ${stop.name}")
+            }
+        }
+    }
+
     private fun allocate(total: Int, weights: List<Double>): List<Int> {
         if (weights.isEmpty()) return emptyList()
         if (total <= 0) return List(weights.size) { 0 }
