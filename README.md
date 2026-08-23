@@ -1,78 +1,47 @@
-# Scenic Path — The Beautiful Way
+# Scenic Path Android
 
-Native Android experience-first scenic route planner.
+Native Android implementation of Scenic Path — a scenic-route planner that prioritizes beautiful, interesting and customizable journeys over simple fastest-path navigation.
 
-Scenic Path does not only ask “how do I get from A to B?”. It turns the user's available extra time into a more beautiful journey: alternative road corridors, automatically selected scenic stops, heritage, views, nature, architecture, culture and food.
+## Current milestone
 
-## Current development milestone — v0.5.2
+The active development branch is `feat/m0-foundation` and remains behind Draft PR #1.
 
-v0.5.2 fixes the long-route marker population at the provider-query level after physical-device tests showed that v0.5.1 could still display mostly parks, water and natural features even though all Scenic marker symbols were implemented.
+### v0.5.4 reliability + popup route editing
 
-### Category-first POI pipeline
+- physical-device destination search no longer depends on the emulator-only `10.0.2.2` backend;
+- Android Geocoder is tried first for cities/addresses in debug builds, with Photon/OSM as a landmark/POI fallback;
+- calculated routes remain visible while replacement routes are built;
+- Scenic POI markers are no longer cleared when a waypoint causes a new route geometry;
+- the last valid clickable marker set stays on-screen until discovery for the replacement corridor returns useful data;
+- rich map popups can add a Scenic POI as a locked route waypoint or remove it again;
+- popup changes mark the route dirty and expose a direct `Recalculate route` action;
+- official website, contact data, opening hours, OSM references and provider-backed ratings remain part of rich POI popups;
+- ratings are never fabricated: verified values are shown only when a configured ratings provider supplies them.
 
-- Photon reverse discovery no longer uses the broad `layer=other` request that biased results toward large nearby natural features.
-- Every Photon reverse request is explicitly constrained to the currently enabled OSM categories.
-- `PhotonCorridorPoiDiscovery` searches the actual route in bounded windows using Photon's indexed `bbox` + `include` category filters.
-- Food has an independent result pack, so restaurants and cafés cannot be crowded out by nature, heritage or other categories.
-- Culture has its own pack for museums, artwork, galleries, arts centres/theatres, historic worship and attractions.
-- Heritage/architecture has its own pack for viewpoints, castles, palaces/manors, forts, ruins, monuments, memorials, archaeology, towers, lighthouses, mills and bridges.
-- If a textless bbox/category search returns nothing, the same category pack is retried through documented category-filtered Photon reverse search around the route window.
-- Returned places are post-filtered against the real route geometry before display.
-- Fast category results are published into shared map POI state immediately, so restaurants/museums/heritage can appear while slower Overpass precision enrichment is still running.
-- Overpass remains a secondary enrichment source for the richer 23-lane taxonomy; it is no longer the only path to critical human-interest POIs.
+### Scenic discovery
 
-### Provider regression smoke
+The current physical-device discovery stack combines category-first route-window lookup with deeper OSM/Overpass enrichment and balanced human-facing Scenic lanes. The long-route regression case is Current Location/Ahrensburg → Detmold.
 
-The branch contains a provider smoke workflow for this regression. On 2026-08-23 it confirmed against the same public Photon service used by the APK:
+Human-interest categories include restaurants/cafés, museums, viewpoints, castles and fortresses, palaces/manor houses, ruins/archaeology, monuments/memorials, art/galleries, worship, towers/architecture, bridges, attractions, parks, water, forests and natural landmarks.
 
-- 10 `amenity=restaurant` results around Ahrensburg from category-filtered reverse search (sample: `7Fuji Sushi & Ramen`).
-- 19 `tourism=museum` results in the Detmold test box from textless `bbox` + `include` search (sample returned by Photon: `Fürstliches Residenzschloss Detmold`).
+## Development infrastructure
 
-This verifies the actual provider queries independently of MapLibre rendering.
+Public Photon, Overpass, OpenStreetMap and OpenFreeMap endpoints are used only as development/testing infrastructure. A production Play Store release should use controlled/self-hosted or contracted providers and follow each provider's attribution, caching, quota and branding requirements.
 
-### v0.5.2 validation build
+Google Places support belongs on the server side. API keys must never be embedded in the APK.
 
-- Android CI #175: success
-- Backend tests #175: success
-- POI provider smoke #1: success
-- direct debug APK SHA-256: `b12b3e6a160969bf7ed45756d6dc64db8336f2ae5071069da74371fdc043375c`
+## Build
 
-## Prototype-parity+ foundation retained
+Android CI produces a debug APK artifact on pull-request changes.
 
-- Kotlin + Jetpack Compose native Android app
-- MapLibre + OpenStreetMap/OpenFreeMap map stack
-- OSM-native Valhalla development routing with long-route segmentation
-- time-budget-aware Journey Optimizer with several journey variants
-- calculated routes remain visible while the user edits filters, weights or stops; a valid route is replaced only after a successful rebuild
-- planner rebuild waits until edited plan/preferences are committed, preventing stale first-build behavior
-- route optimizer, Smart Stops and map consume one committed Scenic category selection
-- stable full category catalogue remains available in the planner even when categories are disabled
-- Quick / Day Trip / Road Trip modes and Beautiful / Balanced / Direct / Custom route character
-- 0–360 minute exploration budget
-- full Scenic DNA controls for roads, views, water, forest, relief, culture, monuments, museums, art, worship, parks, architecture, food and attractions
-- manually fixed stops can be reordered
-- Smart Stops expose 23 human-facing Scenic lanes with manual Deep Refresh
-- map POIs use the same category symbols as Smart Stops; automatically included route stops remain numbered
-- display selection is balanced across Scenic lanes and repeated river/forest/reserve representations are deduplicated
+```bash
+./gradlew assembleDebug
+```
 
-## Product principle
+## Backend
 
-The WebSim version remains an interaction prototype, but the Android app is the product target. A feature is not counted as parity merely because a switch exists: filters, route character, time budget, stops and ranking controls must change the actual journey and map result.
+The optional Node backend supports production-oriented provider composition, search, routing and verified food/rating enrichment. See `backend/.env.example` for configuration placeholders.
 
-## Development provider note
+## Status
 
-Public Photon, Overpass and Valhalla endpoints are used only for development/testing. Photon allows project use under a fair-use expectation and does not guarantee availability. A production release must use controlled/self-hosted or contracted infrastructure with appropriate capacity, policies and attribution.
-
-Provider secrets such as Google Places or routing keys belong in backend/deployment secret storage and must never be embedded in the Android APK.
-
-## Next product steps
-
-- persistent shared journey/session state across process recreation
-- richer POI information from Wikipedia/Wikidata/Wikimedia
-- ETA-aware opening hours and stronger restaurant-quality provider integration
-- marker clustering / zoom-dependent decluttering for dense cities
-- direct map-to-itinerary interaction and richer stop ordering
-- segment-level ScenicScore with elevation/relief data
-- turn-by-turn navigation, TTS, upcoming-stop warnings and scenic rerouting
-- offline/degraded-network behavior
-- signed Play Store AAB and final privacy/data-safety review
+Draft / unmerged. The project is under active iteration and is not yet a production release.
