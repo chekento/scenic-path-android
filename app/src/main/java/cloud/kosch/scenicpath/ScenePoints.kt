@@ -1,5 +1,9 @@
 package cloud.kosch.scenicpath
 
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
+
 /**
  * Scene-point taxonomy for Scenic Path.
  *
@@ -36,7 +40,8 @@ enum class StopKind(
     CUSTOM("Custom", "📍", ScenePointGroup.OTHER, 30, autoDiscoverable = false),
 }
 
-val prototypeSelectableSceneKinds: Set<StopKind> = linkedSetOf(
+/** Stable list used by the planner so disabled categories never disappear from the UI. */
+val allSelectableSceneKinds: Set<StopKind> = linkedSetOf(
     StopKind.VIEWPOINT,
     StopKind.MUSEUM,
     StopKind.NATURE,
@@ -48,6 +53,34 @@ val prototypeSelectableSceneKinds: Set<StopKind> = linkedSetOf(
     StopKind.FOOD,
     StopKind.ARCHITECTURE,
 )
+
+/**
+ * The committed scene selection is shared by every discovery surface.
+ *
+ * Previously the planner changed TripPlan.enabledSceneKinds while the map and Smart Stops
+ * kept querying the hard-coded prototype set. That made the filters mostly cosmetic. The
+ * shared committed state keeps the broad provider families aligned without introducing a
+ * second navigation state machine. Draft changes are activated only when the user rebuilds.
+ */
+object ScenicSceneSelectionState {
+    var activeKinds: Set<StopKind> by mutableStateOf(allSelectableSceneKinds)
+        private set
+
+    fun activate(kinds: Set<StopKind>) {
+        activeKinds = kinds.intersect(allSelectableSceneKinds)
+    }
+
+    fun reset() {
+        activeKinds = allSelectableSceneKinds
+    }
+}
+
+/**
+ * Compatibility name used by the current discovery stack. It now means the committed active
+ * selection, while allSelectableSceneKinds is the stable planner catalogue.
+ */
+val prototypeSelectableSceneKinds: Set<StopKind>
+    get() = ScenicSceneSelectionState.activeKinds
 
 enum class SceneSubtype(val rawId: String, val parent: StopKind, val label: String) {
     VIEWPOINT("viewpoint", StopKind.VIEWPOINT, "Viewpoint"),
