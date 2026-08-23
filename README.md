@@ -30,6 +30,13 @@ The branch contains a small provider smoke workflow for this regression. On 2026
 
 This verifies the actual provider queries independently of MapLibre rendering.
 
+### v0.5.2 validation build
+
+- Android CI #175: success
+- Backend tests #175: success
+- POI provider smoke #1: success
+- direct debug APK SHA-256: `b12b3e6a160969bf7ed45756d6dc64db8336f2ae5071069da74371fdc043375c`
+
 ## Prototype-parity+ foundation retained
 
 - Kotlin + Jetpack Compose native Android app
