@@ -14,11 +14,22 @@ object FastRoutePoiDiscovery {
     ): List<ScenePointUi> = withContext(Dispatchers.IO) {
         if (route.size < 2 || enabledKinds.isEmpty() || maxResults <= 0) return@withContext emptyList()
 
-        // Planning calls are small (typically 24-40 results) and need enough category
-        // coverage before the itinerary is chosen. Map and Smart Stops calls request 100+
-        // results and already launch PrecisionRoutePoiDiscovery themselves, so they only
-        // need Photon from this quick source.
+        // Planning calls are small (typically 24-40 results) and need the categories Photon
+        // tends to miss most. Nature remains available from Photon while the bounded precision
+        // pass concentrates on food, museums, heritage, art, worship and architecture.
         val includePrecision = maxResults < 100
+        val planningPrecisionKinds = enabledKinds.intersect(
+            setOf(
+                StopKind.VIEWPOINT,
+                StopKind.MUSEUM,
+                StopKind.MONUMENT,
+                StopKind.ART,
+                StopKind.WORSHIP,
+                StopKind.FOOD,
+                StopKind.ARCHITECTURE,
+            )
+        )
+
         val (photon, precision) = coroutineScope {
             val photonJob = async(Dispatchers.IO) {
                 runCatching {
@@ -32,13 +43,13 @@ object FastRoutePoiDiscovery {
                 }.getOrElse { emptyList() }
             }
             val precisionJob = async(Dispatchers.IO) {
-                if (!includePrecision) emptyList() else withTimeoutOrNull(8_500) {
+                if (!includePrecision || planningPrecisionKinds.isEmpty()) emptyList() else withTimeoutOrNull(8_500) {
                     runCatching {
                         PrecisionRoutePoiDiscovery.discover(
                             route = route,
-                            enabledKinds = enabledKinds,
+                            enabledKinds = planningPrecisionKinds,
                             maxResults = maxOf(96, maxResults * 3),
-                            radiusMeters = 15_000,
+                            radiusMeters = 14_000,
                             maxSamples = 10,
                         )
                     }.getOrElse { emptyList() }
