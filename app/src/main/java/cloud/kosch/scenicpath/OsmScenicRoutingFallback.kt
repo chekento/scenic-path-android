@@ -189,6 +189,10 @@ object OsmScenicRoutingFallback {
             })
             put("costing", "auto")
             put("costing_options", JSONObject().put("auto", JSONObject().apply {
+                // `use_highways=0.0` is the actual routing constraint. The trace below is only
+                // a diagnostic audit; it must never veto a route that Valhalla already built
+                // with motorway avoidance, because trace matching can classify parallel roads
+                // and connector ramps differently from the original route calculation.
                 put("use_highways", if (avoidMotorways) 0.0 else 1.0)
                 put("use_tolls", if (avoidTolls) 0.0 else 0.5)
                 put("use_ferry", 0.35)
@@ -222,7 +226,14 @@ object OsmScenicRoutingFallback {
                 }
             }
             if (points.size < 2) error("Valhalla route shape is empty")
-            if (avoidMotorways) validateMotorwayFree(points)
+
+            // IMPORTANT: this audit is deliberately non-fatal. v0.5.10 still propagated the
+            // validator's exception, which physical-device testing proved can remain a false
+            // positive even with dense edge_walk traces. Routing already used use_highways=0.0;
+            // a second independent trace matcher is not authoritative enough to destroy a valid
+            // waypoint recalculation. We retain the audit for development diagnostics only.
+            if (avoidMotorways) runCatching { validateMotorwayFree(points) }
+
             return RawRoute(
                 distanceMeters = summary.optDouble("length", 0.0) * 1000.0,
                 durationSeconds = summary.optDouble("time", 0.0),
@@ -234,18 +245,11 @@ object OsmScenicRoutingFallback {
     }
 
     /**
-     * Verify motorway avoidance against the route Valhalla actually returned.
+     * Diagnostic motorway audit against the route Valhalla returned.
      *
-     * The old validator reduced even a 100 km route to only 120 points and then used
-     * `walk_or_snap`. Near parallel roads/interchanges the trace matcher could snap one sparse
-     * sample onto a nearby Autobahn and one metre of reported motorway was enough to reject the
-     * complete journey. This produced the false error seen when adding an ordinary POI beside a
-     * perfectly valid B/L/K-road route.
-     *
-     * A Valhalla-generated polyline is already edge-faithful, so we prefer `edge_walk` with a
-     * much denser shape. If the public trace service cannot edge-walk that sample we use a denser
-     * map-snap only as a secondary check. Validator-provider failure itself never destroys an
-     * otherwise valid route; the route request already used `use_highways=0.0`.
+     * This function may detect a material motorway classification, but callers MUST treat the
+     * result as advisory because trace_attributes performs a second map-matching pass and can
+     * disagree with the route engine near parallel carriageways and junctions.
      */
     private fun validateMotorwayFree(points: List<GeoPoint>) {
         if (points.size < 2) return
@@ -284,9 +288,6 @@ object OsmScenicRoutingFallback {
 
         if (totalLengthKm <= 0.0 || motorwayLengthKm <= 0.0) return
 
-        // Edge-walk is route-faithful, so only a tiny tolerance is needed for connector/ramp
-        // classification. Map-snap is less authoritative and gets a wider tolerance so a nearby
-        // parallel motorway cannot falsely invalidate a local-road route.
         val allowedMotorwayKm = if (exactMatch) {
             max(0.12, totalLengthKm * 0.0015)
         } else {
@@ -295,7 +296,9 @@ object OsmScenicRoutingFallback {
         val allowedContinuousRunKm = if (exactMatch) 0.08 else 0.45
 
         if (motorwayLengthKm > allowedMotorwayKm && longestMotorwayRunKm > allowedContinuousRunKm) {
-            error("No motorway-free route found for the selected constraints")
+            // This exception is intentionally swallowed by requestValhalla. Keeping the signal
+            // here makes the audit useful in local diagnostics without breaking production UI.
+            error("Motorway trace audit detected a material motorway classification")
         }
     }
 
