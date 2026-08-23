@@ -7,19 +7,26 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.SmallFloatingActionButton
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.unit.dp
 import org.maplibre.android.MapLibre
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        VehicleSettingsState.initialize(this)
         MapLibre.getInstance(this)
 
         setContent {
@@ -27,6 +34,7 @@ class MainActivity : ComponentActivity() {
                 var locationPermissionGranted by remember {
                     mutableStateOf(hasForegroundLocationPermission())
                 }
+                var showVehicleSettings by remember { mutableStateOf(false) }
                 val permissionLauncher = rememberLauncherForActivityResult(
                     ActivityResultContracts.RequestMultiplePermissions()
                 ) { result ->
@@ -35,16 +43,35 @@ class MainActivity : ComponentActivity() {
                 }
 
                 Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
-                    ScenicExperienceRoot(
-                        locationPermissionGranted = locationPermissionGranted,
-                        requestLocationPermission = {
-                            permissionLauncher.launch(
-                                arrayOf(
-                                    Manifest.permission.ACCESS_COARSE_LOCATION,
-                                    Manifest.permission.ACCESS_FINE_LOCATION,
+                    Box(Modifier.fillMaxSize()) {
+                        ScenicExperienceRoot(
+                            locationPermissionGranted = locationPermissionGranted,
+                            requestLocationPermission = {
+                                permissionLauncher.launch(
+                                    arrayOf(
+                                        Manifest.permission.ACCESS_COARSE_LOCATION,
+                                        Manifest.permission.ACCESS_FINE_LOCATION,
+                                    )
                                 )
-                            )
-                        },
+                            },
+                        )
+
+                        // One always-reachable Settings control. The emoji also shows which
+                        // transport network will be used by the next route calculation.
+                        SmallFloatingActionButton(
+                            onClick = { showVehicleSettings = true },
+                            modifier = Modifier.align(Alignment.CenterStart).padding(start = 14.dp),
+                        ) {
+                            Text(VehicleSettingsState.profile.kind.emoji)
+                        }
+                    }
+                }
+
+                if (showVehicleSettings) {
+                    VehicleSettingsSheet(
+                        current = VehicleSettingsState.profile,
+                        onSave = { VehicleSettingsState.update(this@MainActivity, it) },
+                        onDismiss = { showVehicleSettings = false },
                     )
                 }
             }
