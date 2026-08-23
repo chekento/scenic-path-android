@@ -2,27 +2,21 @@
 
 Native Android implementation of **Scenic Path** — a map-first journey planner for intentionally beautiful routes, scenic categories and Smart Stops.
 
-## Current development build: v0.5.6
+## Current development build: v0.5.7
 
-### Fixed waypoints are real routing constraints
+### Durable Scenic marker population
 
-A location added from a Scenic popup is no longer merely displayed beside the recalculated route. Manual `mustVisit` stops are converted into ordered routing breaks:
+The map keeps the full, category-balanced Scenic POI population visible while route geometry is recalculated. A sparse route response containing only one waypoint can no longer replace a rich corridor result with one or two markers. POI state is merged for the same start/destination journey and only reset when a genuinely different route arrives.
 
-`origin → waypoint 1 → waypoint 2 → … → destination`
+Fast corridor POIs are painted as soon as they are available while the deeper precision pass continues. Temporary empty route frames or provider failures do not clear an already useful map. Museums, restaurants, castles, viewpoints, art, architecture, nature, water and the other enabled Scenic categories therefore remain visible as in the established mixed-marker map.
 
-Each leg still uses the existing Journey Optimizer and long-distance segmentation guard. The global Scenic time and automatic-stop budgets are distributed over the legs instead of being multiplied per leg. Both the scenic and direct route candidates respect the same fixed waypoints.
+### Hard route waypoints
 
-A replacement route is also validated after stitching: if the returned geometry bypasses a mandatory waypoint by an implausible distance, the replacement is rejected and the previous valid route remains on screen.
+User-added `mustVisit` waypoints remain hard routing breaks. Recalculated routes are stitched through those coordinates and validated against the resulting polyline. A route that bypasses a fixed waypoint is rejected.
 
 ### Waypoint marker design
 
-A selected waypoint keeps its original Scenic category symbol — for example 🍽️, 🏛️, 🏰, 👁️ or 🌳. It is no longer replaced by a generic yellow circle. Selected/in-route locations use a luminous multi-ring frame around the normal white/green category marker, so selection is obvious while the location type remains readable.
-
-Removing the waypoint removes the glow; if the same location is still part of the discoverable POI population it remains on the map as a normal candidate.
-
-### Marker reliability
-
-The map treats its Scenic POI population as committed display state. A valid marker set is retained while a waypoint reroute or deeper corridor enrichment is running. A transient empty provider result can no longer remove all clickable icons. The shared POI bridge recognizes equivalent routes by stable start/destination endpoints even when the replacement polyline geometry changes.
+A waypoint keeps its original Scenic category emoji and receives a luminous teal/green multi-ring frame instead of becoming a generic yellow circle. Removing the waypoint removes the emphasis while the location can remain on the map as a normal Scenic POI.
 
 ### Start and destination address search
 
@@ -34,13 +28,12 @@ Scenic markers use the same category symbols as Smart Stops. Rich popups can exp
 
 ### Validation
 
-The v0.5.6 APK is built from app-code head `477520c888c1372d8e58c7da9e30667323a8576b`.
+Validated v0.5.7 APK source head: `e1e5298233e0e5d4245bc3a21174d2f0f6ba6098`.
 
-- Android CI #208: passed
-- Backend tests #208: passed
-- POI provider smoke #34: passed
-- GitHub Actions artifact ZIP SHA-256: `429a8edfc9619aefe1c7edeca83c041c4d4b85a2cf9ca74f64b1f8708a1bba01`
-- Direct APK SHA-256: `830742d4c2982220bf4691dc46c9a056c9fe01a32ecf163bbfa354a551aac6e1`
+- Android CI #214: passed
+- Backend tests #214: passed
+- POI provider smoke #40: passed
+- direct APK SHA-256: `06c0b8a9877423b8af449cced971c50f5c6ea5c3c7abb751e1d145ace939c920`
 
 ## Development infrastructure
 
