@@ -11,8 +11,8 @@ import kotlinx.coroutines.withTimeoutOrNull
  *
  * v0.5.2 no longer asks unfiltered Photon reverse geocoding to define the human-interest
  * marker population. PhotonCorridorPoiDiscovery performs route-window searches using
- * Photon's indexed `include` categories and bounding boxes. The older reverse pass remains
- * useful for natural context, while Overpass is now only a best-effort secondary enrichment.
+ * Photon's indexed `include` categories and bounding boxes. The older reverse pass is also
+ * category-filtered. Overpass remains only a best-effort secondary enrichment.
  */
 object FastRoutePoiDiscovery {
     suspend fun discover(
@@ -48,12 +48,22 @@ object FastRoutePoiDiscovery {
             categoryJob.await() to genericJob.await()
         }
 
-        mergeResults(
+        val merged = mergeResults(
             first = categoryPhoton,
             second = genericPhoton,
             enabledKinds = enabledKinds,
             maxResults = maxResults,
         )
+
+        // ScenicMap reads this bridge as Compose state. Publishing the fast result here means
+        // restaurants/museums/heritage can appear immediately even while ScenicMap's deeper
+        // PrecisionRoutePoiDiscovery coroutine is still waiting on public Overpass.
+        if (merged.isNotEmpty()) {
+            withContext(Dispatchers.Main.immediate) {
+                ScenicPoiSharedState.publish(route, merged)
+            }
+        }
+        merged
     }
 
     internal suspend fun discoverTargetedOnly(
@@ -77,8 +87,6 @@ object FastRoutePoiDiscovery {
         }.orEmpty()
         if (!allowBackfill) return@withContext normal
 
-        // Overpass remains useful for tags Photon does not index as principal categories, but
-        // it is no longer allowed to be the only path to restaurants/museums/culture.
         val missing = enabledKinds.filterTo(linkedSetOf()) { kind ->
             kind.autoDiscoverable && normal.none { point -> point.kind == kind.name }
         }
