@@ -9,10 +9,10 @@ import kotlinx.coroutines.withTimeoutOrNull
 /**
  * Fast first-stage discovery.
  *
- * Photon is kept as an independent OSM fallback, while RapidRoutePoiDiscovery explicitly
- * asks for the human-interest categories Photon reverse lookups tend to miss. Both complete
- * inside the long-route planner's latency budget; the deeper precision scan remains a later
- * enrichment layer rather than blocking the first useful map.
+ * v0.5.2 no longer asks unfiltered Photon reverse geocoding to define the human-interest
+ * marker population. PhotonCorridorPoiDiscovery performs route-window searches using
+ * Photon's indexed `include` categories and bounding boxes. The older reverse pass remains
+ * useful for natural context, while Overpass is now only a best-effort secondary enrichment.
  */
 object FastRoutePoiDiscovery {
     suspend fun discover(
@@ -22,8 +22,19 @@ object FastRoutePoiDiscovery {
     ): List<ScenePointUi> = withContext(Dispatchers.IO) {
         if (route.size < 2 || enabledKinds.isEmpty() || maxResults <= 0) return@withContext emptyList()
 
-        val (photon, rapid) = coroutineScope {
-            val photonJob = async(Dispatchers.IO) {
+        val (categoryPhoton, genericPhoton) = coroutineScope {
+            val categoryJob = async(Dispatchers.IO) {
+                withTimeoutOrNull(7_200) {
+                    runCatching {
+                        PhotonCorridorPoiDiscovery.discover(
+                            route = route,
+                            enabledKinds = enabledKinds,
+                            maxResults = maxOf(96, minOf(maxResults * 3, 220)),
+                        )
+                    }.getOrElse { emptyList() }
+                }.orEmpty()
+            }
+            val genericJob = async(Dispatchers.IO) {
                 runCatching {
                     PhotonSceneFallback.discover(
                         route = route,
@@ -34,23 +45,12 @@ object FastRoutePoiDiscovery {
                     )
                 }.getOrElse { emptyList() }
             }
-            val rapidJob = async(Dispatchers.IO) {
-                withTimeoutOrNull(7_000) {
-                    runCatching {
-                        RapidRoutePoiDiscovery.discover(
-                            route = route,
-                            enabledKinds = enabledKinds,
-                            maxResults = maxOf(72, minOf(maxResults, 140)),
-                        )
-                    }.getOrElse { emptyList() }
-                }.orEmpty()
-            }
-            photonJob.await() to rapidJob.await()
+            categoryJob.await() to genericJob.await()
         }
 
         mergeResults(
-            first = rapid,
-            second = photon,
+            first = categoryPhoton,
+            second = genericPhoton,
             enabledKinds = enabledKinds,
             maxResults = maxResults,
         )
@@ -66,9 +66,9 @@ object FastRoutePoiDiscovery {
     ): List<ScenePointUi> = withContext(Dispatchers.IO) {
         if (route.size < 2 || enabledKinds.isEmpty() || maxResults <= 0) return@withContext emptyList()
 
-        val normal = withTimeoutOrNull(7_000) {
+        val normal = withTimeoutOrNull(7_200) {
             runCatching {
-                RapidRoutePoiDiscovery.discover(
+                PhotonCorridorPoiDiscovery.discover(
                     route = route,
                     enabledKinds = enabledKinds,
                     maxResults = maxResults,
@@ -77,12 +77,14 @@ object FastRoutePoiDiscovery {
         }.orEmpty()
         if (!allowBackfill) return@withContext normal
 
+        // Overpass remains useful for tags Photon does not index as principal categories, but
+        // it is no longer allowed to be the only path to restaurants/museums/culture.
         val missing = enabledKinds.filterTo(linkedSetOf()) { kind ->
             kind.autoDiscoverable && normal.none { point -> point.kind == kind.name }
         }
         if (missing.isEmpty()) return@withContext normal
 
-        val wider = withTimeoutOrNull(9_000) {
+        val wider = withTimeoutOrNull(8_500) {
             runCatching {
                 PrecisionRoutePoiDiscovery.discover(
                     route = route,
