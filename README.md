@@ -18,18 +18,7 @@ A user-selected `mustVisit` POI remains a hard routing break and is validated ag
 
 The route map now has a **Navigate** action and a driver-focused live navigation HUD powered by the phone's GPS updates.
 
-Current navigation features include:
-
-- live route progress and remaining distance
-- dynamic ETA from route distance and GPS speed
-- current speed
-- route/GPS heading and tilted camera-follow mode
-- one-tap route overview and resume-follow controls
-- off-route distance detection and reroute action
-- next fixed Scenic POI and distance to it
-- arrival detection
-- Android TTS voice guidance for off-route warnings, approaching Scenic stops and arrival
-- the complete clickable Scenic POI overlay remains visible during navigation
+Current navigation features include live route progress, remaining distance, ETA, current speed, route/GPS heading, a tilted follow camera, route overview, off-route detection, reroute action, next fixed Scenic POI, arrival detection and Android TTS alerts for approaching POIs/off-route/arrival. The complete clickable Scenic POI overlay remains visible during navigation.
 
 The current route data model does not yet contain provider maneuver instructions, so v0.5.9 deliberately does not invent street-name/turn commands. Valhalla maneuver decoding, lane/roundabout instructions, maneuver arrows, automatic rerouting thresholds, background navigation/service behavior and navigation-specific POI arrival handling are the next navigation layer.
 
