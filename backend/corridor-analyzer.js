@@ -88,8 +88,6 @@ export function geometrySignals(points) {
   const km = Math.max(0.25, lengthMeters / 1000);
   const turnsPerKm = turnEnergy / km;
   const windingness = clamp(turnsPerKm / 2.4);
-  // Gentle variety scores best; straight motorway-like geometry stays low without
-  // rewarding extremely jagged geometry indefinitely.
   const beautifulRoads = clamp(0.28 + windingness * 0.72);
   return { beautifulRoads, windingness, lengthMeters, measuredTurns: measured };
 }
@@ -132,10 +130,11 @@ function elevationReliefFactor(observations) {
 
 function scenePointsAlongRoute(observations, enabledSceneKinds, routeLengthKm) {
   const enabled = new Set(enabledSceneKinds ?? []);
+  if (enabled.size === 0) return [];
   const maxHighlights = Math.max(4, Math.min(18, Math.round(routeLengthKm / 12) + 4));
   return observations
     .filter(observation => observation.kind && observation.point)
-    .filter(observation => enabled.size === 0 || enabled.has(observation.kind) || observation.kind === "SCENIC")
+    .filter(observation => enabled.has(observation.kind))
     .sort((a, b) => (b.relevance ?? 0) - (a.relevance ?? 0))
     .filter((observation, index, array) => {
       const key = `${observation.kind}:${observation.name ?? ""}:${observation.point.lat.toFixed(4)}:${observation.point.lon.toFixed(4)}`;
