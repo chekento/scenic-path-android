@@ -9,9 +9,30 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  photon-category-filter:
+  photon-provider:
     runs-on: ubuntu-latest
     steps:
+      - name: Verify forward place search resolves a known address area
+        shell: bash
+        run: |
+          set -euo pipefail
+          URL='https://photon.komoot.io/api?q=Hamburger%20Stra%C3%9Fe%2012%20Ahrensburg&limit=8&lang=de&lon=10.24&lat=53.67&zoom=12&location_bias_scale=0.35'
+          curl --fail --silent --show-error --retry 2 --retry-delay 2 "$URL" > /tmp/search.json
+          python3 - <<'PY'
+          import json, math
+          data=json.load(open('/tmp/search.json'))
+          features=data.get('features', [])
+          assert features, 'Photon forward search returned no address/place results'
+          valid=[]
+          for f in features:
+              c=(f.get('geometry') or {}).get('coordinates') or []
+              if len(c)>=2 and all(isinstance(v,(int,float)) and math.isfinite(v) for v in c[:2]):
+                  valid.append(f)
+          assert valid, 'Photon returned no finite coordinates'
+          print('forward search features:', len(valid))
+          print('sample:', valid[0].get('properties',{}).get('name') or valid[0].get('properties',{}).get('street'))
+          PY
+
       - name: Verify category-filtered reverse search returns a restaurant
         shell: bash
         run: |
