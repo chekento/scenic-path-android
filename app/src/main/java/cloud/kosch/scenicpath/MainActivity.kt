@@ -1,7 +1,9 @@
 package cloud.kosch.scenicpath
 
 import android.Manifest
+import android.content.Intent
 import android.content.pm.PackageManager
+import android.net.Uri
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -13,6 +15,7 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -32,7 +35,12 @@ class MainActivity : ComponentActivity() {
                     mutableStateOf(hasForegroundLocationPermission())
                 }
                 var showVehicleSettings by remember { mutableStateOf(false) }
-                var showNavigationDisclaimer by remember { mutableStateOf(true) }
+                var showNavigationDisclaimer by remember {
+                    mutableStateOf(
+                        !getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
+                            .getBoolean(KEY_NAVIGATION_SAFETY_ACKNOWLEDGED, false)
+                    )
+                }
                 val permissionLauncher = rememberLauncherForActivityResult(
                     ActivityResultContracts.RequestMultiplePermissions()
                 ) { result ->
@@ -67,7 +75,9 @@ class MainActivity : ComponentActivity() {
 
                 if (showNavigationDisclaimer) {
                     AlertDialog(
-                        onDismissRequest = { showNavigationDisclaimer = false },
+                        // First-run safety acknowledgement is explicit. Once accepted it is stored
+                        // locally and no longer interrupts future launches.
+                        onDismissRequest = {},
                         title = { Text("Navigation safety") },
                         text = {
                             Text(
@@ -76,8 +86,34 @@ class MainActivity : ComponentActivity() {
                             )
                         },
                         confirmButton = {
-                            Button(onClick = { showNavigationDisclaimer = false }) {
+                            Button(
+                                onClick = {
+                                    getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
+                                        .edit()
+                                        .putBoolean(KEY_NAVIGATION_SAFETY_ACKNOWLEDGED, true)
+                                        .apply()
+                                    showNavigationDisclaimer = false
+                                }
+                            ) {
                                 Text("I understand")
+                            }
+                        },
+                        dismissButton = {
+                            if (BuildConfig.PRIVACY_POLICY_URL.startsWith("https://")) {
+                                TextButton(
+                                    onClick = {
+                                        runCatching {
+                                            startActivity(
+                                                Intent(
+                                                    Intent.ACTION_VIEW,
+                                                    Uri.parse(BuildConfig.PRIVACY_POLICY_URL),
+                                                )
+                                            )
+                                        }
+                                    }
+                                ) {
+                                    Text("Privacy policy")
+                                }
                             }
                         },
                     )
@@ -89,4 +125,9 @@ class MainActivity : ComponentActivity() {
     private fun hasForegroundLocationPermission(): Boolean =
         checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED ||
             checkSelfPermission(Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED
+
+    private companion object {
+        const val PREFS_NAME = "scenic_path_preferences"
+        const val KEY_NAVIGATION_SAFETY_ACKNOWLEDGED = "navigation_safety_acknowledged"
+    }
 }
