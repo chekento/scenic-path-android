@@ -41,6 +41,12 @@ data class ScenicPreferences(
     val windingness: Int = 70,
     val hilliness: Int = 55,
     val vehicle: VehicleProfile = VehicleSettingsState.profile,
+    /**
+     * Internal execution marker. Presets are applied while the user edits the planner; once the
+     * final controls are committed for a route build, deeper routing layers must not silently
+     * re-apply a character preset over explicit user choices.
+     */
+    val constraintsCommitted: Boolean = false,
 )
 
 data class RouteSummary(
