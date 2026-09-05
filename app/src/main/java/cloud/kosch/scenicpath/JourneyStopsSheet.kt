@@ -148,7 +148,7 @@ fun JourneyStopsSheet(
                                 }
                                 Switch(
                                     checked = showAllRoutes,
-                                    onCheckedChange = ScenicPoiSharedState::setShowAllRoutes,
+                                    onCheckedChange = ScenicPoiSharedState::updateShowAllRoutes,
                                 )
                             }
                         }
@@ -270,13 +270,15 @@ private fun StopCard(
             Column(Modifier.weight(1f)) {
                 Text(point.name, fontWeight = FontWeight.SemiBold, maxLines = 1)
                 val meta = buildList {
-                    add("${point.suggestedDwellMinutes} min")
+                    if (!isJourneySupportPoint(point)) add("${point.suggestedDwellMinutes} min")
                     if (point.distanceFromRouteMeters > 0) add("${point.distanceFromRouteMeters} m from route")
                     point.rating?.let { add(String.format(java.util.Locale.US, "★ %.1f", it)) }
                     point.ratingCount?.let { add("$it reviews") }
                     point.openNow?.let { add(if (it) "open" else "closed") }
                 }
-                Text(meta.joinToString(" · "), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                if (meta.isNotEmpty()) {
+                    Text(meta.joinToString(" · "), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
                 point.rationale?.takeIf { isJourneySupportPoint(point) }?.let {
                     Text(it, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary)
                 }
