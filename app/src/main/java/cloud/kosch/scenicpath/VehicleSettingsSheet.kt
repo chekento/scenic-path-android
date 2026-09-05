@@ -17,6 +17,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import kotlin.math.roundToInt
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -41,8 +42,8 @@ fun VehicleSettingsSheet(
                 Icon(Icons.Default.Settings, null)
                 Spacer(Modifier.width(9.dp))
                 Column(Modifier.weight(1f)) {
-                    Text("Vehicle & route access", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
-                    Text("The vehicle changes the routing network itself — not only the icon.", style = MaterialTheme.typography.bodySmall)
+                    Text("Vehicle & journey", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
+                    Text("Vehicle access, healthy day length, overnight planning and e-bike range.", style = MaterialTheme.typography.bodySmall)
                 }
             }
 
@@ -62,9 +63,11 @@ fun VehicleSettingsSheet(
             when (draft.kind) {
                 VehicleKind.BICYCLE -> BicycleSettings(draft) { draft = it }
                 VehicleKind.CAMPER, VehicleKind.TRUCK, VehicleKind.COACH -> HeavyVehicleSettings(draft) { draft = it }
-                VehicleKind.MOTORCYCLE -> InfoCard("Motorcycle profile favors secondary, winding roads when Beautiful is selected and avoids trails in Direct mode.")
+                VehicleKind.MOTORCYCLE -> InfoCard("Motorcycle profile favors secondary, winding roads when Scenic is selected and avoids trails in Direct mode.")
                 VehicleKind.CAR -> InfoCard("Car profile keeps normal road access rules. Scenic Path can still avoid motorways and prefer smaller scenic roads.")
             }
+
+            JourneyDaySettings(draft) { draft = it }
 
             Text(
                 "Height, width, length and weight are sent to the routing engine for restricted vehicles. Bridge, tunnel and HGV restrictions are therefore part of route calculation where the map data provides them.",
@@ -78,7 +81,7 @@ fun VehicleSettingsSheet(
             ) {
                 Text("Use ${draft.kind.emoji} ${draft.kind.label}")
             }
-            Text("The new profile is stored on this device and applies to the next route calculation.", style = MaterialTheme.typography.labelSmall)
+            Text("The profile is stored on this device and applies to the next route calculation.", style = MaterialTheme.typography.labelSmall)
 
             HorizontalDivider()
             OutlinedButton(
@@ -94,6 +97,79 @@ fun VehicleSettingsSheet(
 
     if (showPrivacy) {
         PrivacyAndAttributionDialog(onDismiss = { showPrivacy = false })
+    }
+}
+
+@Composable
+private fun JourneyDaySettings(profile: VehicleProfile, onChange: (VehicleProfile) -> Unit) {
+    val effectiveMinutes = JourneyStagePolicy.effectiveDailyMinutes(profile)
+    val effectiveHours = effectiveMinutes / 60.0
+    Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.tertiaryContainer.copy(alpha = 0.48f))) {
+        Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Text("Daily journey planning", fontWeight = FontWeight.SemiBold)
+            Text(
+                if (profile.kind == VehicleKind.BICYCLE) {
+                    "Overnight options appear only when the route exceeds your chosen healthy riding day."
+                } else {
+                    "Overnight options appear only when the route exceeds your chosen comfortable travel day."
+                },
+                style = MaterialTheme.typography.bodySmall,
+            )
+
+            Text("Maximum per ${if (profile.kind == VehicleKind.BICYCLE) "rider" else "driver"}: ${formatHours(profile.dailyTravelHours)}", fontWeight = FontWeight.Medium)
+            Slider(
+                value = profile.dailyTravelHours.toFloat(),
+                onValueChange = { onChange(profile.copy(dailyTravelHours = (it * 2).roundToInt() / 2.0)) },
+                valueRange = 2f..12f,
+                steps = 19,
+            )
+
+            if (profile.kind != VehicleKind.BICYCLE) {
+                Text("Drivers who can alternate", style = MaterialTheme.typography.labelMedium)
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    (1..3).forEach { count ->
+                        FilterChip(
+                            selected = profile.driverCount == count,
+                            onClick = { onChange(profile.copy(driverCount = count)) },
+                            label = { Text(if (count == 1) "1 driver" else "$count drivers") },
+                        )
+                    }
+                }
+                Text(
+                    "Effective travel-day window: ${formatHours(effectiveHours)}. Scenic Path caps shared-driver planning at 16 h elapsed travel so swapping drivers never becomes a no-sleep assumption.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text("Find overnight options at day ends", fontWeight = FontWeight.Medium)
+                    Text(
+                        when (profile.kind) {
+                            VehicleKind.CAMPER -> "Prioritize camp/caravan sites and motorhome-suitable parking."
+                            VehicleKind.TRUCK -> "Prioritize HGV parking, services and rest areas."
+                            VehicleKind.COACH -> "Look for lodging plus suitable bus/coach parking."
+                            VehicleKind.BICYCLE -> "Look for hotels, guest houses, hostels and campsites."
+                            else -> "Look for lodging and camping near the planned end of each travel day."
+                        },
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                }
+                Switch(
+                    checked = profile.overnightPlanningEnabled,
+                    onCheckedChange = { onChange(profile.copy(overnightPlanningEnabled = it)) },
+                )
+            }
+
+            if (profile.kind == VehicleKind.TRUCK || profile.kind == VehicleKind.COACH) {
+                Text(
+                    "This is comfort/trip planning, not a legal driving-time or tachograph calculation. Applicable statutory rest and duty rules still take precedence.",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
     }
 }
 
@@ -127,13 +203,13 @@ private fun PrivacyAndAttributionDialog(onDismiss: () -> Unit) {
 
                 Text("On-device settings", fontWeight = FontWeight.Bold)
                 Text(
-                    "The selected vehicle profile and its dimensions are stored on this device so the next route can respect the chosen vehicle. Scenic Path does not require an account and contains no advertising SDK.",
+                    "The selected vehicle, daily journey preferences and optional e-bike range are stored on this device. Scenic Path does not require an account and contains no advertising SDK.",
                     style = MaterialTheme.typography.bodySmall,
                 )
 
                 Text("Maps & POIs", fontWeight = FontWeight.Bold)
                 Text(
-                    "Map and POI data may include OpenStreetMap contributors. The Android map renderer uses MapLibre. Production routing/place providers and their required attribution are shown where applicable.",
+                    "Map, POI, overnight and charging data may include OpenStreetMap contributors. The Android map renderer uses MapLibre. Production routing/place providers and their required attribution are shown where applicable.",
                     style = MaterialTheme.typography.bodySmall,
                 )
 
@@ -201,7 +277,7 @@ private fun BicycleSettings(profile: VehicleProfile, onChange: (VehicleProfile) 
     Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.58f))) {
         Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
             Text("Scenic cycling", fontWeight = FontWeight.SemiBold)
-            Text("Beautiful strongly prefers cycleways and paths over parallel main roads — especially through parks and green corridors.", style = MaterialTheme.typography.bodySmall)
+            Text("Scenic strongly prefers cycleways and paths over parallel main roads — especially through parks and green corridors.", style = MaterialTheme.typography.bodySmall)
             Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(7.dp)) {
                 ScenicBicycleType.entries.forEach { type ->
                     FilterChip(
@@ -219,6 +295,33 @@ private fun BicycleSettings(profile: VehicleProfile, onChange: (VehicleProfile) 
                 Switch(
                     checked = profile.allowUnpavedBikePaths,
                     onCheckedChange = { onChange(profile.copy(allowUnpavedBikePaths = it)) },
+                )
+            }
+
+            HorizontalDivider()
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text("E-bike / pedelec", fontWeight = FontWeight.Medium)
+                    Text("Plan charging before your practical battery range is exhausted.", style = MaterialTheme.typography.bodySmall)
+                }
+                Switch(
+                    checked = profile.eBikeEnabled,
+                    onCheckedChange = { onChange(profile.copy(eBikeEnabled = it)) },
+                )
+            }
+            if (profile.eBikeEnabled) {
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    DecimalField("Practical range km", profile.eBikeRangeKm, Modifier.weight(1f)) {
+                        onChange(profile.copy(eBikeRangeKm = it))
+                    }
+                    IntegerField("Reserve %", profile.eBikeReservePercent, Modifier.weight(1f)) {
+                        onChange(profile.copy(eBikeReservePercent = it))
+                    }
+                }
+                val usable = JourneyStagePolicy.usableEBikeRangeKm(profile)
+                Text(
+                    "Charging search begins about every ${usable.roundToInt()} km (${profile.eBikeRangeKm.roundToInt()} km configured minus ${profile.eBikeReservePercent}% reserve). Terrain, assistance level, temperature, load and battery health can change real range.",
+                    style = MaterialTheme.typography.bodySmall,
                 )
             }
         }
@@ -260,4 +363,10 @@ private fun IntegerField(label: String, value: Int, modifier: Modifier, onValue:
         singleLine = true,
         modifier = modifier,
     )
+}
+
+private fun formatHours(hours: Double): String {
+    val whole = hours.toInt()
+    val minutes = ((hours - whole) * 60).roundToInt()
+    return if (minutes == 0) "${whole}h" else "${whole}h ${minutes}m"
 }
