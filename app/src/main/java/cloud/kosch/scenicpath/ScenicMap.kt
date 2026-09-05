@@ -57,13 +57,9 @@ private const val USER_SOURCE = "scenic-user-source"
 private const val USER_LAYER = "scenic-user-layer"
 private const val ROUTE_SOURCE = "scenic-route-source"
 private const val ROUTE_LAYER = "scenic-route-layer"
-
-// A long planning session can deliberately widen its corridor through selected POIs. Keep enough
-// capacity that old route discoveries and newly reached areas can coexist instead of trading one
-// marker set for another after the third/fourth waypoint.
 private const val MAX_SCENIC_MARKERS = 420
 
-/** MapLibre route host + durable Compose POIs + first native live-navigation mode. */
+/** MapLibre route host + durable Compose POIs + native live-navigation mode. */
 @Composable
 fun ScenicMap(
     modifier: Modifier = Modifier,
@@ -75,6 +71,8 @@ fun ScenicMap(
     recenterToken: Int = 0,
     onToggleRouteStop: (ScenePointUi) -> Unit = {},
     onRecalculateRoute: () -> Unit = {},
+    onRerouteFromLocation: (GeoPoint) -> Unit = { onRecalculateRoute() },
+    onNavigationActiveChange: (Boolean) -> Unit = {},
     onMapError: (String) -> Unit = {},
 ) {
     val context = LocalContext.current
@@ -94,8 +92,6 @@ fun ScenicMap(
     var selectedDetails by remember { mutableStateOf<ScenicPoiDetails?>(null) }
     var detailsLoading by remember { mutableStateOf(false) }
 
-    // Navigation state deliberately lives with the map so it survives ordinary POI/card changes
-    // without introducing another app navigation stack.
     var navigationActive by remember { mutableStateOf(false) }
     var navigationFollow by remember { mutableStateOf(true) }
     var voiceEnabled by remember { mutableStateOf(true) }
@@ -120,8 +116,9 @@ fun ScenicMap(
     }
 
     val latestUserLocation by rememberUpdatedState(userLocation)
-    val sharedHighlights = ScenicPoiSharedState.pointsFor(routePoints)
     val plannedStopIds = remember(stops) { stops.mapTo(mutableSetOf()) { it.id } }
+    val activeKinds = prototypeSelectableSceneKinds
+    val sharedHighlights = ScenicPoiSharedState.pointsFor(routePoints)
     val plannedHighlights = remember(stops) {
         stops.mapNotNull { stop ->
             stop.point?.let { point ->
@@ -146,10 +143,13 @@ fun ScenicMap(
         }
     }
 
-    val candidateCore = remember(highlights, sharedHighlights, localHighlights) {
+    val candidateCore = remember(highlights, sharedHighlights, localHighlights, activeKinds) {
+        val allowed = (highlights + sharedHighlights + localHighlights).filter { point ->
+            StopKind.entries.firstOrNull { it.name == point.kind } in activeKinds
+        }
         PrecisionRoutePoiDiscovery.mergeForDisplay(
-            first = highlights + sharedHighlights,
-            second = localHighlights,
+            first = allowed,
+            second = emptyList(),
             maxResults = MAX_SCENIC_MARKERS,
         )
     }
@@ -157,13 +157,21 @@ fun ScenicMap(
         if (candidateCore.isNotEmpty()) {
             retainedHighlights = PrecisionRoutePoiDiscovery.mergeForDisplay(
                 first = candidateCore,
-                second = retainedHighlights,
+                second = retainedHighlights.filter { point ->
+                    StopKind.entries.firstOrNull { it.name == point.kind } in activeKinds
+                },
                 maxResults = MAX_SCENIC_MARKERS,
             )
+        } else if (activeKinds.isEmpty()) {
+            retainedHighlights = emptyList()
         }
     }
-    val coreVisible = remember(candidateCore, retainedHighlights) {
-        PrecisionRoutePoiDiscovery.mergeForDisplay(candidateCore, retainedHighlights, MAX_SCENIC_MARKERS)
+    val coreVisible = remember(candidateCore, retainedHighlights, activeKinds) {
+        PrecisionRoutePoiDiscovery.mergeForDisplay(
+            candidateCore,
+            retainedHighlights.filter { point -> StopKind.entries.firstOrNull { it.name == point.kind } in activeKinds },
+            MAX_SCENIC_MARKERS,
+        )
     }
     val visibleHighlights = remember(coreVisible, plannedHighlights, plannedStopIds) {
         buildList {
@@ -195,58 +203,61 @@ fun ScenicMap(
         }
     }
 
-    // Route-wide multi-provider POI population. Any provider can paint first; later results enrich.
-    // A non-empty -> non-empty route change is a recalculation inside the same planning session,
-    // so existing POIs are NEVER flushed. The session is reset only when the route becomes empty,
-    // which is what ScenicExperienceRoot does when start/destination changes.
-    LaunchedEffect(routePoints) {
+    LaunchedEffect(routePoints, activeKinds) {
         selectedHighlight = null
         if (routePoints.size < 2) {
             navigationActive = false
+            onNavigationActiveChange(false)
             localHighlights = emptyList()
             retainedHighlights = emptyList()
             ScenicPoiSharedState.clear()
             return@LaunchedEffect
         }
 
-        // Seed the durable pool immediately from the route planner's own candidates. This makes
-        // the very first calculated route show POIs even before the deeper map discovery finishes.
-        if (highlights.isNotEmpty()) {
+        if (activeKinds.isEmpty()) {
+            localHighlights = emptyList()
+            retainedHighlights = emptyList()
+            ScenicPoiSharedState.clear()
+            return@LaunchedEffect
+        }
+
+        val routeHighlights = highlights.filter { point ->
+            StopKind.entries.firstOrNull { it.name == point.kind } in activeKinds
+        }
+        if (routeHighlights.isNotEmpty()) {
             retainedHighlights = PrecisionRoutePoiDiscovery.mergeForDisplay(
-                first = highlights,
+                first = routeHighlights,
                 second = retainedHighlights,
                 maxResults = MAX_SCENIC_MARKERS,
             )
             ScenicPoiSharedState.publish(routePoints, retainedHighlights)
         }
 
-        val enabledKinds = prototypeSelectableSceneKinds.ifEmpty { allSelectableSceneKinds }
-
         suspend fun commit(points: List<ScenePointUi>) {
             if (points.isEmpty()) return
             withContext(Dispatchers.Main.immediate) {
-                localHighlights = PrecisionRoutePoiDiscovery.mergeForDisplay(points, localHighlights, MAX_SCENIC_MARKERS)
-                retainedHighlights = PrecisionRoutePoiDiscovery.mergeForDisplay(points, retainedHighlights, MAX_SCENIC_MARKERS)
+                val filtered = points.filter { point ->
+                    StopKind.entries.firstOrNull { it.name == point.kind } in activeKinds
+                }
+                if (filtered.isEmpty()) return@withContext
+                localHighlights = PrecisionRoutePoiDiscovery.mergeForDisplay(filtered, localHighlights, MAX_SCENIC_MARKERS)
+                retainedHighlights = PrecisionRoutePoiDiscovery.mergeForDisplay(filtered, retainedHighlights, MAX_SCENIC_MARKERS)
                 ScenicPoiSharedState.publish(routePoints, retainedHighlights)
             }
         }
 
         coroutineScope {
             launch(Dispatchers.IO) {
-                commit(runCatching {
-                    RapidRoutePoiDiscovery.discover(routePoints, enabledKinds, 220)
-                }.getOrElse { emptyList() })
+                commit(runCatching { RapidRoutePoiDiscovery.discover(routePoints, activeKinds, 220) }.getOrElse { emptyList() })
             }
             launch(Dispatchers.IO) {
-                commit(runCatching {
-                    FastRoutePoiDiscovery.discover(routePoints, enabledKinds, 220)
-                }.getOrElse { emptyList() })
+                commit(runCatching { FastRoutePoiDiscovery.discover(routePoints, activeKinds, 220) }.getOrElse { emptyList() })
             }
             launch(Dispatchers.IO) {
                 commit(runCatching {
                     PrecisionRoutePoiDiscovery.discover(
                         route = routePoints,
-                        enabledKinds = enabledKinds,
+                        enabledKinds = activeKinds,
                         maxResults = MAX_SCENIC_MARKERS,
                         radiusMeters = 15_000,
                         maxSamples = 10,
@@ -345,7 +356,6 @@ fun ScenicMap(
         if (!styleLoaded && mapError == null) CircularProgressIndicator(Modifier.align(Alignment.Center))
         mapError?.let { MapStatusBadge(it, Modifier.align(Alignment.BottomStart).padding(12.dp)) }
 
-        // Durable category markers, projected through the live map camera.
         val revision = cameraRevision
         val map = mapRef
         if (styleLoaded && map != null && visibleHighlights.isNotEmpty()) {
@@ -367,7 +377,7 @@ fun ScenicMap(
                         ScenicPoiOverlayMarker(
                             symbol = scenicCategoryLaneFor(highlight).emoji,
                             emphasized = emphasized,
-                            onClick = { selectedHighlight = highlight },
+                            onClick = { if (!navigationActive) selectedHighlight = highlight },
                             modifier = Modifier.offset {
                                 IntOffset(screen.x.roundToInt() - half, screen.y.roundToInt() - half)
                             },
@@ -378,11 +388,14 @@ fun ScenicMap(
             @Suppress("UNUSED_VARIABLE") val keepProjectionReactive = revision
         }
 
-        // Navigation can be started directly from the route map. In active mode it switches to a
-        // driver-focused HUD and follows GPS with route bearing/tilt while POIs remain visible.
         if (!navigationActive && routePoints.size >= 2 && userLocation != null) {
             ExtendedFloatingActionButton(
-                onClick = { navigationActive = true; navigationFollow = true; selectedHighlight = null },
+                onClick = {
+                    navigationActive = true
+                    navigationFollow = true
+                    selectedHighlight = null
+                    onNavigationActiveChange(true)
+                },
                 icon = { Icon(Icons.Default.Navigation, null) },
                 text = { Text("Navigate") },
                 modifier = Modifier.align(Alignment.CenterEnd).padding(end = 14.dp),
@@ -404,17 +417,24 @@ fun ScenicMap(
                     }
                 },
                 onFollow = { navigationFollow = true },
-                onReroute = onRecalculateRoute,
-                onStop = { navigationActive = false; navigationFollow = false },
+                onReroute = {
+                    navigationPoint?.let(onRerouteFromLocation) ?: onRecalculateRoute()
+                },
+                onStop = {
+                    navigationActive = false
+                    navigationFollow = false
+                    onNavigationActiveChange(false)
+                },
                 modifier = Modifier
                     .align(Alignment.TopCenter)
-                    .padding(start = 12.dp, end = 12.dp, top = 138.dp)
+                    .statusBarsPadding()
+                    .padding(start = 12.dp, end = 12.dp, top = 12.dp)
                     .fillMaxWidth()
                     .widthIn(max = 520.dp),
             )
         }
 
-        selectedHighlight?.let { highlight ->
+        if (!navigationActive) selectedHighlight?.let { highlight ->
             ScenicLocationDetailsCard(
                 highlight = highlight,
                 details = selectedDetails ?: ScenicPoiDetails(
@@ -459,7 +479,7 @@ fun ScenicMap(
             }.onFailure { onMapError(it.message ?: "Route overview failed") }
         }
     }
-    LaunchedEffect(recenterToken, styleLoaded) {
+    LaunchedEffect(recenterToken, styleLoaded, userLocation) {
         if (styleLoaded && recenterToken > lastHandledRecenterToken) {
             latestUserLocation?.let { point ->
                 navigationFollow = navigationActive
@@ -495,7 +515,7 @@ private fun ScenicPoiOverlayMarker(
     modifier: Modifier = Modifier,
 ) {
     val outerSize = if (emphasized) 54.dp else 44.dp
-    val innerSize = if (emphasized) 40.dp else 40.dp
+    val innerSize = 40.dp
     val primary = MaterialTheme.colorScheme.primary
     Box(
         modifier = modifier
