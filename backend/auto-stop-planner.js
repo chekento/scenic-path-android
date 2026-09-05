@@ -1,5 +1,6 @@
 import { haversineMeters, samplePolyline } from "./corridor-analyzer.js";
 import { tomTomRoute } from "./tomtom.js";
+import { combinedDwellMinutes } from "./route-time.js";
 
 const clamp = (value, min, max) => Math.max(min, Math.min(max, value));
 
@@ -202,7 +203,8 @@ export async function insertAutomaticStops({
 
     const driveExtraMinutes = Math.max(0, (durationSeconds - fastestSeconds) / 60);
     const autoDwellMinutes = selected.reduce((sum, stop) => sum + (stop.suggestedDwellMinutes ?? 20), 0);
-    const totalExtraMinutes = driveExtraMinutes + fixedDwellMinutes + autoDwellMinutes;
+    const dwellMinutes = combinedDwellMinutes(fixedDwellMinutes, autoDwellMinutes);
+    const totalExtraMinutes = driveExtraMinutes + dwellMinutes;
     const withinTime = totalExtraMinutes <= budgetMinutes + 1;
     const withinPercent = durationSeconds <= maxDurationByPercent + 1;
 
@@ -233,7 +235,7 @@ export async function insertAutomaticStops({
       points: routePoints(route),
       extraMinutes: driveExtraMinutes,
       driveExtraMinutes,
-      dwellMinutes: autoDwellMinutes,
+      dwellMinutes,
       totalExtraMinutes,
       autoStopIds: selected.map(stop => stop.id),
       scenePoints,
