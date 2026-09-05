@@ -8,7 +8,7 @@ import org.junit.Test
 class RoutingCoreTest {
 
     @Test
-    fun directCharacterUsesStrictDetourEnvelope() {
+    fun directPriorityKeepsBudgetButUsesEfficientRoadPreferences() {
         val source = ScenicPreferences(
             maxExtraMinutes = 240,
             maxExtraPercent = 90,
@@ -17,11 +17,21 @@ class RoutingCoreTest {
             hilliness = 90,
         )
         val direct = source.forCharacter(RouteCharacter.DIRECT)
-        assertEquals(10, direct.maxExtraMinutes)
-        assertEquals(10, direct.maxExtraPercent)
+        assertEquals(240, direct.maxExtraMinutes)
+        assertEquals(90, direct.maxExtraPercent)
         assertFalse(direct.avoidMotorways)
         assertEquals(20, direct.windingness)
         assertEquals(20, direct.hilliness)
+    }
+
+    @Test
+    fun dayTripPlanNeverSilentlyCollapsesItsSelectedTimeBudget() {
+        val source = ScenicPreferences(maxExtraMinutes = 240, maxExtraPercent = 70)
+        val directDayTrip = source.forPlan(
+            TripPlan(mode = PlanningMode.DAY_TRIP, routeCharacter = RouteCharacter.DIRECT)
+        )
+        assertEquals(240, directDayTrip.maxExtraMinutes)
+        assertEquals(70, directDayTrip.maxExtraPercent)
     }
 
     @Test
