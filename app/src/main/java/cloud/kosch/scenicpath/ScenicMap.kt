@@ -87,8 +87,6 @@ fun ScenicMap(
     var initialLocationFocused by remember { mutableStateOf(false) }
     var cameraRevision by remember { mutableIntStateOf(0) }
 
-    // These pools are candidate-scoped. Switching Alternative 1 -> 2 must not retain markers
-    // discovered for another road corridor. Switching back restores the route-keyed shared pool.
     var localHighlights by remember(routeKey) { mutableStateOf<List<ScenePointUi>>(emptyList()) }
     var retainedHighlights by remember(routeKey) { mutableStateOf<List<ScenePointUi>>(emptyList()) }
     var selectedHighlight by remember(routeKey) { mutableStateOf<ScenePointUi?>(null) }
@@ -148,7 +146,7 @@ fun ScenicMap(
 
     val candidateCore = remember(highlights, sharedHighlights, localHighlights, activeKinds) {
         val allowed = (highlights + sharedHighlights + localHighlights).filter { point ->
-            StopKind.entries.firstOrNull { it.name == point.kind } in activeKinds
+            isTravelSupportPoint(point) || StopKind.entries.firstOrNull { it.name == point.kind } in activeKinds
         }
         PrecisionRoutePoiDiscovery.mergeForDisplay(
             first = allowed,
@@ -161,18 +159,20 @@ fun ScenicMap(
             retainedHighlights = PrecisionRoutePoiDiscovery.mergeForDisplay(
                 first = candidateCore,
                 second = retainedHighlights.filter { point ->
-                    StopKind.entries.firstOrNull { it.name == point.kind } in activeKinds
+                    isTravelSupportPoint(point) || StopKind.entries.firstOrNull { it.name == point.kind } in activeKinds
                 },
                 maxResults = MAX_SCENIC_MARKERS,
             )
         } else if (activeKinds.isEmpty()) {
-            retainedHighlights = emptyList()
+            retainedHighlights = retainedHighlights.filter(::isTravelSupportPoint)
         }
     }
     val coreVisible = remember(candidateCore, retainedHighlights, activeKinds) {
         PrecisionRoutePoiDiscovery.mergeForDisplay(
             candidateCore,
-            retainedHighlights.filter { point -> StopKind.entries.firstOrNull { it.name == point.kind } in activeKinds },
+            retainedHighlights.filter { point ->
+                isTravelSupportPoint(point) || StopKind.entries.firstOrNull { it.name == point.kind } in activeKinds
+            },
             MAX_SCENIC_MARKERS,
         )
     }
@@ -206,8 +206,6 @@ fun ScenicMap(
         }
     }
 
-    // A POI detail card is an exclusive map OSD just like live navigation. Reuse the existing
-    // parent callback so route controls are hidden while either overlay owns the map surface.
     LaunchedEffect(navigationActive, selectedHighlight?.id) {
         onNavigationActiveChange(navigationActive || selectedHighlight != null)
     }
@@ -225,13 +223,17 @@ fun ScenicMap(
 
         if (activeKinds.isEmpty()) {
             localHighlights = emptyList()
-            retainedHighlights = emptyList()
-            ScenicPoiSharedState.clear()
+            retainedHighlights = highlights.filter(::isTravelSupportPoint)
+            if (retainedHighlights.isNotEmpty()) {
+                ScenicPoiSharedState.publish(routePoints, retainedHighlights)
+            } else {
+                ScenicPoiSharedState.clearRoute(routePoints)
+            }
             return@LaunchedEffect
         }
 
         val routeHighlights = highlights.filter { point ->
-            StopKind.entries.firstOrNull { it.name == point.kind } in activeKinds
+            isTravelSupportPoint(point) || StopKind.entries.firstOrNull { it.name == point.kind } in activeKinds
         }
         if (routeHighlights.isNotEmpty()) {
             retainedHighlights = PrecisionRoutePoiDiscovery.mergeForDisplay(
@@ -246,7 +248,7 @@ fun ScenicMap(
             if (points.isEmpty()) return
             withContext(Dispatchers.Main.immediate) {
                 val filtered = points.filter { point ->
-                    StopKind.entries.firstOrNull { it.name == point.kind } in activeKinds
+                    isTravelSupportPoint(point) || StopKind.entries.firstOrNull { it.name == point.kind } in activeKinds
                 }
                 if (filtered.isEmpty()) return@withContext
                 localHighlights = PrecisionRoutePoiDiscovery.mergeForDisplay(filtered, localHighlights, MAX_SCENIC_MARKERS)
