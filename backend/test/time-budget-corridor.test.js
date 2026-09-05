@@ -22,11 +22,12 @@ test("larger time budgets allow farther suggestions", () => {
   assert.equal(sceneSearchDistanceLimitMeters(360), 26_000);
 });
 
-test("larger time budgets allow farther POIs to be trial-routed as automatic stops", () => {
+test("larger time budgets allow much farther POIs to be trial-routed as automatic stops", () => {
   assert.equal(autoStopDistanceLimitMeters(30), 6_000);
-  assert.equal(autoStopDistanceLimitMeters(60), 10_000);
-  assert.equal(autoStopDistanceLimitMeters(120), 14_000);
-  assert.equal(autoStopDistanceLimitMeters(180), 18_000);
-  assert.equal(autoStopDistanceLimitMeters(240), 23_000);
-  assert.equal(autoStopDistanceLimitMeters(360), 27_000);
+  assert.equal(autoStopDistanceLimitMeters(60), 12_000);
+  assert.equal(autoStopDistanceLimitMeters(120), 20_000);
+  assert.equal(autoStopDistanceLimitMeters(180), 30_000);
+  assert.equal(autoStopDistanceLimitMeters(240), 42_000);
+  assert.equal(autoStopDistanceLimitMeters(360), 58_000);
+  assert.ok(autoStopDistanceLimitMeters(360) > autoStopDistanceLimitMeters(60) * 4);
 });
