@@ -6,6 +6,7 @@ import { enrichTopFoodAlongRoute } from "./food-enrichment.js";
 import { findPlaceDetails } from "./google-places.js";
 import { selectSceneSuggestions } from "./scene-suggestions.js";
 import { orderRoutesForCharacter } from "./route-selection.js";
+import { insertAutomaticStops } from "./auto-stop-planner.js";
 import { photonSearch } from "./photon-search.js";
 import { tomTomRoute } from "./tomtom.js";
 import { tomTomSearch } from "./tomtom-search.js";
@@ -44,6 +45,8 @@ function normalizeRoute(route, index, fastestSeconds, character, provider = "Tom
     fastestDurationSeconds: fastestSeconds,
     distanceMeters: route.summary?.lengthInMeters ?? 0,
     extraMinutes: Math.max(0, (durationSeconds - fastestSeconds) / 60),
+    driveExtraMinutes: Math.max(0, (durationSeconds - fastestSeconds) / 60),
+    totalExtraMinutes: Math.max(0, (durationSeconds - fastestSeconds) / 60),
     points: routePoints(route),
     provider,
   };
@@ -147,6 +150,50 @@ async function searchPlaces(query, lat, lon) {
   });
 }
 
+async function applyAutomaticStops({
+  ranked,
+  origin,
+  destination,
+  fixedWaypoints,
+  fixedDwellMinutes,
+  fastestSeconds,
+  preferences,
+  enabledSceneKinds,
+  autoSuggestStops,
+}) {
+  if (autoSuggestStops === false || (preferences.maxExtraMinutes ?? 0) < 30) return ranked;
+
+  // Exact insertion is intentionally bounded: at most the two strongest non-direct scenic
+  // variants are trial-routed. This keeps production latency predictable while still giving
+  // users more than one complete experience to compare.
+  let plannedCount = 0;
+  const planned = [];
+  for (const candidate of ranked) {
+    if (candidate.character === "DIRECT" || plannedCount >= 2 || !candidate.scenePoints?.length) {
+      planned.push(candidate);
+      continue;
+    }
+    plannedCount += 1;
+    try {
+      planned.push(await insertAutomaticStops({
+        candidate,
+        origin,
+        destination,
+        fixedWaypoints,
+        fixedDwellMinutes,
+        fastestSeconds,
+        preferences,
+        enabledSceneKinds,
+        apiKey: process.env.TOMTOM_API_KEY,
+      }));
+    } catch (error) {
+      console.warn("automatic Smart Stop insertion degraded:", error.message);
+      planned.push(candidate);
+    }
+  }
+  return planned;
+}
+
 const server = http.createServer(async (req, res) => {
   const requestUrl = new URL(req.url, `http://${req.headers.host || "localhost"}`);
 
@@ -154,11 +201,15 @@ const server = http.createServer(async (req, res) => {
     return json(res, 200, {
       ok: true,
       service: "scenic-path-backend",
-      version: "0.3.2",
+      version: "0.6.1",
+      apiVersion: 1,
       placeSearch: process.env.PHOTON_URL ? "OpenStreetMap/Photon" : "TomTom fallback",
       corridorEnrichment: process.env.OSM_ENRICHMENT_URL ? "configured" : "geometry-only",
       verifiedFood: process.env.GOOGLE_PLACES_API_KEY ? "configured" : "disabled",
-      popupRatings: process.env.GOOGLE_PLACES_API_KEY ? "Google Places" : "disabled"
+      popupRatings: process.env.GOOGLE_PLACES_API_KEY ? "Google Places" : "disabled",
+      automaticSmartStops: true,
+      vehicleAwareRouting: true,
+      routeTimeBudgetValidation: true,
     });
   }
 
@@ -209,6 +260,10 @@ const server = http.createServer(async (req, res) => {
       const orderedStops = (body.stops ?? [])
         .filter((stop) => stop.position && Number.isFinite(stop.position.lat) && Number.isFinite(stop.position.lon));
       const waypoints = orderedStops.map((stop) => stop.position);
+      const fixedDwellMinutes = orderedStops.reduce(
+        (sum, stop) => sum + Math.max(0, Number(stop.dwellMinutes) || 0),
+        0,
+      );
       const enabledSceneKinds = Array.isArray(body.enabledSceneKinds) ? body.enabledSceneKinds : [];
       const requestedCharacter = ["BEAUTIFUL", "BALANCED", "DIRECT", "CUSTOM"].includes(body.routeCharacter)
         ? body.routeCharacter
@@ -257,8 +312,25 @@ const server = http.createServer(async (req, res) => {
         )
       );
       const scenicRanked = rankRoutes(enriched, body.preferences);
-      const ranked = orderRoutesForCharacter(
+      const initiallyRanked = orderRoutesForCharacter(
         scenicRanked,
+        requestedCharacter,
+        body.preferences,
+        fastestSeconds,
+      );
+      const withAutoStops = await applyAutomaticStops({
+        ranked: initiallyRanked,
+        origin: body.origin,
+        destination: body.destination,
+        fixedWaypoints: waypoints,
+        fixedDwellMinutes,
+        fastestSeconds,
+        preferences: body.preferences,
+        enabledSceneKinds,
+        autoSuggestStops: body.autoSuggestStops,
+      });
+      const ranked = orderRoutesForCharacter(
+        withAutoStops,
         requestedCharacter,
         body.preferences,
         fastestSeconds,
@@ -279,9 +351,7 @@ const server = http.createServer(async (req, res) => {
           autoSuggestStops: body.autoSuggestStops !== false,
           preserveScenicIntentOnReroute: body.preserveScenicIntentOnReroute !== false
         },
-        note: process.env.OSM_ENRICHMENT_URL
-          ? "Routes are ranked with corridor geometry plus configured landscape/scene enrichment."
-          : "Routes are currently ranked with road geometry; configure OSM_ENRICHMENT_URL for landscape and scene-point enrichment."
+        note: buildPlanNote(ranked, process.env.OSM_ENRICHMENT_URL),
       });
     } catch (error) {
       console.error(error);
@@ -291,5 +361,14 @@ const server = http.createServer(async (req, res) => {
 
   return json(res, 404, { error: "not found" });
 });
+
+function buildPlanNote(candidates, enrichmentUrl) {
+  const included = candidates.reduce((max, candidate) => Math.max(max, candidate.autoStopIds?.length ?? 0), 0);
+  const base = enrichmentUrl
+    ? "Routes ranked with corridor geometry plus configured landscape/scene enrichment."
+    : "Routes ranked with road geometry; configure OSM_ENRICHMENT_URL for full landscape/scene enrichment.";
+  if (included > 0) return `${base} ${included} automatic Smart Stop${included === 1 ? "" : "s"} validated inside the selected time budget.`;
+  return `${base} Automatic Smart Stop candidates are shown when available.`;
+}
 
 server.listen(port, () => console.log(`Scenic Path backend listening on :${port}`));
