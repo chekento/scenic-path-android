@@ -113,38 +113,46 @@ object ScenicApi {
             )
             .forPlan(plan)
 
-        if (BuildConfig.DEBUG) {
+        val rawResult: Result<RoutePlanUi> = if (BuildConfig.DEBUG) {
             if (RoundTripPolicy.shouldCreateRoundTrip(plan, origin, destination)) {
-                return@withContext runCatching {
-                    NativeRoundTripPlanner.plan(origin, plan, effectivePreferences)
+                runCatching { NativeRoundTripPlanner.plan(origin, plan, effectivePreferences) }
+            } else {
+                val baseResult = runCatching {
+                    VehicleAwareJourneyPlanner.plan(origin, destination, plan, effectivePreferences)
+                }.recoverCatching { primaryError ->
+                    if (effectivePreferences.vehicle.kind == VehicleKind.CAR) {
+                        OsmScenicRoutingFallback.plan(origin, destination, plan, effectivePreferences)
+                    } else {
+                        throw primaryError
+                    }
                 }
-            }
-
-            val baseResult = runCatching {
-                VehicleAwareJourneyPlanner.plan(origin, destination, plan, effectivePreferences)
-            }.recoverCatching { primaryError ->
-                if (effectivePreferences.vehicle.kind == VehicleKind.CAR) {
-                    OsmScenicRoutingFallback.plan(origin, destination, plan, effectivePreferences)
+                if (baseResult.isFailure) {
+                    baseResult
                 } else {
-                    throw primaryError
+                    runCatching {
+                        NativeAlternativePlanner.augment(
+                            origin = origin,
+                            destination = destination,
+                            plan = plan,
+                            preferences = effectivePreferences,
+                            base = baseResult.getOrThrow(),
+                        )
+                    }
                 }
             }
-            if (baseResult.isFailure) return@withContext baseResult
-            return@withContext runCatching {
-                NativeAlternativePlanner.augment(
-                    origin = origin,
-                    destination = destination,
-                    plan = plan,
-                    preferences = effectivePreferences,
-                    base = baseResult.getOrThrow(),
-                )
+        } else {
+            runCatching {
+                requireProductionServicesConfigured()
+                planBackend(origin, destination, plan, effectivePreferences)
             }
         }
 
-        runCatching {
-            requireProductionServicesConfigured()
-            planBackend(origin, destination, plan, effectivePreferences)
-        }
+        if (rawResult.isFailure) return@withContext rawResult
+        val rawPlan = rawResult.getOrThrow()
+        val enriched = runCatching {
+            JourneySupportPlanner.enrich(rawPlan, effectivePreferences.vehicle)
+        }.getOrElse { rawPlan }
+        Result.success(enriched)
     }
 
     private fun requireProductionServicesConfigured() {
@@ -437,6 +445,12 @@ private fun ScenicPreferences.toJson() = JSONObject().apply {
         put("axleCount", vehicle.axleCount)
         put("bicycleType", vehicle.bicycleType.apiValue)
         put("allowUnpavedBikePaths", vehicle.allowUnpavedBikePaths)
+        put("dailyTravelHours", vehicle.dailyTravelHours)
+        put("driverCount", vehicle.effectiveDriverCount)
+        put("overnightPlanningEnabled", vehicle.overnightPlanningEnabled)
+        put("eBikeEnabled", vehicle.eBikeEnabled)
+        put("eBikeRangeKm", vehicle.eBikeRangeKm)
+        put("eBikeReservePercent", vehicle.eBikeReservePercent)
     })
     put("weights", JSONObject().apply {
         put("beautifulRoads", weights.beautifulRoads.toDouble())
