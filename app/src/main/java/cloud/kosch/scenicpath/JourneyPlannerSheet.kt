@@ -33,6 +33,7 @@ fun JourneyPlannerSheet(
     var draftPreferences by remember(preferences) { mutableStateOf(preferences) }
     var rebuildRequested by remember { mutableStateOf(false) }
 
+    val isDayTrip = draftPlan.mode == PlanningMode.DAY_TRIP
     val budget = draftPreferences.maxExtraMinutes
     val corridorKm = (4.0 + budget * 0.15).coerceIn(6.0, 42.0)
     val autoStops = autoStopPreview(budget, draftPreferences.maxStops)
@@ -73,12 +74,16 @@ fun JourneyPlannerSheet(
             Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.62f))) {
                 Column(Modifier.padding(15.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        Icon(Icons.Default.Explore, null)
+                        Icon(if (isDayTrip) Icons.Default.Schedule else Icons.Default.Explore, null)
                         Spacer(Modifier.width(8.dp))
-                        Text("Current exploration space", fontWeight = FontWeight.SemiBold)
+                        Text(if (isDayTrip) "Current day-trip budget" else "Current exploration space", fontWeight = FontWeight.SemiBold)
                     }
                     Text(
-                        "+$budget min · max ${draftPreferences.maxExtraPercent}% drive detour · ~${corridorKm.roundToInt()} km discovery corridor · up to $autoStops automatic Smart Stops",
+                        if (isDayTrip) {
+                            "$budget min time budget · ~${corridorKm.roundToInt()} km discovery radius · up to $autoStops automatic Smart Stops · ${draftPlan.requestedAlternatives} route variants"
+                        } else {
+                            "+$budget min · max ${draftPreferences.maxExtraPercent}% drive detour · ~${corridorKm.roundToInt()} km discovery corridor · up to $autoStops automatic Smart Stops"
+                        },
                         style = MaterialTheme.typography.titleMedium,
                         fontWeight = FontWeight.Bold,
                     )
@@ -87,6 +92,13 @@ fun JourneyPlannerSheet(
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onPrimaryContainer,
                     )
+                    if (isDayTrip) {
+                        Text(
+                            "If start and destination are the same, this is the total outing time and Scenic Path actively tries to use it. With different endpoints it is the exploration allowance beyond the direct trip.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onPrimaryContainer,
+                        )
+                    }
                 }
             }
 
@@ -101,8 +113,15 @@ fun JourneyPlannerSheet(
                                 PlanningMode.DAY_TRIP -> 8
                                 PlanningMode.ROAD_TRIP -> 12
                             }
-                            draftPlan = draftPlan.copy(mode = mode)
-                            draftPreferences = draftPreferences.copy(maxStops = maxStops)
+                            draftPlan = draftPlan.copy(
+                                mode = mode,
+                                requestedAlternatives = if (mode == PlanningMode.QUICK && draftPlan.routeCharacter == RouteCharacter.DIRECT) 1
+                                else maxOf(2, draftPlan.requestedAlternatives),
+                            )
+                            draftPreferences = draftPreferences.copy(
+                                maxStops = maxStops,
+                                maxExtraMinutes = if (mode == PlanningMode.DAY_TRIP) maxOf(30, draftPreferences.maxExtraMinutes) else draftPreferences.maxExtraMinutes,
+                            )
                         },
                         label = { Text(mode.label) },
                     )
@@ -115,7 +134,11 @@ fun JourneyPlannerSheet(
                     FilterChip(
                         selected = draftPlan.routeCharacter == character,
                         onClick = {
-                            draftPlan = draftPlan.copy(routeCharacter = character)
+                            draftPlan = draftPlan.copy(
+                                routeCharacter = character,
+                                requestedAlternatives = if (character == RouteCharacter.DIRECT && draftPlan.mode == PlanningMode.QUICK) 1
+                                else maxOf(2, draftPlan.requestedAlternatives),
+                            )
                             draftPreferences = draftPreferences.forCharacter(character)
                         },
                         leadingIcon = if (character == RouteCharacter.BEAUTIFUL) {
@@ -126,28 +149,43 @@ fun JourneyPlannerSheet(
                 }
             }
 
-            Text("Exploration time", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+            Text(
+                if (isDayTrip) "Day-trip time budget" else "Exploration time",
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.SemiBold,
+            )
             HorizontalChoiceRowV5 {
-                listOf(30, 60, 120, 180, 240).forEach { minutes ->
+                listOf(30, 60, 120, 180, 240, 360).forEach { minutes ->
                     FilterChip(
                         selected = budget == minutes,
                         onClick = { draftPreferences = draftPreferences.copy(maxExtraMinutes = minutes) },
-                        label = { Text(if (minutes < 60) "+${minutes}m" else "+${minutes / 60}h${if (minutes % 60 == 0) "" else " ${minutes % 60}m"}") },
+                        label = { Text(formatBudgetChip(minutes, isDayTrip)) },
                     )
                 }
             }
             Slider(
-                value = budget.toFloat(),
-                onValueChange = { draftPreferences = draftPreferences.copy(maxExtraMinutes = it.roundToInt()) },
-                valueRange = 0f..360f,
-                steps = 23,
+                value = budget.toFloat().coerceIn(if (isDayTrip) 30f else 0f, 360f),
+                onValueChange = {
+                    val minimum = if (isDayTrip) 30 else 0
+                    draftPreferences = draftPreferences.copy(maxExtraMinutes = it.roundToInt().coerceAtLeast(minimum))
+                },
+                valueRange = if (isDayTrip) 30f..360f else 0f..360f,
+                steps = if (isDayTrip) 21 else 23,
             )
             Text(
-                when {
-                    budget >= 240 -> "Adventure space: large detours and radically different road corridors are allowed."
-                    budget >= 120 -> "Explorer space: major highlights may justify leaving the obvious corridor."
-                    budget >= 30 -> "Local scenic space: worthwhile places with efficient detours are preferred."
-                    else -> "Road scenery only: automatic Smart Stops require at least 30 extra minutes."
+                if (isDayTrip) {
+                    when {
+                        budget >= 240 -> "Full outing: the planner may build a wide loop or destination experience and should use most of this time for beautiful roads plus worthwhile visits."
+                        budget >= 120 -> "Half-day exploration: wider corridors and multiple meaningful stops are encouraged instead of returning early with unused time."
+                        else -> "Compact outing: route and stops are optimized to make useful use of the available time without exceeding it."
+                    }
+                } else {
+                    when {
+                        budget >= 240 -> "Adventure space: large detours and radically different road corridors are allowed."
+                        budget >= 120 -> "Explorer space: major highlights may justify leaving the obvious corridor."
+                        budget >= 30 -> "Local scenic space: worthwhile places with efficient detours are preferred."
+                        else -> "Road scenery only: automatic Smart Stops require at least 30 extra minutes."
+                    }
                 },
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -167,7 +205,11 @@ fun JourneyPlannerSheet(
                     }
                     Text(
                         if (draftPlan.autoSuggestStops) {
-                            "Automatic stops are inserted as real route waypoints only when real driving time plus dwell time fits both budgets."
+                            if (isDayTrip) {
+                                "Automatic stops are real route waypoints. Driving time plus visit time must fit the day budget; unused time is actively available for better stops and a richer route."
+                            } else {
+                                "Automatic stops are inserted as real route waypoints only when real driving time plus dwell time fits both budgets."
+                            }
                         } else {
                             "Only roads and manually fixed stops are used."
                         },
@@ -332,7 +374,8 @@ fun JourneyPlannerSheet(
                         }
                         SettingSwitchV5(
                             "Flexible stop order",
-                            "Allow the optimizer to reorder non-critical stops when that creates a better forward journey.",
+                            if (isDayTrip) "Allow the optimizer to place flexible stops in the most efficient order around the outing."
+                            else "Allow the optimizer to reorder non-critical stops when that creates a better forward journey.",
                             draftPlan.flexibleStopOrder,
                         ) { draftPlan = draftPlan.copy(flexibleStopOrder = it) }
                     }
@@ -355,7 +398,10 @@ fun JourneyPlannerSheet(
                         SettingSwitchV5("Avoid tolls", "Prefer routes without toll roads.", draftPreferences.avoidTolls) {
                             draftPreferences = draftPreferences.copy(avoidTolls = it)
                         }
-                        IntPreferenceSliderV5("Maximum drive detour", draftPreferences.maxExtraPercent) {
+                        IntPreferenceSliderV5(
+                            if (isDayTrip) "Maximum road-time variation" else "Maximum drive detour",
+                            draftPreferences.maxExtraPercent,
+                        ) {
                             draftPreferences = draftPreferences.copy(maxExtraPercent = it)
                         }
                         IntPreferenceSliderV5("Winding roads", draftPreferences.windingness) {
@@ -415,14 +461,22 @@ fun JourneyPlannerSheet(
                 Text(
                     when {
                         rebuildRequested -> "Applying controls…"
+                        hasRoute && dirty && isDayTrip -> "Rebuild day trip · $budget min budget"
+                        hasRoute && isDayTrip -> "Recalculate day trip · $budget min budget"
                         hasRoute && dirty -> "Rebuild with changes · +$budget min"
                         hasRoute -> "Recalculate experience · +$budget min"
+                        isDayTrip -> "Build the best $budget min day trip"
                         else -> "Build the best experiences"
                     }
                 )
             }
         }
     }
+}
+
+private fun formatBudgetChip(minutes: Int, isDayTrip: Boolean): String {
+    val value = if (minutes < 60) "${minutes}m" else "${minutes / 60}h${if (minutes % 60 == 0) "" else " ${minutes % 60}m"}"
+    return if (isDayTrip) value else "+$value"
 }
 
 private fun autoStopPreview(budgetMinutes: Int, configuredMax: Int): Int = when {
