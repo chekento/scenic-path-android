@@ -39,10 +39,6 @@ fun JourneyPlannerSheet(
     val dirty = draftPlan != plan || draftPreferences != preferences
     val sceneCount = draftPlan.enabledSceneKinds.size
 
-    // Parent state updates are synchronous but the parent's buildRoute callback belongs to the
-    // previous composition until Compose applies the new plan/preferences. Waiting for both
-    // values to match the draft prevents the classic "press Build twice" bug where the first
-    // rebuild silently used stale filters.
     LaunchedEffect(rebuildRequested, plan, preferences) {
         if (rebuildRequested && plan == draftPlan && preferences == draftPreferences) {
             rebuildRequested = false
@@ -53,22 +49,15 @@ fun JourneyPlannerSheet(
 
     ModalBottomSheet(onDismissRequest = onDismiss) {
         Column(
-            Modifier
-                .fillMaxWidth()
-                .verticalScroll(rememberScrollState())
-                .padding(horizontal = 18.dp)
-                .padding(bottom = 36.dp),
+            Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(horizontal = 18.dp).padding(bottom = 36.dp),
             verticalArrangement = Arrangement.spacedBy(16.dp),
         ) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Column(Modifier.weight(1f)) {
                     Text("Build an experience", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
-                    Text(
-                        "The prototype controls the idea. This planner controls the real route, stops and map.",
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
+                    Text("Simple presets first; every active routing constraint stays adjustable below.", color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
-                IconButton(onClick = onDismiss) { Icon(Icons.Default.Close, "Close planner") }
+                IconButton(onClick = onDismiss) { Icon(Icons.Default.Close, "Minimize planner") }
             }
 
             if (hasRoute && dirty) {
@@ -76,10 +65,7 @@ fun JourneyPlannerSheet(
                     Row(Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
                         Icon(Icons.Default.EditRoad, null)
                         Spacer(Modifier.width(8.dp))
-                        Text(
-                            "Current route stays visible. Your changes become active only after a successful rebuild.",
-                            style = MaterialTheme.typography.bodySmall,
-                        )
+                        Text("Current route stays visible. Changes become active only after a successful rebuild.", style = MaterialTheme.typography.bodySmall)
                     }
                 }
             }
@@ -92,7 +78,7 @@ fun JourneyPlannerSheet(
                         Text("Current exploration space", fontWeight = FontWeight.SemiBold)
                     }
                     Text(
-                        "+$budget min · ~${corridorKm.roundToInt()} km search corridor · up to $autoStops Smart Stops",
+                        "+$budget min · max ${draftPreferences.maxExtraPercent}% drive detour · ~${corridorKm.roundToInt()} km discovery corridor · up to $autoStops automatic Smart Stops",
                         style = MaterialTheme.typography.titleMedium,
                         fontWeight = FontWeight.Bold,
                     )
@@ -104,7 +90,7 @@ fun JourneyPlannerSheet(
                 }
             }
 
-            Text("Trip style", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+            Text("Journey scope", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
             HorizontalChoiceRowV5 {
                 PlanningMode.entries.forEach { mode ->
                     FilterChip(
@@ -123,7 +109,7 @@ fun JourneyPlannerSheet(
                 }
             }
 
-            Text("Route character", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+            Text("Route priority", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
             HorizontalChoiceRowV5 {
                 RouteCharacter.entries.forEach { character ->
                     FilterChip(
@@ -160,7 +146,8 @@ fun JourneyPlannerSheet(
                 when {
                     budget >= 240 -> "Adventure space: large detours and radically different road corridors are allowed."
                     budget >= 120 -> "Explorer space: major highlights may justify leaving the obvious corridor."
-                    else -> "Local scenic space: worthwhile places with efficient detours are preferred."
+                    budget >= 30 -> "Local scenic space: worthwhile places with efficient detours are preferred."
+                    else -> "Road scenery only: automatic Smart Stops require at least 30 extra minutes."
                 },
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -180,11 +167,24 @@ fun JourneyPlannerSheet(
                     }
                     Text(
                         if (draftPlan.autoSuggestStops) {
-                            "The optimizer may include the best mix of enabled categories inside the total time budget."
+                            "Automatic stops are inserted as real route waypoints only when real driving time plus dwell time fits both budgets."
                         } else {
                             "Only roads and manually fixed stops are used."
                         },
                         style = MaterialTheme.typography.bodySmall,
+                    )
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Column(Modifier.weight(1f)) {
+                            Text("Maximum automatic stops", fontWeight = FontWeight.Medium)
+                            Text("Budget tiers still cap the practical number: 1 from 30 min, 2 from 100 min, 3 from 210 min.", style = MaterialTheme.typography.bodySmall)
+                        }
+                        Text(draftPreferences.maxStops.toString(), fontWeight = FontWeight.Bold)
+                    }
+                    Slider(
+                        value = draftPreferences.maxStops.toFloat(),
+                        onValueChange = { draftPreferences = draftPreferences.copy(maxStops = it.roundToInt()) },
+                        valueRange = 0f..12f,
+                        steps = 11,
                     )
                     OutlinedButton(onClick = onRequestSuggestions, modifier = Modifier.fillMaxWidth()) {
                         Icon(Icons.Default.AddLocationAlt, null)
@@ -199,16 +199,15 @@ fun JourneyPlannerSheet(
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Icon(Icons.Default.FilterAlt, null)
                         Spacer(Modifier.width(8.dp))
-                        Text("Scenic mix", fontWeight = FontWeight.SemiBold)
+                        Text("Scenic categories", fontWeight = FontWeight.SemiBold)
                         Spacer(Modifier.weight(1f))
                         Text("$sceneCount/${allSelectableSceneKinds.size}", style = MaterialTheme.typography.labelMedium)
                     }
                     Text(
-                        "These are real discovery filters: the route optimizer, Smart Stops and map use the same committed selection.",
+                        "This is a hard filter shared by route optimization, Smart Stops and map markers. An empty selection really means no automatic POIs.",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
-
                     HorizontalChoiceRowV5 {
                         AssistChip(
                             onClick = { draftPlan = draftPlan.copy(enabledSceneKinds = allSelectableSceneKinds) },
@@ -216,12 +215,12 @@ fun JourneyPlannerSheet(
                             leadingIcon = { Icon(Icons.Default.SelectAll, null, Modifier.size(18.dp)) },
                         )
                         AssistChip(
+                            onClick = { draftPlan = draftPlan.copy(enabledSceneKinds = emptySet()) },
+                            label = { Text("None") },
+                        )
+                        AssistChip(
                             onClick = {
-                                draftPlan = draftPlan.copy(
-                                    enabledSceneKinds = linkedSetOf(
-                                        StopKind.VIEWPOINT, StopKind.NATURE, StopKind.PARK, StopKind.WATER,
-                                    )
-                                )
+                                draftPlan = draftPlan.copy(enabledSceneKinds = linkedSetOf(StopKind.VIEWPOINT, StopKind.NATURE, StopKind.PARK, StopKind.WATER))
                             },
                             label = { Text("Nature + views") },
                         )
@@ -261,6 +260,47 @@ fun JourneyPlannerSheet(
                 }
             }
 
+            if (StopKind.FOOD in draftPlan.enabledSceneKinds) {
+                Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.tertiaryContainer.copy(alpha = 0.38f))) {
+                    Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(Icons.Default.Restaurant, null)
+                            Spacer(Modifier.width(8.dp))
+                            Text("Top Food quality", fontWeight = FontWeight.SemiBold)
+                        }
+                        Text(
+                            "These are strict filters for automatic restaurant selection. Unknown rating/review data cannot satisfy a positive minimum.",
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text("Minimum rating", Modifier.weight(1f))
+                            Text(String.format(java.util.Locale.US, "%.1f / 5", draftPreferences.minimumFoodRating), fontWeight = FontWeight.Bold)
+                        }
+                        Slider(
+                            value = draftPreferences.minimumFoodRating.toFloat(),
+                            onValueChange = { draftPreferences = draftPreferences.copy(minimumFoodRating = (it * 10).roundToInt() / 10.0) },
+                            valueRange = 0f..5f,
+                            steps = 49,
+                        )
+                        Text("Minimum review count", fontWeight = FontWeight.Medium)
+                        HorizontalChoiceRowV5 {
+                            listOf(0, 25, 100, 250, 500, 1000).forEach { count ->
+                                FilterChip(
+                                    selected = draftPreferences.minimumFoodReviewCount == count,
+                                    onClick = { draftPreferences = draftPreferences.copy(minimumFoodReviewCount = count) },
+                                    label = { Text(if (count == 0) "Any" else "$count+") },
+                                )
+                            }
+                        }
+                        SettingSwitchV5(
+                            "Only open restaurants",
+                            "Requires a provider-confirmed open-now state; unknown status is excluded.",
+                            draftPreferences.onlyOpenFood,
+                        ) { draftPreferences = draftPreferences.copy(onlyOpenFood = it) }
+                    }
+                }
+            }
+
             if (draftPlan.stops.isNotEmpty()) {
                 Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow)) {
                     Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -292,7 +332,7 @@ fun JourneyPlannerSheet(
                         }
                         SettingSwitchV5(
                             "Flexible stop order",
-                            "Allow the optimizer to reorder non-critical stops when that creates a better journey.",
+                            "Allow the optimizer to reorder non-critical stops when that creates a better forward journey.",
                             draftPlan.flexibleStopOrder,
                         ) { draftPlan = draftPlan.copy(flexibleStopOrder = it) }
                     }
@@ -308,13 +348,16 @@ fun JourneyPlannerSheet(
             if (advanced) {
                 Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainer)) {
                     Column(Modifier.padding(15.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                        SettingSwitchV5("Avoid motorways", "Hard validation remains active after routing.", draftPreferences.avoidMotorways) {
+                        Text("Hard route constraints", fontWeight = FontWeight.SemiBold)
+                        SettingSwitchV5("Avoid motorways", "Applied inside the routing cost model.", draftPreferences.avoidMotorways) {
                             draftPreferences = draftPreferences.copy(avoidMotorways = it)
                         }
                         SettingSwitchV5("Avoid tolls", "Prefer routes without toll roads.", draftPreferences.avoidTolls) {
                             draftPreferences = draftPreferences.copy(avoidTolls = it)
                         }
-
+                        IntPreferenceSliderV5("Maximum drive detour", draftPreferences.maxExtraPercent) {
+                            draftPreferences = draftPreferences.copy(maxExtraPercent = it)
+                        }
                         IntPreferenceSliderV5("Winding roads", draftPreferences.windingness) {
                             draftPreferences = draftPreferences.copy(windingness = it)
                         }
@@ -325,52 +368,24 @@ fun JourneyPlannerSheet(
                         HorizontalDivider()
                         Text("Scenic DNA", fontWeight = FontWeight.SemiBold)
                         Text(
-                            "DNA controls ranking inside the enabled categories. A filter decides what may appear; DNA decides what should win.",
+                            "Categories decide what may appear; DNA decides what should win inside those categories.",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
-                        DnaSliderV5("Beautiful roads", draftPreferences.weights.beautifulRoads) { v ->
-                            draftPreferences = draftPreferences.copy(weights = draftPreferences.weights.copy(beautifulRoads = v))
-                        }
-                        DnaSliderV5("Viewpoints", draftPreferences.weights.viewpoints) { v ->
-                            draftPreferences = draftPreferences.copy(weights = draftPreferences.weights.copy(viewpoints = v))
-                        }
-                        DnaSliderV5("Water", draftPreferences.weights.water) { v ->
-                            draftPreferences = draftPreferences.copy(weights = draftPreferences.weights.copy(water = v))
-                        }
-                        DnaSliderV5("Forests", draftPreferences.weights.forest) { v ->
-                            draftPreferences = draftPreferences.copy(weights = draftPreferences.weights.copy(forest = v))
-                        }
-                        DnaSliderV5("Mountains & relief", draftPreferences.weights.mountains) { v ->
-                            draftPreferences = draftPreferences.copy(weights = draftPreferences.weights.copy(mountains = v))
-                        }
-                        DnaSliderV5("Culture", draftPreferences.weights.culture) { v ->
-                            draftPreferences = draftPreferences.copy(weights = draftPreferences.weights.copy(culture = v))
-                        }
-                        DnaSliderV5("Monuments & history", draftPreferences.weights.monuments) { v ->
-                            draftPreferences = draftPreferences.copy(weights = draftPreferences.weights.copy(monuments = v))
-                        }
-                        DnaSliderV5("Museums", draftPreferences.weights.museums) { v ->
-                            draftPreferences = draftPreferences.copy(weights = draftPreferences.weights.copy(museums = v))
-                        }
-                        DnaSliderV5("Art & galleries", draftPreferences.weights.art) { v ->
-                            draftPreferences = draftPreferences.copy(weights = draftPreferences.weights.copy(art = v))
-                        }
-                        DnaSliderV5("Historic worship", draftPreferences.weights.worship) { v ->
-                            draftPreferences = draftPreferences.copy(weights = draftPreferences.weights.copy(worship = v))
-                        }
-                        DnaSliderV5("Parks & gardens", draftPreferences.weights.parks) { v ->
-                            draftPreferences = draftPreferences.copy(weights = draftPreferences.weights.copy(parks = v))
-                        }
-                        DnaSliderV5("Architecture", draftPreferences.weights.architecture) { v ->
-                            draftPreferences = draftPreferences.copy(weights = draftPreferences.weights.copy(architecture = v))
-                        }
-                        DnaSliderV5("Food & cafés", draftPreferences.weights.food) { v ->
-                            draftPreferences = draftPreferences.copy(weights = draftPreferences.weights.copy(food = v))
-                        }
-                        DnaSliderV5("Scenic attractions", draftPreferences.weights.scenicHighlights) { v ->
-                            draftPreferences = draftPreferences.copy(weights = draftPreferences.weights.copy(scenicHighlights = v))
-                        }
+                        DnaSliderV5("Beautiful roads", draftPreferences.weights.beautifulRoads) { v -> draftPreferences = draftPreferences.copy(weights = draftPreferences.weights.copy(beautifulRoads = v)) }
+                        DnaSliderV5("Viewpoints", draftPreferences.weights.viewpoints) { v -> draftPreferences = draftPreferences.copy(weights = draftPreferences.weights.copy(viewpoints = v)) }
+                        DnaSliderV5("Water", draftPreferences.weights.water) { v -> draftPreferences = draftPreferences.copy(weights = draftPreferences.weights.copy(water = v)) }
+                        DnaSliderV5("Forests", draftPreferences.weights.forest) { v -> draftPreferences = draftPreferences.copy(weights = draftPreferences.weights.copy(forest = v)) }
+                        DnaSliderV5("Mountains & relief", draftPreferences.weights.mountains) { v -> draftPreferences = draftPreferences.copy(weights = draftPreferences.weights.copy(mountains = v)) }
+                        DnaSliderV5("Culture", draftPreferences.weights.culture) { v -> draftPreferences = draftPreferences.copy(weights = draftPreferences.weights.copy(culture = v)) }
+                        DnaSliderV5("Monuments & history", draftPreferences.weights.monuments) { v -> draftPreferences = draftPreferences.copy(weights = draftPreferences.weights.copy(monuments = v)) }
+                        DnaSliderV5("Museums", draftPreferences.weights.museums) { v -> draftPreferences = draftPreferences.copy(weights = draftPreferences.weights.copy(museums = v)) }
+                        DnaSliderV5("Art & galleries", draftPreferences.weights.art) { v -> draftPreferences = draftPreferences.copy(weights = draftPreferences.weights.copy(art = v)) }
+                        DnaSliderV5("Historic worship", draftPreferences.weights.worship) { v -> draftPreferences = draftPreferences.copy(weights = draftPreferences.weights.copy(worship = v)) }
+                        DnaSliderV5("Parks & gardens", draftPreferences.weights.parks) { v -> draftPreferences = draftPreferences.copy(weights = draftPreferences.weights.copy(parks = v)) }
+                        DnaSliderV5("Architecture", draftPreferences.weights.architecture) { v -> draftPreferences = draftPreferences.copy(weights = draftPreferences.weights.copy(architecture = v)) }
+                        DnaSliderV5("Food & cafés", draftPreferences.weights.food) { v -> draftPreferences = draftPreferences.copy(weights = draftPreferences.weights.copy(food = v)) }
+                        DnaSliderV5("Scenic attractions", draftPreferences.weights.scenicHighlights) { v -> draftPreferences = draftPreferences.copy(weights = draftPreferences.weights.copy(scenicHighlights = v)) }
                     }
                 }
             }
@@ -395,11 +410,7 @@ fun JourneyPlannerSheet(
                 modifier = Modifier.fillMaxWidth().height(56.dp),
                 enabled = destination.isNotBlank() && (!draftPlan.autoSuggestStops || draftPlan.enabledSceneKinds.isNotEmpty()) && !rebuildRequested,
             ) {
-                if (rebuildRequested) {
-                    CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
-                } else {
-                    Icon(Icons.Default.Route, null)
-                }
+                if (rebuildRequested) CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp) else Icon(Icons.Default.Route, null)
                 Spacer(Modifier.width(8.dp))
                 Text(
                     when {
@@ -414,17 +425,11 @@ fun JourneyPlannerSheet(
     }
 }
 
-private fun autoStopPreview(budgetMinutes: Int, configuredMax: Int): Int {
-    val budgetLimit = when {
-        budgetMinutes >= 240 -> 6
-        budgetMinutes >= 180 -> 5
-        budgetMinutes >= 120 -> 4
-        budgetMinutes >= 75 -> 3
-        budgetMinutes >= 40 -> 2
-        budgetMinutes >= 20 -> 1
-        else -> 0
-    }
-    return minOf(configuredMax.coerceAtLeast(1), budgetLimit)
+private fun autoStopPreview(budgetMinutes: Int, configuredMax: Int): Int = when {
+    budgetMinutes >= 210 -> minOf(3, configuredMax.coerceAtLeast(0))
+    budgetMinutes >= 100 -> minOf(2, configuredMax.coerceAtLeast(0))
+    budgetMinutes >= 30 -> minOf(1, configuredMax.coerceAtLeast(0))
+    else -> 0
 }
 
 private fun <T> List<T>.moveItem(from: Int, to: Int): List<T> {
@@ -462,11 +467,7 @@ private fun IntPreferenceSliderV5(label: String, value: Int, onChange: (Int) -> 
             Text(label, Modifier.weight(1f))
             Text("$value%", fontWeight = FontWeight.SemiBold)
         }
-        Slider(
-            value = value.toFloat(),
-            onValueChange = { onChange(it.roundToInt()) },
-            valueRange = 0f..100f,
-        )
+        Slider(value = value.toFloat(), onValueChange = { onChange(it.roundToInt()) }, valueRange = 0f..100f)
     }
 }
 
