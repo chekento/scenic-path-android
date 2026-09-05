@@ -6,6 +6,7 @@ import { dirname, join } from "node:path";
 import {
   foursquareAttribution,
   foursquareFoodScore,
+  matchesFoodThresholds,
   normalizeFoursquarePlace,
   toAppRating,
 } from "../foursquare-places.js";
@@ -44,6 +45,26 @@ test("Foursquare place normalization preserves rating count and visible attribut
   assert.equal(place.openNow, true);
   assert.match(place.address, /Main Street 1/);
   assert.equal(foursquareAttribution(), "Powered by Foursquare");
+});
+
+test("Top Food minimum rating and review count are hard constraints", () => {
+  const strong = { rating: 4.8, ratingCount: 850, openNow: true };
+  const lowRating = { rating: 4.5, ratingCount: 2000, openNow: true };
+  const tooFewReviews = { rating: 4.9, ratingCount: 25, openNow: true };
+  const unknownReviews = { rating: 4.9, ratingCount: null, openNow: true };
+
+  const settings = { minRating: 4.6, minRatings: 100, openNow: false };
+  assert.equal(matchesFoodThresholds(strong, settings), true);
+  assert.equal(matchesFoodThresholds(lowRating, settings), false);
+  assert.equal(matchesFoodThresholds(tooFewReviews, settings), false);
+  assert.equal(matchesFoodThresholds(unknownReviews, settings), false);
+});
+
+test("Top Food open-now constraint excludes closed and unknown opening state", () => {
+  const settings = { minRating: 4.6, minRatings: 100, openNow: true };
+  assert.equal(matchesFoodThresholds({ rating: 4.8, ratingCount: 500, openNow: true }, settings), true);
+  assert.equal(matchesFoodThresholds({ rating: 4.8, ratingCount: 500, openNow: false }, settings), false);
+  assert.equal(matchesFoodThresholds({ rating: 4.8, ratingCount: 500, openNow: null }, settings), false);
 });
 
 test("active production backend contains no Google Places provider path", () => {
