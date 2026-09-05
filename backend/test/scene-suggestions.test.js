@@ -7,10 +7,20 @@ const route = [
   { lat: 53.60, lon: 10.12 },
 ];
 
+test("empty scene selection produces no suggestions", () => {
+  const observations = [
+    { id: "view", point: { lat: 53.6002, lon: 10.06 }, kind: "VIEWPOINT", name: "View", relevance: 0.8 },
+    { id: "scenic", point: { lat: 53.6002, lon: 10.08 }, kind: "SCENIC", name: "Attraction", relevance: 0.9 },
+  ];
+  const result = selectSceneSuggestions({ points: route, observations, enabledSceneKinds: [], maxStops: 5 });
+  assert.deepEqual(result, []);
+});
+
 test("disabled scene kinds never become suggestions", () => {
   const observations = [
     { id: "museum", point: { lat: 53.6002, lon: 10.03 }, kind: "MUSEUM", name: "Museum", relevance: 0.95 },
     { id: "view", point: { lat: 53.6002, lon: 10.06 }, kind: "VIEWPOINT", name: "View", relevance: 0.8 },
+    { id: "scenic", point: { lat: 53.6002, lon: 10.08 }, kind: "SCENIC", name: "Attraction", relevance: 1.0 },
   ];
   const result = selectSceneSuggestions({
     points: route,
@@ -20,6 +30,14 @@ test("disabled scene kinds never become suggestions", () => {
   });
   assert.equal(result.length, 1);
   assert.equal(result[0].kind, "VIEWPOINT");
+});
+
+test("SCENIC suggestions require explicit SCENIC selection", () => {
+  const observations = [
+    { id: "scenic", point: { lat: 53.6002, lon: 10.05 }, kind: "SCENIC", name: "Attraction", relevance: 0.95 },
+  ];
+  assert.equal(selectSceneSuggestions({ points: route, observations, enabledSceneKinds: ["VIEWPOINT"] }).length, 0);
+  assert.equal(selectSceneSuggestions({ points: route, observations, enabledSceneKinds: ["SCENIC"] }).length, 1);
 });
 
 test("near-duplicate highlights of the same kind are spatially decluttered", () => {
