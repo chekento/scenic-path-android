@@ -15,6 +15,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.launch
+import java.util.Locale
 import kotlin.math.roundToInt
 
 private enum class ExperiencePanelV2 {
@@ -28,9 +29,9 @@ private enum class ExperiencePanelV2 {
 
 private enum class QuickModeV2(val label: String, val description: String) {
     DIRECT("Direct", "Minimal detour. Best when arrival time matters most."),
-    BALANCED("Balanced", "A sensible compromise between time and scenery."),
+    BALANCED("Balanced", "A sensible compromise between travel time, scenery and useful stops."),
     SCENIC("Scenic", "Beautiful roads and worthwhile scenery get clear priority."),
-    DISCOVER("Discover", "A wider search corridor with more time and more Smart Stops."),
+    DISCOVER("Discover", "A wider corridor, more time and more Smart Stops for an experience-led trip."),
 }
 
 private enum class RouteIssueV2 {
@@ -42,16 +43,20 @@ private enum class RouteIssueV2 {
 }
 
 /**
- * UX-focused shell for the Scenic Path release candidate.
+ * Coordinated map-first shell.
  *
- * The shell deliberately owns all visible OSD state in one enum so two menus cannot be open at
- * the same time. Planner and Smart Stops dismiss into a compact restore dock instead of staying
- * stacked over the map. Start/destination validation is always rendered above the main OSD.
+ * Only one large OSD can be active at a time. Large OSDs minimize into a compact restore dock,
+ * the route controls and route result bar are mutually collapsible, and floating controls occupy
+ * reserved edges so they do not cover each other. Missing endpoints are always surfaced above the
+ * top route panel rather than in the middle of the map.
  */
 @Composable
 fun ScenicExperienceRootV2(
     locationPermissionGranted: Boolean,
     requestLocationPermission: () -> Unit,
+    vehicleProfile: VehicleProfile = VehicleSettingsState.profile,
+    onVehicleSettings: () -> Unit = {},
+    externalOverlayVisible: Boolean = false,
 ) {
     val scope = rememberCoroutineScope()
     val location = rememberLocationUiState(locationPermissionGranted)
@@ -75,11 +80,11 @@ fun ScenicExperienceRootV2(
 
     var routeError by remember { mutableStateOf<String?>(null) }
     var routeIssue by remember { mutableStateOf(RouteIssueV2.NONE) }
-    var mapError by remember { mutableStateOf<String?>(null) }
 
     val origin = startSelection?.point ?: location.point
     val destination = destinationSelection?.point
     val activeRoute = routePlan?.candidates?.getOrNull(selectedCandidateIndex)
+    val rootOsdVisible = activePanel == null && !externalOverlayVisible
 
     val startLabel = startSelection?.title ?: when {
         location.point != null -> "Current location"
@@ -88,10 +93,15 @@ fun ScenicExperienceRootV2(
     }
     val destinationLabel = destinationSelection?.title.orEmpty()
 
+    LaunchedEffect(vehicleProfile) {
+        if (routePlan != null) routeDirty = true
+    }
+
     fun openPanel(panel: ExperiencePanelV2) {
         activePanel = panel
         minimizedPanel = null
         topExpanded = false
+        routeBarExpanded = false
     }
 
     fun minimizePanel(panel: ExperiencePanelV2) {
@@ -179,10 +189,12 @@ fun ScenicExperienceRootV2(
     fun buildRoute() {
         val from = origin
         val to = destination
+
         if (from == null || to == null) {
             activePanel = null
             minimizedPanel = null
             topExpanded = true
+            routeBarExpanded = false
             routeIssue = when {
                 from == null && to == null -> RouteIssueV2.BOTH
                 from == null -> RouteIssueV2.START
@@ -202,6 +214,7 @@ fun ScenicExperienceRootV2(
         routeIssue = RouteIssueV2.NONE
         activePanel = null
         minimizedPanel = null
+        routeBarExpanded = false
 
         scope.launch {
             ScenicApi.planRoute(from, to, plan, preferences)
@@ -290,10 +303,10 @@ fun ScenicExperienceRootV2(
             recenterToken = recenterToken,
             onToggleRouteStop = ::toggleMapStop,
             onRecalculateRoute = ::buildRoute,
-            onMapError = { mapError = it },
+            onMapError = {},
         )
 
-        if (activePanel == null) {
+        if (rootOsdVisible) {
             Column(
                 modifier = Modifier
                     .align(Alignment.TopCenter)
@@ -317,7 +330,11 @@ fun ScenicExperienceRootV2(
 
                 TopRoutePanelV2(
                     expanded = topExpanded,
-                    onToggle = { topExpanded = !topExpanded },
+                    onToggle = {
+                        val next = !topExpanded
+                        topExpanded = next
+                        if (next) routeBarExpanded = false
+                    },
                     startLabel = startLabel,
                     destinationLabel = destinationLabel,
                     startSupporting = when {
@@ -333,10 +350,12 @@ fun ScenicExperienceRootV2(
                     routeLoading = routeLoading,
                     hasRoute = routePlan != null,
                     routeDirty = routeDirty,
+                    vehicleProfile = vehicleProfile,
                     onStart = { openPanel(ExperiencePanelV2.START) },
                     onDestination = { openPanel(ExperiencePanelV2.DESTINATION) },
                     onPlanner = { openPanel(ExperiencePanelV2.PLANNER) },
                     onStops = { openPanel(ExperiencePanelV2.STOPS) },
+                    onVehicleSettings = onVehicleSettings,
                     onBuildRoute = ::buildRoute,
                     onQuickMode = ::applyQuickMode,
                     onEnableGps = requestLocationPermission,
@@ -350,7 +369,11 @@ fun ScenicExperienceRootV2(
                     expanded = routeBarExpanded,
                     candidateIndex = selectedCandidateIndex,
                     candidateCount = routePlan?.candidates?.size ?: 1,
-                    onToggle = { routeBarExpanded = !routeBarExpanded },
+                    onToggle = {
+                        val next = !routeBarExpanded
+                        routeBarExpanded = next
+                        if (next) topExpanded = false
+                    },
                     onPrevious = {
                         val count = routePlan?.candidates?.size ?: 0
                         if (count > 0) selectedCandidateIndex = (selectedCandidateIndex - 1 + count) % count
@@ -364,7 +387,8 @@ fun ScenicExperienceRootV2(
                     modifier = Modifier
                         .align(Alignment.BottomCenter)
                         .navigationBarsPadding()
-                        .padding(start = 12.dp, end = 78.dp, bottom = 16.dp),
+                        // Reserve the bottom strip for map status and the right strip for FABs.
+                        .padding(start = 12.dp, end = 78.dp, bottom = 78.dp),
                 )
             }
 
@@ -374,6 +398,7 @@ fun ScenicExperienceRootV2(
                     .navigationBarsPadding()
                     .padding(16.dp),
                 verticalArrangement = Arrangement.spacedBy(10.dp),
+                horizontalAlignment = Alignment.End,
             ) {
                 if (locationPermissionGranted) {
                     SmallFloatingActionButton(onClick = { recenterToken++ }) {
@@ -383,6 +408,9 @@ fun ScenicExperienceRootV2(
                 SmallFloatingActionButton(onClick = { openPanel(ExperiencePanelV2.PLANNER) }) {
                     Icon(Icons.Default.Tune, "Open planner")
                 }
+                SmallFloatingActionButton(onClick = onVehicleSettings) {
+                    Text(vehicleProfile.kind.emoji)
+                }
             }
 
             minimizedPanel?.let { panel ->
@@ -390,19 +418,8 @@ fun ScenicExperienceRootV2(
                     panel = panel,
                     onRestore = { openPanel(panel) },
                     onClose = { minimizedPanel = null },
-                    modifier = Modifier.align(Alignment.CenterEnd).padding(end = 12.dp),
-                )
-            }
-
-            if (mapError != null && routeError == null) {
-                AssistChip(
-                    onClick = { mapError = null },
-                    label = { Text("Map fallback active") },
-                    leadingIcon = { Icon(Icons.Default.WarningAmber, null) },
-                    modifier = Modifier
-                        .align(Alignment.BottomStart)
-                        .navigationBarsPadding()
-                        .padding(18.dp),
+                    // Map navigation owns the center-right edge; minimized OSDs live on the left.
+                    modifier = Modifier.align(Alignment.CenterStart).padding(start = 12.dp),
                 )
             }
         }
@@ -413,10 +430,7 @@ fun ScenicExperienceRootV2(
             title = "Choose start",
             initialQuery = startSelection?.title.orEmpty(),
             bias = location.point,
-            onDismiss = {
-                activePanel = null
-                topExpanded = true
-            },
+            onDismiss = { minimizePanel(ExperiencePanelV2.START) },
             onPick = {
                 startSelection = it
                 activePanel = null
@@ -429,10 +443,7 @@ fun ScenicExperienceRootV2(
             title = "Choose destination",
             initialQuery = destinationSelection?.title.orEmpty(),
             bias = origin,
-            onDismiss = {
-                activePanel = null
-                topExpanded = true
-            },
+            onDismiss = { minimizePanel(ExperiencePanelV2.DESTINATION) },
             onPick = {
                 destinationSelection = it
                 activePanel = null
@@ -514,20 +525,30 @@ private fun RouteErrorBannerV2(
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer),
         elevation = CardDefaults.cardElevation(defaultElevation = 10.dp),
     ) {
-        Row(
-            Modifier.padding(start = 12.dp, end = 4.dp, top = 7.dp, bottom = 7.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Icon(Icons.Default.WarningAmber, null)
-            Spacer(Modifier.width(8.dp))
-            Text(message, Modifier.weight(1f), style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.SemiBold)
-            when (issue) {
-                RouteIssueV2.START, RouteIssueV2.BOTH -> TextButton(onClick = onStart) { Text("Choose start") }
-                RouteIssueV2.DESTINATION -> TextButton(onClick = onDestination) { Text("Choose destination") }
-                RouteIssueV2.RETRY -> TextButton(onClick = onRetry) { Text("Retry") }
-                RouteIssueV2.NONE -> Unit
+        Column(Modifier.padding(start = 12.dp, end = 4.dp, top = 7.dp, bottom = 7.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(Icons.Default.WarningAmber, null)
+                Spacer(Modifier.width(8.dp))
+                Text(
+                    message,
+                    Modifier.weight(1f),
+                    style = MaterialTheme.typography.bodySmall,
+                    fontWeight = FontWeight.SemiBold,
+                )
+                IconButton(onClick = onDismiss) { Icon(Icons.Default.Close, "Dismiss") }
             }
-            IconButton(onClick = onDismiss) { Icon(Icons.Default.Close, "Dismiss") }
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                when (issue) {
+                    RouteIssueV2.BOTH -> {
+                        TextButton(onClick = onStart) { Text("Choose start") }
+                        TextButton(onClick = onDestination) { Text("Choose destination") }
+                    }
+                    RouteIssueV2.START -> TextButton(onClick = onStart) { Text("Choose start") }
+                    RouteIssueV2.DESTINATION -> TextButton(onClick = onDestination) { Text("Choose destination") }
+                    RouteIssueV2.RETRY -> TextButton(onClick = onRetry) { Text("Retry") }
+                    RouteIssueV2.NONE -> Unit
+                }
+            }
         }
     }
 }
@@ -545,10 +566,12 @@ private fun TopRoutePanelV2(
     routeLoading: Boolean,
     hasRoute: Boolean,
     routeDirty: Boolean,
+    vehicleProfile: VehicleProfile,
     onStart: () -> Unit,
     onDestination: () -> Unit,
     onPlanner: () -> Unit,
     onStops: () -> Unit,
+    onVehicleSettings: () -> Unit,
     onBuildRoute: () -> Unit,
     onQuickMode: (QuickModeV2) -> Unit,
     onEnableGps: () -> Unit,
@@ -573,26 +596,43 @@ private fun TopRoutePanelV2(
                     Text("Scenic Path", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
                     Text("The beautiful way", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 } else {
-                    Text("${startLabel.take(18)} → ${destinationLabel.ifBlank { "Destination" }.take(18)}", fontWeight = FontWeight.SemiBold, maxLines = 1)
                     Text(
-                        "${activeQuickMode?.label ?: plan.routeCharacter.label} · +${preferences.maxExtraMinutes} min${if (routeDirty) " · changes pending" else ""}",
+                        "${startLabel.take(18)} → ${destinationLabel.ifBlank { "Destination" }.take(18)}",
+                        fontWeight = FontWeight.SemiBold,
+                        maxLines = 1,
+                    )
+                    Text(
+                        "${activeQuickMode?.label ?: plan.routeCharacter.label} · ${vehicleProfile.kind.emoji} ${vehicleProfile.kind.label} · +${preferences.maxExtraMinutes} min${if (routeDirty) " · changes pending" else ""}",
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
                     )
                 }
             }
             if (routeLoading) CircularProgressIndicator(Modifier.size(22.dp), strokeWidth = 2.dp)
             IconButton(onClick = onToggle) {
-                Icon(if (expanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore, if (expanded) "Minimize route controls" else "Expand route controls")
+                Icon(
+                    if (expanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
+                    if (expanded) "Minimize route controls" else "Expand route controls",
+                )
             }
         }
 
         if (expanded) {
             PlaceFieldV2("Start", startLabel, Icons.Default.MyLocation, startSupporting, onStart)
-            PlaceFieldV2("Destination", destinationLabel.ifBlank { "Where do you want to go?" }, Icons.Default.Flag, destinationSupporting, onDestination)
+            PlaceFieldV2(
+                "Destination",
+                destinationLabel.ifBlank { "Where do you want to go?" },
+                Icons.Default.Flag,
+                destinationSupporting,
+                onDestination,
+            )
 
             Text("Route mode", style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.SemiBold)
-            Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(7.dp)) {
+            Row(
+                Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                horizontalArrangement = Arrangement.spacedBy(7.dp),
+            ) {
                 QuickModeV2.entries.forEach { mode ->
                     FilterChip(
                         selected = activeQuickMode == mode,
@@ -602,21 +642,49 @@ private fun TopRoutePanelV2(
                 }
             }
             Text(
-                activeQuickMode?.description ?: "Custom settings are active. Open Advanced planner for full Scenic DNA and constraints.",
+                activeQuickMode?.description
+                    ?: "Custom settings are active. Advanced planner keeps full Scenic DNA and route constraints available.",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
 
-            Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Row(
+                Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
                 if (!locationPermissionGranted) {
-                    AssistChip(onClick = onEnableGps, label = { Text("Enable GPS") }, leadingIcon = { Icon(Icons.Default.GpsFixed, null, Modifier.size(18.dp)) })
+                    AssistChip(
+                        onClick = onEnableGps,
+                        label = { Text("Enable GPS") },
+                        leadingIcon = { Icon(Icons.Default.GpsFixed, null, Modifier.size(18.dp)) },
+                    )
                 }
-                AssistChip(onClick = onPlanner, label = { Text("Advanced planner") }, leadingIcon = { Icon(Icons.Default.Tune, null, Modifier.size(18.dp)) })
-                AssistChip(onClick = onStops, label = { Text("Smart Stops") }, leadingIcon = { Icon(Icons.Default.AddLocationAlt, null, Modifier.size(18.dp)) })
-                AssistChip(onClick = onPlanner, label = { Text("+${preferences.maxExtraMinutes} min") }, leadingIcon = { Icon(Icons.Default.MoreTime, null, Modifier.size(18.dp)) })
+                AssistChip(
+                    onClick = onVehicleSettings,
+                    label = { Text("${vehicleProfile.kind.emoji} ${vehicleProfile.kind.label}") },
+                )
+                AssistChip(
+                    onClick = onPlanner,
+                    label = { Text("Advanced planner") },
+                    leadingIcon = { Icon(Icons.Default.Tune, null, Modifier.size(18.dp)) },
+                )
+                AssistChip(
+                    onClick = onStops,
+                    label = { Text("Smart Stops") },
+                    leadingIcon = { Icon(Icons.Default.AddLocationAlt, null, Modifier.size(18.dp)) },
+                )
+                AssistChip(
+                    onClick = onPlanner,
+                    label = { Text("+${preferences.maxExtraMinutes} min") },
+                    leadingIcon = { Icon(Icons.Default.MoreTime, null, Modifier.size(18.dp)) },
+                )
             }
 
-            Button(onClick = onBuildRoute, enabled = !routeLoading, modifier = Modifier.fillMaxWidth().height(50.dp)) {
+            Button(
+                onClick = onBuildRoute,
+                enabled = !routeLoading,
+                modifier = Modifier.fillMaxWidth().height(50.dp),
+            ) {
                 Icon(Icons.Default.Route, null)
                 Spacer(Modifier.width(8.dp))
                 Text(
@@ -639,14 +707,28 @@ private fun PlaceFieldV2(
     supporting: String?,
     onClick: () -> Unit,
 ) {
-    Surface(shape = MaterialTheme.shapes.large, tonalElevation = 1.dp, modifier = Modifier.fillMaxWidth().clickable(onClick = onClick)) {
-        Row(Modifier.padding(horizontal = 14.dp, vertical = 9.dp), verticalAlignment = Alignment.CenterVertically) {
+    Surface(
+        shape = MaterialTheme.shapes.large,
+        tonalElevation = 1.dp,
+        modifier = Modifier.fillMaxWidth().clickable(onClick = onClick),
+    ) {
+        Row(
+            Modifier.padding(horizontal = 14.dp, vertical = 9.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
             Icon(icon, null, tint = MaterialTheme.colorScheme.primary)
             Spacer(Modifier.width(12.dp))
             Column(Modifier.weight(1f)) {
                 Text(label, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 Text(value, fontWeight = FontWeight.Medium, maxLines = 1)
-                if (!supporting.isNullOrBlank()) Text(supporting, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1)
+                if (!supporting.isNullOrBlank()) {
+                    Text(
+                        supporting,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                    )
+                }
             }
             Icon(Icons.Default.ChevronRight, null)
         }
@@ -666,30 +748,50 @@ private fun RouteSummaryBarV2(
     onPlanner: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    val included = route.scenePoints.filter { it.includedInRoute || it.id in route.autoStopIds }
+
     Card(
         modifier = modifier.fillMaxWidth(),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.97f)),
         elevation = CardDefaults.cardElevation(defaultElevation = 6.dp),
     ) {
         Column {
-            Row(Modifier.fillMaxWidth().padding(start = 12.dp, end = 4.dp, top = 8.dp, bottom = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-                Icon(if (route.character == RouteCharacter.DIRECT.name) Icons.Default.NearMe else Icons.Default.Explore, null, tint = MaterialTheme.colorScheme.primary)
+            Row(
+                Modifier.fillMaxWidth().padding(start = 12.dp, end = 4.dp, top = 8.dp, bottom = 8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Icon(
+                    if (route.character == RouteCharacter.DIRECT.name) Icons.Default.NearMe else Icons.Default.Explore,
+                    null,
+                    tint = MaterialTheme.colorScheme.primary,
+                )
                 Spacer(Modifier.width(9.dp))
                 Column(Modifier.weight(1f)) {
-                    Text(route.variantLabel ?: route.character.lowercase().replaceFirstChar { it.uppercase() }, fontWeight = FontWeight.Bold, maxLines = 1)
                     Text(
-                        "${(route.distanceMeters / 1000.0).let { String.format("%.1f km", it) }} · ${formatDurationV2(route.durationSeconds)} · +${route.totalExtraMinutes.roundToInt()}m",
+                        route.variantLabel ?: route.character.lowercase().replaceFirstChar { it.uppercase() },
+                        fontWeight = FontWeight.Bold,
+                        maxLines = 1,
+                    )
+                    Text(
+                        "${formatDistanceV2(route.distanceMeters)} · ${formatDurationV2(route.durationSeconds)} · +${route.totalExtraMinutes.roundToInt()}m total",
                         style = MaterialTheme.typography.labelMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
                 if (candidateCount > 1) {
-                    IconButton(onClick = onPrevious, modifier = Modifier.size(34.dp)) { Icon(Icons.Default.ChevronLeft, "Previous route") }
+                    IconButton(onClick = onPrevious, modifier = Modifier.size(34.dp)) {
+                        Icon(Icons.Default.ChevronLeft, "Previous route")
+                    }
                     Text("${candidateIndex + 1}/$candidateCount", style = MaterialTheme.typography.labelSmall)
-                    IconButton(onClick = onNext, modifier = Modifier.size(34.dp)) { Icon(Icons.Default.ChevronRight, "Next route") }
+                    IconButton(onClick = onNext, modifier = Modifier.size(34.dp)) {
+                        Icon(Icons.Default.ChevronRight, "Next route")
+                    }
                 }
                 IconButton(onClick = onToggle, modifier = Modifier.size(38.dp)) {
-                    Icon(if (expanded) Icons.Default.ExpandMore else Icons.Default.ExpandLess, if (expanded) "Minimize route details" else "Show route details")
+                    Icon(
+                        if (expanded) Icons.Default.ExpandMore else Icons.Default.ExpandLess,
+                        if (expanded) "Minimize route details" else "Show route details",
+                    )
                 }
             }
 
@@ -701,6 +803,32 @@ private fun RouteSummaryBarV2(
                         MetricV2("Visits", "${route.dwellMinutes}m", Modifier.weight(1f))
                         MetricV2("Score", route.experienceScore.roundToInt().toString(), Modifier.weight(1f))
                     }
+
+                    if (included.isNotEmpty()) {
+                        Text("Included stops", fontWeight = FontWeight.SemiBold)
+                        included.take(4).forEachIndexed { index, stop ->
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Surface(
+                                    shape = MaterialTheme.shapes.extraLarge,
+                                    color = MaterialTheme.colorScheme.primaryContainer,
+                                ) {
+                                    Text(
+                                        (index + 1).toString(),
+                                        modifier = Modifier.padding(horizontal = 9.dp, vertical = 4.dp),
+                                        fontWeight = FontWeight.Bold,
+                                    )
+                                }
+                                Spacer(Modifier.width(8.dp))
+                                Text(stop.name, Modifier.weight(1f), maxLines = 1)
+                                Text(
+                                    "${stop.suggestedDwellMinutes}m",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+                        }
+                    }
+
                     Row(Modifier.fillMaxWidth()) {
                         OutlinedButton(onClick = onStops, modifier = Modifier.weight(1f)) {
                             Icon(Icons.Default.AddLocationAlt, null, Modifier.size(18.dp))
@@ -722,7 +850,11 @@ private fun RouteSummaryBarV2(
 
 @Composable
 private fun MetricV2(label: String, value: String, modifier: Modifier = Modifier) {
-    Surface(shape = MaterialTheme.shapes.medium, color = MaterialTheme.colorScheme.surfaceContainerLow, modifier = modifier) {
+    Surface(
+        shape = MaterialTheme.shapes.medium,
+        color = MaterialTheme.colorScheme.surfaceContainerLow,
+        modifier = modifier,
+    ) {
         Column(Modifier.padding(8.dp), horizontalAlignment = Alignment.CenterHorizontally) {
             Text(value, fontWeight = FontWeight.Bold)
             Text(label, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -737,12 +869,30 @@ private fun MinimizedPanelDockV2(
     onClose: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    val label = if (panel == ExperiencePanelV2.PLANNER) "Planner" else "Smart Stops"
-    Surface(modifier = modifier, shape = MaterialTheme.shapes.extraLarge, tonalElevation = 6.dp, shadowElevation = 8.dp) {
-        Row(Modifier.padding(start = 10.dp, end = 2.dp, top = 3.dp, bottom = 3.dp), verticalAlignment = Alignment.CenterVertically) {
-            Icon(if (panel == ExperiencePanelV2.PLANNER) Icons.Default.Tune else Icons.Default.AddLocationAlt, null, tint = MaterialTheme.colorScheme.primary)
+    val (label, icon) = when (panel) {
+        ExperiencePanelV2.START -> "Start search" to Icons.Default.MyLocation
+        ExperiencePanelV2.DESTINATION -> "Destination" to Icons.Default.Flag
+        ExperiencePanelV2.PLANNER -> "Planner" to Icons.Default.Tune
+        ExperiencePanelV2.STOPS -> "Smart Stops" to Icons.Default.AddLocationAlt
+        ExperiencePanelV2.STOP_KIND -> "Stop type" to Icons.Default.Category
+        ExperiencePanelV2.STOP_PLACE -> "Add stop" to Icons.Default.Place
+    }
+
+    Surface(
+        modifier = modifier,
+        shape = MaterialTheme.shapes.extraLarge,
+        tonalElevation = 6.dp,
+        shadowElevation = 8.dp,
+    ) {
+        Row(
+            Modifier.padding(start = 10.dp, end = 2.dp, top = 3.dp, bottom = 3.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Icon(icon, null, tint = MaterialTheme.colorScheme.primary)
             TextButton(onClick = onRestore) { Text(label) }
-            IconButton(onClick = onClose, modifier = Modifier.size(34.dp)) { Icon(Icons.Default.Close, "Close minimized $label") }
+            IconButton(onClick = onClose, modifier = Modifier.size(34.dp)) {
+                Icon(Icons.Default.Close, "Close minimized $label")
+            }
         }
     }
 }
@@ -762,7 +912,8 @@ private fun StopKindDialogV2(
                 kinds.forEach { kind ->
                     Surface(
                         shape = MaterialTheme.shapes.medium,
-                        color = if (kind == selected) MaterialTheme.colorScheme.secondaryContainer else MaterialTheme.colorScheme.surface,
+                        color = if (kind == selected) MaterialTheme.colorScheme.secondaryContainer
+                        else MaterialTheme.colorScheme.surface,
                         modifier = Modifier.fillMaxWidth().clickable { onSelect(kind) },
                     ) {
                         Text("${kind.emoji} ${kind.label}", Modifier.padding(11.dp), fontWeight = FontWeight.Medium)
@@ -776,11 +927,29 @@ private fun StopKindDialogV2(
 }
 
 private fun quickModeForV2(plan: TripPlan, preferences: ScenicPreferences): QuickModeV2? = when {
-    plan.routeCharacter == RouteCharacter.DIRECT && !plan.autoSuggestStops && preferences.maxExtraMinutes <= 15 -> QuickModeV2.DIRECT
-    plan.routeCharacter == RouteCharacter.BALANCED && plan.mode == PlanningMode.QUICK && preferences.maxExtraMinutes in 20..45 -> QuickModeV2.BALANCED
-    plan.routeCharacter == RouteCharacter.BEAUTIFUL && plan.mode == PlanningMode.DAY_TRIP && preferences.maxExtraMinutes >= 90 -> QuickModeV2.DISCOVER
-    plan.routeCharacter == RouteCharacter.BEAUTIFUL && plan.mode == PlanningMode.QUICK && preferences.maxExtraMinutes in 45..89 -> QuickModeV2.SCENIC
+    plan.routeCharacter == RouteCharacter.DIRECT &&
+        !plan.autoSuggestStops &&
+        preferences.maxExtraMinutes <= 15 -> QuickModeV2.DIRECT
+
+    plan.routeCharacter == RouteCharacter.BALANCED &&
+        plan.mode == PlanningMode.QUICK &&
+        preferences.maxExtraMinutes in 20..45 -> QuickModeV2.BALANCED
+
+    plan.routeCharacter == RouteCharacter.BEAUTIFUL &&
+        plan.mode == PlanningMode.DAY_TRIP &&
+        preferences.maxExtraMinutes >= 90 -> QuickModeV2.DISCOVER
+
+    plan.routeCharacter == RouteCharacter.BEAUTIFUL &&
+        plan.mode == PlanningMode.QUICK &&
+        preferences.maxExtraMinutes in 45..89 -> QuickModeV2.SCENIC
+
     else -> null
+}
+
+private fun formatDistanceV2(meters: Double): String = if (meters >= 1000) {
+    String.format(Locale.getDefault(), "%.1f km", meters / 1000.0)
+} else {
+    "${meters.roundToInt()} m"
 }
 
 private fun formatDurationV2(seconds: Double): String {
