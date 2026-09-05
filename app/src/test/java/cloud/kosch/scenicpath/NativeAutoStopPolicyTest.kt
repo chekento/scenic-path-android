@@ -54,12 +54,20 @@ class NativeAutoStopPolicyTest {
     }
 
     @Test
-    fun automaticStopLimitMatchesProductionBudgetTiers() {
+    fun automaticStopLimitScalesStronglyWithExplorationBudget() {
         assertEquals(0, NativeAutoStopPolicy.limit(29, 8))
         assertEquals(1, NativeAutoStopPolicy.limit(30, 8))
-        assertEquals(2, NativeAutoStopPolicy.limit(100, 8))
-        assertEquals(3, NativeAutoStopPolicy.limit(210, 8))
-        assertEquals(2, NativeAutoStopPolicy.limit(300, 2))
+        assertEquals(2, NativeAutoStopPolicy.limit(60, 8))
+        assertEquals(3, NativeAutoStopPolicy.limit(100, 8))
+        assertEquals(4, NativeAutoStopPolicy.limit(150, 8))
+        assertEquals(5, NativeAutoStopPolicy.limit(210, 8))
+        assertEquals(6, NativeAutoStopPolicy.limit(300, 8))
+        assertEquals(2, NativeAutoStopPolicy.limit(360, 2))
+    }
+
+    @Test
+    fun largeBudgetAlsoWidensCandidateDistance() {
+        assertTrue(NativeAutoStopPolicy.distanceLimitMeters(360) > NativeAutoStopPolicy.distanceLimitMeters(45) * 3)
     }
 
     @Test
