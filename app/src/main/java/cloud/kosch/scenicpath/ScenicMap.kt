@@ -27,8 +27,6 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.coroutineScope
-import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.maplibre.android.camera.CameraPosition
 import org.maplibre.android.camera.CameraUpdateFactory
@@ -242,6 +240,7 @@ fun ScenicMap(
                 maxResults = MAX_SCENIC_MARKERS,
             )
             ScenicPoiSharedState.publish(routePoints, retainedHighlights)
+            RoutePoiDiscoveryCoordinator.seed(routePoints, activeKinds, routeHighlights)
         }
 
         suspend fun commit(points: List<ScenePointUi>) {
@@ -257,25 +256,16 @@ fun ScenicMap(
             }
         }
 
-        coroutineScope {
-            launch(Dispatchers.IO) {
-                commit(runCatching { RapidRoutePoiDiscovery.discover(routePoints, activeKinds, 220) }.getOrElse { emptyList() })
-            }
-            launch(Dispatchers.IO) {
-                commit(runCatching { FastRoutePoiDiscovery.discover(routePoints, activeKinds, 220) }.getOrElse { emptyList() })
-            }
-            launch(Dispatchers.IO) {
-                commit(runCatching {
-                    PrecisionRoutePoiDiscovery.discover(
-                        route = routePoints,
-                        enabledKinds = activeKinds,
-                        maxResults = MAX_SCENIC_MARKERS,
-                        radiusMeters = 15_000,
-                        maxSamples = 10,
-                    )
-                }.getOrElse { emptyList() })
-            }
-        }
+        // One coordinated discovery per route/category fingerprint. Switching Route 1/2/3 no
+        // longer launches Fast + Rapid + Precision simultaneously on every map visit.
+        val minimum = RoutePoiDiscoveryCoordinator.minimumUsefulCount(routePoints)
+        val discovered = RoutePoiDiscoveryCoordinator.discover(
+            route = routePoints,
+            enabledKinds = activeKinds,
+            maxResults = MAX_SCENIC_MARKERS,
+            broad = routeHighlights.size < minimum,
+        )
+        commit(discovered)
     }
 
     val mapView = remember(context) {
