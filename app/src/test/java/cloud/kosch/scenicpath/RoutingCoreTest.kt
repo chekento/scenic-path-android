@@ -35,6 +35,28 @@ class RoutingCoreTest {
     }
 
     @Test
+    fun committedAdvancedControlsAreNotOverwrittenByCharacterDuringExecution() {
+        val committed = ScenicPreferences(
+            maxExtraMinutes = 180,
+            maxExtraPercent = 72,
+            avoidMotorways = false,
+            avoidTolls = true,
+            windingness = 31,
+            hilliness = 19,
+            constraintsCommitted = true,
+        )
+        val executed = committed.forPlan(
+            TripPlan(mode = PlanningMode.DAY_TRIP, routeCharacter = RouteCharacter.BEAUTIFUL)
+        )
+        assertEquals(180, executed.maxExtraMinutes)
+        assertEquals(72, executed.maxExtraPercent)
+        assertFalse(executed.avoidMotorways)
+        assertTrue(executed.avoidTolls)
+        assertEquals(31, executed.windingness)
+        assertEquals(19, executed.hilliness)
+    }
+
+    @Test
     fun beautifulCharacterKeepsAUserBudgetThatIsAlreadyLarger() {
         val source = ScenicPreferences(
             maxExtraMinutes = 180,
