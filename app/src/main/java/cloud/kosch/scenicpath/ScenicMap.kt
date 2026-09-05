@@ -78,6 +78,7 @@ fun ScenicMap(
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
     val density = LocalDensity.current
+    val routeKey = remember(routePoints) { ScenicPoiSharedState.routeKey(routePoints) }
 
     var mapRef by remember { mutableStateOf<MapLibreMap?>(null) }
     var styleLoaded by remember { mutableStateOf(false) }
@@ -86,11 +87,13 @@ fun ScenicMap(
     var initialLocationFocused by remember { mutableStateOf(false) }
     var cameraRevision by remember { mutableIntStateOf(0) }
 
-    var localHighlights by remember { mutableStateOf<List<ScenePointUi>>(emptyList()) }
-    var retainedHighlights by remember { mutableStateOf<List<ScenePointUi>>(emptyList()) }
-    var selectedHighlight by remember { mutableStateOf<ScenePointUi?>(null) }
-    var selectedDetails by remember { mutableStateOf<ScenicPoiDetails?>(null) }
-    var detailsLoading by remember { mutableStateOf(false) }
+    // These pools are candidate-scoped. Switching Alternative 1 -> 2 must not retain markers
+    // discovered for another road corridor. Switching back restores the route-keyed shared pool.
+    var localHighlights by remember(routeKey) { mutableStateOf<List<ScenePointUi>>(emptyList()) }
+    var retainedHighlights by remember(routeKey) { mutableStateOf<List<ScenePointUi>>(emptyList()) }
+    var selectedHighlight by remember(routeKey) { mutableStateOf<ScenePointUi?>(null) }
+    var selectedDetails by remember(routeKey) { mutableStateOf<ScenicPoiDetails?>(null) }
+    var detailsLoading by remember(routeKey) { mutableStateOf(false) }
 
     var navigationActive by remember { mutableStateOf(false) }
     var navigationFollow by remember { mutableStateOf(true) }
