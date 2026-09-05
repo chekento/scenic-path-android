@@ -22,10 +22,32 @@ jobs:
       - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '9.1.0'
+
       - name: Build debug APK
         run: gradle :app:assembleDebug
-      - name: Upload APK
+
+      - name: Android lint
+        run: gradle :app:lintRelease
+
+      - name: Build unsigned release AAB
+        run: gradle :app:bundleRelease
+
+      - name: Upload debug APK
         uses: actions/upload-artifact@v4
         with:
           name: scenic-path-debug-apk
           path: app/build/outputs/apk/debug/*.apk
+
+      - name: Upload release-build smoke AAB
+        uses: actions/upload-artifact@v4
+        with:
+          name: scenic-path-release-aab-unsigned-smoke
+          path: app/build/outputs/bundle/release/*.aab
+
+      - name: Upload lint report on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: scenic-path-lint-report
+          path: app/build/reports/lint-results-*.html
+          if-no-files-found: ignore
