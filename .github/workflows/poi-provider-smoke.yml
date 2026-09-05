@@ -1,0 +1,47 @@
+name: POI provider smoke
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: poi-smoke-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  photon-category-filter:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Verify category-filtered reverse search returns a restaurant
+        shell: bash
+        run: |
+          set -euo pipefail
+          URL='https://photon.komoot.io/reverse?lon=10.24&lat=53.67&radius=20&limit=10&lang=de&include=osm.amenity.restaurant'
+          curl --fail --silent --show-error --retry 2 --retry-delay 2 "$URL" > /tmp/restaurant.json
+          python3 - <<'PY'
+          import json
+          data=json.load(open('/tmp/restaurant.json'))
+          features=data.get('features', [])
+          assert features, 'Photon returned no restaurant features near Ahrensburg'
+          values={(f.get('properties',{}).get('osm_key'), f.get('properties',{}).get('osm_value')) for f in features}
+          assert ('amenity','restaurant') in values, f'Expected amenity=restaurant, got {values}'
+          print('restaurant features:', len(features))
+          print('sample:', features[0].get('properties',{}).get('name'))
+          PY
+
+      - name: Verify bbox plus include works without text query
+        shell: bash
+        run: |
+          set -euo pipefail
+          URL='https://photon.komoot.io/api?bbox=8.70%2C51.85%2C9.00%2C52.05&lon=8.87&lat=51.94&limit=20&lang=de&include=osm.tourism.museum'
+          curl --fail --silent --show-error --retry 2 --retry-delay 2 "$URL" > /tmp/museums.json
+          python3 - <<'PY'
+          import json
+          data=json.load(open('/tmp/museums.json'))
+          features=data.get('features', [])
+          assert features, 'Photon bbox/include returned no museums around Detmold'
+          values={(f.get('properties',{}).get('osm_key'), f.get('properties',{}).get('osm_value')) for f in features}
+          assert ('tourism','museum') in values, f'Expected tourism=museum, got {values}'
+          print('museum features:', len(features))
+          print('sample:', features[0].get('properties',{}).get('name'))
+          PY
