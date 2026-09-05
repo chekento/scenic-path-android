@@ -5,19 +5,24 @@ import kotlin.math.ln
 /** Pure selection policy shared by the physical/debug vehicle router and unit tests. */
 object NativeAutoStopPolicy {
     fun limit(maxExtraMinutes: Int, configuredMaxStops: Int): Int = when {
-        maxExtraMinutes >= 210 -> minOf(3, configuredMaxStops.coerceAtLeast(0))
-        maxExtraMinutes >= 100 -> minOf(2, configuredMaxStops.coerceAtLeast(0))
+        maxExtraMinutes >= 420 -> minOf(7, configuredMaxStops.coerceAtLeast(0))
+        maxExtraMinutes >= 300 -> minOf(6, configuredMaxStops.coerceAtLeast(0))
+        maxExtraMinutes >= 210 -> minOf(5, configuredMaxStops.coerceAtLeast(0))
+        maxExtraMinutes >= 150 -> minOf(4, configuredMaxStops.coerceAtLeast(0))
+        maxExtraMinutes >= 100 -> minOf(3, configuredMaxStops.coerceAtLeast(0))
+        maxExtraMinutes >= 60 -> minOf(2, configuredMaxStops.coerceAtLeast(0))
         maxExtraMinutes >= 30 -> minOf(1, configuredMaxStops.coerceAtLeast(0))
         else -> 0
     }
 
     fun distanceLimitMeters(maxExtraMinutes: Int): Int = when {
         maxExtraMinutes < 45 -> 6_000
-        maxExtraMinutes < 90 -> 10_000
-        maxExtraMinutes < 150 -> 14_000
-        maxExtraMinutes < 210 -> 18_000
-        maxExtraMinutes < 300 -> 23_000
-        else -> 27_000
+        maxExtraMinutes < 90 -> 12_000
+        maxExtraMinutes < 150 -> 20_000
+        maxExtraMinutes < 210 -> 30_000
+        maxExtraMinutes < 300 -> 42_000
+        maxExtraMinutes < 420 -> 58_000
+        else -> 70_000
     }
 
     fun foodMatches(point: ScenePointUi, preferences: ScenicPreferences): Boolean {
@@ -92,7 +97,17 @@ object NativeAutoStopPolicy {
         val ratingBonus = point.rating?.let { rating ->
             rating * 9.0 + ln(((point.ratingCount ?: 0) + 10).toDouble()) * 2.5
         } ?: 0.0
-        return point.relevance * 55.0 + point.suggestionScore * 18.0 + dna * 38.0 + ratingBonus -
-            point.distanceFromRouteMeters.coerceAtLeast(0) / 430.0 - point.suggestedDwellMinutes.coerceAtLeast(0) * 0.18
+        val dwellPenalty = when {
+            preferences.maxExtraMinutes >= 300 -> 0.025
+            preferences.maxExtraMinutes >= 210 -> 0.045
+            preferences.maxExtraMinutes >= 120 -> 0.08
+            preferences.maxExtraMinutes >= 60 -> 0.13
+            else -> 0.20
+        }
+        val longVisitBonus = if (preferences.maxExtraMinutes >= 180) {
+            point.suggestedDwellMinutes.coerceIn(30, 180) * 0.055
+        } else 0.0
+        return point.relevance * 55.0 + point.suggestionScore * 18.0 + dna * 38.0 + ratingBonus + longVisitBonus -
+            point.distanceFromRouteMeters.coerceAtLeast(0) / 430.0 - point.suggestedDwellMinutes.coerceAtLeast(0) * dwellPenalty
     }
 }
