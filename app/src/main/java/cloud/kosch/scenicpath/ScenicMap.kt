@@ -203,6 +203,12 @@ fun ScenicMap(
         }
     }
 
+    // A POI detail card is an exclusive map OSD just like live navigation. Reuse the existing
+    // parent callback so route controls are hidden while either overlay owns the map surface.
+    LaunchedEffect(navigationActive, selectedHighlight?.id) {
+        onNavigationActiveChange(navigationActive || selectedHighlight != null)
+    }
+
     LaunchedEffect(routePoints, activeKinds) {
         selectedHighlight = null
         if (routePoints.size < 2) {
@@ -388,7 +394,7 @@ fun ScenicMap(
             @Suppress("UNUSED_VARIABLE") val keepProjectionReactive = revision
         }
 
-        if (!navigationActive && routePoints.size >= 2 && userLocation != null) {
+        if (!navigationActive && selectedHighlight == null && routePoints.size >= 2 && userLocation != null) {
             ExtendedFloatingActionButton(
                 onClick = {
                     navigationActive = true
