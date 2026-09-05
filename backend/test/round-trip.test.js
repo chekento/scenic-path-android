@@ -28,6 +28,13 @@ test("round-trip seeds create several genuinely different directions", () => {
   assert.equal(new Set(firstPoints).size, 5);
 });
 
+test("growing plus-route count changes the production loop generation", () => {
+  const first = roundTripWaypointSets({ origin, preferences, autoSuggestStops: true, count: 4 });
+  const next = roundTripWaypointSets({ origin, preferences, autoSuggestStops: true, count: 5 });
+  const signature = sets => sets.map(set => set.map(point => `${point.lat.toFixed(4)},${point.lon.toFixed(4)}`).join("|")).join(";");
+  assert.notEqual(signature(first), signature(next));
+});
+
 test("Smart Stops reserve outing time instead of consuming the entire drive budget", () => {
   const withStops = targetDriveMinutes(preferences, true, 0);
   const roadsOnly = targetDriveMinutes(preferences, false, 0);
