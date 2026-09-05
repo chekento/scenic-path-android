@@ -198,6 +198,7 @@ fun ScenicExperienceRootV2(
         fromOverride: GeoPoint? = null,
         planOverride: TripPlan? = null,
         preserveSelection: Boolean = false,
+        appendExistingAlternatives: Boolean = false,
     ) {
         val from = fromOverride ?: origin
         val to = destination
@@ -229,6 +230,8 @@ fun ScenicExperienceRootV2(
         minimizedPanel = null
         routeBarExpanded = false
         val previousIndex = selectedCandidateIndex
+        val previousRoutePlan = routePlan
+        val previousCount = previousRoutePlan?.candidates?.size ?: 0
 
         val effectivePreferences = preferences.copy(vehicle = vehicleProfile)
         scope.launch {
@@ -236,9 +239,16 @@ fun ScenicExperienceRootV2(
                 .onSuccess { result ->
                     routeLoading = false
                     if (result.candidates.isNotEmpty()) {
-                        routePlan = result
+                        val appliedResult = if (appendExistingAlternatives && previousRoutePlan != null) {
+                            RouteAlternativeMergePolicy.merge(
+                                existing = previousRoutePlan,
+                                refreshed = result,
+                                requestedCount = buildPlan.requestedAlternatives,
+                            )
+                        } else result
+                        routePlan = appliedResult
                         selectedCandidateIndex = if (preserveSelection) {
-                            previousIndex.coerceIn(0, result.candidates.lastIndex)
+                            previousIndex.coerceIn(0, appliedResult.candidates.lastIndex)
                         } else 0
                         routeDirty = false
                         preferences = effectivePreferences
@@ -246,6 +256,10 @@ fun ScenicExperienceRootV2(
                         if (fromOverride != null) startSelection = null
                         topExpanded = false
                         routeBarExpanded = false
+                        if (appendExistingAlternatives && appliedResult.candidates.size <= previousCount) {
+                            routeIssue = RouteIssueV2.NONE
+                            routeError = null
+                        }
                     } else {
                         routeIssue = RouteIssueV2.RETRY
                         routeError = if (routePlan != null) {
@@ -274,7 +288,11 @@ fun ScenicExperienceRootV2(
         if (routeLoading || plan.requestedAlternatives >= 5) return
         val next = plan.copy(requestedAlternatives = (plan.requestedAlternatives + 1).coerceAtMost(5))
         plan = next
-        executeBuildRoute(planOverride = next, preserveSelection = true)
+        executeBuildRoute(
+            planOverride = next,
+            preserveSelection = true,
+            appendExistingAlternatives = true,
+        )
     }
 
     fun makeRoundTripFromStart() {
@@ -841,11 +859,15 @@ private fun RouteSummaryBarV2(
                     }
                     Row(Modifier.fillMaxWidth()) {
                         OutlinedButton(onClick = onStops, modifier = Modifier.weight(1f)) {
-                            Icon(Icons.Default.AddLocationAlt, null, Modifier.size(18.dp)); Spacer(Modifier.width(6.dp)); Text("Stops")
+                            Icon(Icons.Default.AddLocationAlt, null, Modifier.size(18.dp))
+                            Spacer(Modifier.width(6.dp))
+                            Text("Stops")
                         }
                         Spacer(Modifier.width(8.dp))
                         Button(onClick = onPlanner, modifier = Modifier.weight(1f)) {
-                            Icon(Icons.Default.Tune, null, Modifier.size(18.dp)); Spacer(Modifier.width(6.dp)); Text("Adjust")
+                            Icon(Icons.Default.Tune, null, Modifier.size(18.dp))
+                            Spacer(Modifier.width(6.dp))
+                            Text("Adjust")
                         }
                     }
                 }
