@@ -19,6 +19,20 @@ class JourneyStagePolicyTest {
     }
 
     @Test
+    fun visitTimeCanTurnSameDriveIntoMultiDayItinerary() {
+        val car = VehicleProfile.defaults(VehicleKind.CAR).copy(dailyTravelHours = 7.0)
+        assertTrue(JourneyStagePolicy.overnightBreaks(route, 6.0 * 3600.0, car).isEmpty())
+        val withMuseum = JourneyStagePolicy.overnightBreaks(
+            route = route,
+            durationSeconds = 6.0 * 3600.0,
+            vehicle = car,
+            dwellMinutes = 120,
+        )
+        assertEquals(1, withMuseum.size)
+        assertTrue(withMuseum.single().routeFraction < 0.90)
+    }
+
+    @Test
     fun twentyHourJourneyCreatesTwoSevenHourDayEnds() {
         val car = VehicleProfile.defaults(VehicleKind.CAR).copy(
             dailyTravelHours = 7.0,
