@@ -2,7 +2,11 @@ const API_BASE = "https://places-api.foursquare.com";
 const API_VERSION = "2025-06-17";
 const ATTRIBUTION = "Powered by Foursquare";
 
-const finite = value => Number.isFinite(Number(value)) ? Number(value) : null;
+const finite = value => {
+  if (value === null || value === undefined || value === "") return null;
+  const numeric = Number(value);
+  return Number.isFinite(numeric) ? numeric : null;
+};
 const clamp = (value, min = 0, max = 1) => Math.max(min, Math.min(max, value));
 
 export function foursquareAttribution() {
