@@ -5,7 +5,6 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.withContext
-import kotlinx.coroutines.withTimeoutOrNull
 import kotlin.math.atan2
 import kotlin.math.cos
 import kotlin.math.roundToInt
@@ -54,6 +53,9 @@ object NativeRoundTripPlanner {
         }
         if (rawRoutes.isEmpty()) error("No routable scenic loop could be created around this start point")
 
+        // Route construction may evaluate several loop geometries in parallel, but public POI
+        // providers are intentionally coordinated and serialized. This prevents the third/fourth
+        // alternative from exploding into dozens of simultaneous Photon/Overpass requests.
         val enriched = coroutineScope {
             rawRoutes.map { (index, shaping, route) ->
                 async(Dispatchers.IO) {
@@ -97,6 +99,7 @@ object NativeRoundTripPlanner {
         diverse.forEach { candidate ->
             if (candidate.scenePoints.isNotEmpty()) {
                 ScenicPoiSharedState.publish(candidate.points, candidate.scenePoints)
+                RoutePoiDiscoveryCoordinator.seed(candidate.points, plan.enabledSceneKinds, candidate.scenePoints)
             }
         }
         RoutePlanUi(
@@ -118,47 +121,12 @@ object NativeRoundTripPlanner {
         route: List<GeoPoint>,
         enabledKinds: Set<StopKind>,
         budgetMinutes: Int,
-    ): List<ScenePointUi> = coroutineScope {
-        val fast = async(Dispatchers.IO) {
-            withTimeoutOrNull(13_500) {
-                runCatching {
-                    FastRoutePoiDiscovery.discover(route, enabledKinds, maxResults = 120)
-                }.getOrElse { emptyList() }
-            }.orEmpty()
-        }
-        val rapid = async(Dispatchers.IO) {
-            withTimeoutOrNull(8_000) {
-                runCatching {
-                    RapidRoutePoiDiscovery.discover(route, enabledKinds, maxResults = 120)
-                }.getOrElse { emptyList() }
-            }.orEmpty()
-        }
-        val broad = async(Dispatchers.IO) {
-            if (budgetMinutes < 90) return@async emptyList()
-            val radius = when {
-                budgetMinutes >= 300 -> 42_000
-                budgetMinutes >= 210 -> 34_000
-                budgetMinutes >= 150 -> 28_000
-                else -> 22_000
-            }
-            withTimeoutOrNull(10_000) {
-                runCatching {
-                    PrecisionRoutePoiDiscovery.discover(
-                        route = route,
-                        enabledKinds = enabledKinds,
-                        maxResults = 120,
-                        radiusMeters = radius,
-                        maxSamples = 10,
-                    )
-                }.getOrElse { emptyList() }
-            }.orEmpty()
-        }
-        PrecisionRoutePoiDiscovery.mergeForDisplay(
-            first = fast.await() + rapid.await(),
-            second = broad.await(),
-            maxResults = 220,
-        )
-    }
+    ): List<ScenePointUi> = RoutePoiDiscoveryCoordinator.discover(
+        route = route,
+        enabledKinds = enabledKinds,
+        maxResults = 220,
+        broad = budgetMinutes >= 120,
+    )
 
     private data class RoundRaw(
         val index: Int,
