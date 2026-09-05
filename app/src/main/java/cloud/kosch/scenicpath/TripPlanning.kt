@@ -45,6 +45,11 @@ data class TripPlan(
     val requestedAlternatives: Int = 2,
 )
 
+/**
+ * RouteCharacter is only a routing-priority axis. It never silently shortens a time budget.
+ * The visible Quick-mode presets (Direct/Balanced/Scenic/Discover) are responsible for choosing
+ * concrete budget defaults such as Direct = 10 minutes.
+ */
 fun ScenicPreferences.forCharacter(character: RouteCharacter): ScenicPreferences = when (character) {
     RouteCharacter.BEAUTIFUL -> copy(
         maxExtraMinutes = maxOf(maxExtraMinutes, 45),
@@ -61,8 +66,6 @@ fun ScenicPreferences.forCharacter(character: RouteCharacter): ScenicPreferences
         hilliness = 40,
     )
     RouteCharacter.DIRECT -> copy(
-        maxExtraMinutes = 10,
-        maxExtraPercent = 10,
         avoidMotorways = false,
         windingness = 20,
         hilliness = 20,
@@ -70,19 +73,9 @@ fun ScenicPreferences.forCharacter(character: RouteCharacter): ScenicPreferences
     RouteCharacter.CUSTOM -> this
 }
 
-/**
- * Journey scope and route priority are independent axes. In point-to-point mode Direct is the
- * strict 10-minute preset. In Day trip mode the selected time budget remains authoritative:
- * Direct/Balanced/Scenic only decide how the available outing time should be routed.
- */
 fun ScenicPreferences.forPlan(plan: TripPlan): ScenicPreferences {
-    val requestedMinutes = maxExtraMinutes
-    val requestedPercent = maxExtraPercent
     val characterized = forCharacter(plan.routeCharacter)
     return if (plan.mode == PlanningMode.DAY_TRIP) {
-        characterized.copy(
-            maxExtraMinutes = maxOf(30, requestedMinutes),
-            maxExtraPercent = maxOf(characterized.maxExtraPercent, requestedPercent),
-        )
+        characterized.copy(maxExtraMinutes = maxOf(30, characterized.maxExtraMinutes))
     } else characterized
 }
