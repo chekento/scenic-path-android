@@ -82,10 +82,14 @@ object LiveNavigationEngine {
 
         val nearestIndex = nearestRouteIndex(route, location)
         val offRoute = haversineMeters(route[nearestIndex], location)
+        val destinationDistance = haversineMeters(route.last(), location)
         val cumulative = cumulativeMeters(route)
         val total = cumulative.last().coerceAtLeast(1.0)
         val progressMeters = cumulative[nearestIndex]
-        val remaining = (total - progressMeters).coerceAtLeast(0.0)
+        val routeRemaining = (total - progressMeters).coerceAtLeast(0.0)
+        // If GPS has snapped nearest to the final polyline point while the user is still physically
+        // away from the destination, keep a meaningful remaining distance instead of reporting 0 m.
+        val remaining = if (offRoute > 90.0) max(routeRemaining, destinationDistance) else routeRemaining
         val progress = (progressMeters / total).coerceIn(0.0, 1.0)
 
         val routeBearing = when {
@@ -106,9 +110,18 @@ object LiveNavigationEngine {
             .filter { (_, index, _) -> index >= nearestIndex - 2 }
             .minByOrNull { (_, index, _) -> index }
         val nextDistance = next?.let { (_, _, meters) -> (meters - progressMeters).coerceAtLeast(0.0) }
-        val arrived = remaining < 80.0
+
+        // Route progress alone is insufficient for arrival: a user can be geographically closest
+        // to the final route vertex while still hundreds of metres away. Arrival therefore requires
+        // actual physical proximity to the destination.
+        val arrived = destinationDistance < 80.0
         val maneuver = if (arrived) {
-            NavigationManeuver(NavigationTurn.ARRIVE, "You have reached your destination", remaining, route.lastIndex)
+            NavigationManeuver(
+                NavigationTurn.ARRIVE,
+                "You have reached your destination",
+                destinationDistance,
+                route.lastIndex,
+            )
         } else {
             findNextManeuver(route, cumulative, nearestIndex, progressMeters)
         }
