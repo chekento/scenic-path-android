@@ -47,7 +47,7 @@ class MainActivity : ComponentActivity() {
 
                 Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
                     Box(Modifier.fillMaxSize()) {
-                        ScenicExperienceRoot(
+                        ScenicExperienceRootV2(
                             locationPermissionGranted = locationPermissionGranted,
                             requestLocationPermission = {
                                 permissionLauncher.launch(
@@ -59,8 +59,8 @@ class MainActivity : ComponentActivity() {
                             },
                         )
 
-                        // One always-reachable Settings control. The emoji also shows which
-                        // transport network will be used by the next route calculation.
+                        // Always reachable, but placed on the opposite side of the minimized
+                        // route-panel dock so OSD controls never cover each other.
                         SmallFloatingActionButton(
                             onClick = { showVehicleSettings = true },
                             modifier = Modifier.align(Alignment.CenterStart).padding(start = 14.dp),
