@@ -1,13 +1,13 @@
 package cloud.kosch.scenicpath
 
 enum class PlanningMode(val label: String) {
-    QUICK("Quick route"),
+    QUICK("Point-to-point"),
     DAY_TRIP("Day trip"),
     ROAD_TRIP("Road trip")
 }
 
 enum class RouteCharacter(val label: String) {
-    BEAUTIFUL("Beautiful"),
+    BEAUTIFUL("Scenic"),
     BALANCED("Balanced"),
     DIRECT("Direct"),
     CUSTOM("Custom")
