@@ -54,8 +54,6 @@ fun ScenicPreferences.forCharacter(character: RouteCharacter): ScenicPreferences
         hilliness = 60,
     )
     RouteCharacter.BALANCED -> copy(
-        // A character preset is a coherent baseline. Explicit exceptions remain available through
-        // the Advanced constraints / Custom character instead of leaking in from the previous mode.
         maxExtraMinutes = maxOf(maxExtraMinutes, 30),
         maxExtraPercent = maxOf(maxExtraPercent, 25),
         avoidMotorways = false,
@@ -70,4 +68,21 @@ fun ScenicPreferences.forCharacter(character: RouteCharacter): ScenicPreferences
         hilliness = 20,
     )
     RouteCharacter.CUSTOM -> this
+}
+
+/**
+ * Journey scope and route priority are independent axes. In point-to-point mode Direct is the
+ * strict 10-minute preset. In Day trip mode the selected time budget remains authoritative:
+ * Direct/Balanced/Scenic only decide how the available outing time should be routed.
+ */
+fun ScenicPreferences.forPlan(plan: TripPlan): ScenicPreferences {
+    val requestedMinutes = maxExtraMinutes
+    val requestedPercent = maxExtraPercent
+    val characterized = forCharacter(plan.routeCharacter)
+    return if (plan.mode == PlanningMode.DAY_TRIP) {
+        characterized.copy(
+            maxExtraMinutes = maxOf(30, requestedMinutes),
+            maxExtraPercent = maxOf(characterized.maxExtraPercent, requestedPercent),
+        )
+    } else characterized
 }
