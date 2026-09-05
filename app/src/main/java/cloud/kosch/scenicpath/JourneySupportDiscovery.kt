@@ -20,10 +20,9 @@ import kotlin.math.sin
 import kotlin.math.sqrt
 
 /**
- * Small, route-support-focused OSM discovery around planned day ends and e-bike range anchors.
- * It is intentionally separate from scenic POI scoring: sleep and charge needs are logistics,
- * not scenery. Provider failure falls back to an honest search-area marker rather than inventing
- * a hotel, parking place or charger.
+ * Route-support-focused OSM discovery around planned day ends and e-bike range anchors.
+ * Sleep/charge logistics remain separate from scenic scoring, while each overnight area also gets
+ * a deliberately wide Scenic neighborhood search for evening/next-morning exploration.
  */
 object JourneySupportDiscovery {
     private val endpoints = listOf(
@@ -35,58 +34,94 @@ object JourneySupportDiscovery {
     suspend fun discover(
         route: RouteCandidateUi,
         vehicle: VehicleProfile,
+        enabledKinds: Set<StopKind> = prototypeSelectableSceneKinds,
     ): List<ScenePointUi> = withContext(Dispatchers.IO) {
-        val overnight = JourneyStagePolicy.overnightBreaks(route.points, route.durationSeconds, vehicle)
+        val overnight = JourneyStagePolicy.overnightBreaks(
+            route.points,
+            route.durationSeconds,
+            vehicle,
+            dwellMinutes = route.dwellMinutes,
+        )
         val charging = JourneyStagePolicy.eBikeChargeAnchors(route.points, route.distanceMeters, vehicle)
         if (overnight.isEmpty() && charging.isEmpty()) return@withContext emptyList()
 
         coroutineScope {
             val overnightJobs = overnight.map { stage ->
                 async(Dispatchers.IO) {
-                    withTimeoutOrNull(7_500) {
+                    val support = withTimeoutOrNull(9_000) {
                         runCatching { discoverOvernight(stage, vehicle) }.getOrElse { emptyList() }
                     }.orEmpty().ifEmpty { listOf(overnightFallback(stage, vehicle)) }
+                    val scenic = withTimeoutOrNull(10_500) {
+                        runCatching { discoverScenicAroundOvernight(stage, enabledKinds) }.getOrElse { emptyList() }
+                    }.orEmpty()
+                    (support + scenic).distinctBy { it.id }
                 }
             }
             val chargeJobs = charging.mapIndexed { index, point ->
                 async(Dispatchers.IO) {
-                    withTimeoutOrNull(6_500) {
+                    withTimeoutOrNull(7_500) {
                         runCatching { discoverCharging(index + 1, point) }.getOrElse { emptyList() }
                     }.orEmpty().ifEmpty { listOf(chargingFallback(index + 1, point, vehicle)) }
                 }
             }
-            (overnightJobs + chargeJobs).awaitAll().flatten()
+            (overnightJobs + chargeJobs).awaitAll().flatten().distinctBy { it.id }
         }
+    }
+
+    private suspend fun discoverScenicAroundOvernight(
+        stage: JourneyStageBreak,
+        enabledKinds: Set<StopKind>,
+    ): List<ScenePointUi> {
+        if (enabledKinds.isEmpty()) return emptyList()
+        val tinyOffset = GeoPoint(stage.point.lat + 0.0015, stage.point.lon + 0.0015)
+        val points = PrecisionRoutePoiDiscovery.discover(
+            route = listOf(stage.point, tinyOffset),
+            enabledKinds = enabledKinds,
+            maxResults = 70,
+            radiusMeters = 30_000,
+            maxSamples = 2,
+        )
+        return points
+            .filter { haversineMeters(stage.point, it.point) <= 32_000.0 }
+            .take(48)
+            .map { point ->
+                point.copy(
+                    rationale = listOfNotNull(
+                        "Near day ${stage.day} overnight area",
+                        point.rationale,
+                    ).joinToString(" · "),
+                )
+            }
     }
 
     private fun discoverOvernight(stage: JourneyStageBreak, vehicle: VehicleProfile): List<ScenePointUi> {
         val radius = when (vehicle.kind) {
-            VehicleKind.TRUCK, VehicleKind.COACH -> 15_000
-            VehicleKind.CAMPER -> 12_000
-            else -> 10_000
+            VehicleKind.TRUCK, VehicleKind.COACH -> 24_000
+            VehicleKind.CAMPER -> 22_000
+            else -> 20_000
         }
         val statements = when (vehicle.kind) {
             VehicleKind.CAMPER -> listOf(
-                "nwr(around:$radius,${stage.point.lat},${stage.point.lon})[tourism~\"^(camp_site|caravan_site)$\"][name];out center 24;",
-                "nwr(around:$radius,${stage.point.lat},${stage.point.lon})[amenity=parking][motorhome=yes];out center 24;",
+                "nwr(around:$radius,${stage.point.lat},${stage.point.lon})[tourism~\"^(camp_site|caravan_site)$\"][name];out center 36;",
+                "nwr(around:$radius,${stage.point.lat},${stage.point.lon})[amenity=parking][motorhome=yes];out center 36;",
             )
             VehicleKind.TRUCK -> listOf(
-                "nwr(around:$radius,${stage.point.lat},${stage.point.lon})[amenity=parking][hgv=yes];out center 30;",
-                "nwr(around:$radius,${stage.point.lat},${stage.point.lon})[highway~\"^(services|rest_area)$\"];out center 30;",
+                "nwr(around:$radius,${stage.point.lat},${stage.point.lon})[amenity=parking][hgv=yes];out center 40;",
+                "nwr(around:$radius,${stage.point.lat},${stage.point.lon})[highway~\"^(services|rest_area)$\"];out center 40;",
             )
             VehicleKind.COACH -> listOf(
-                "nwr(around:$radius,${stage.point.lat},${stage.point.lon})[tourism~\"^(hotel|motel|guest_house|hostel)$\"][name];out center 28;",
-                "nwr(around:$radius,${stage.point.lat},${stage.point.lon})[amenity=parking][bus=yes];out center 22;",
+                "nwr(around:$radius,${stage.point.lat},${stage.point.lon})[tourism~\"^(hotel|motel|guest_house|hostel)$\"][name];out center 40;",
+                "nwr(around:$radius,${stage.point.lat},${stage.point.lon})[amenity=parking][bus=yes];out center 32;",
             )
             VehicleKind.CAR, VehicleKind.MOTORCYCLE -> listOf(
-                "nwr(around:$radius,${stage.point.lat},${stage.point.lon})[tourism~\"^(hotel|motel|guest_house|hostel|camp_site)$\"][name];out center 36;",
+                "nwr(around:$radius,${stage.point.lat},${stage.point.lon})[tourism~\"^(hotel|motel|guest_house|hostel|camp_site)$\"][name];out center 50;",
             )
             VehicleKind.BICYCLE -> listOf(
-                "nwr(around:$radius,${stage.point.lat},${stage.point.lon})[tourism~\"^(hotel|guest_house|hostel|camp_site)$\"][name];out center 36;",
+                "nwr(around:$radius,${stage.point.lat},${stage.point.lon})[tourism~\"^(hotel|guest_house|hostel|camp_site)$\"][name];out center 50;",
             )
         }
-        val elements = execute("[out:json][timeout:10];${statements.joinToString("")}", stage.day)
-        return parseOvernight(elements, stage, vehicle).take(6)
+        val elements = execute("[out:json][timeout:11];${statements.joinToString("")}", stage.day)
+        return parseOvernight(elements, stage, vehicle).take(10)
     }
 
     private fun parseOvernight(
@@ -124,24 +159,24 @@ object JourneySupportDiscovery {
                 subtype = subtype,
                 point = point,
                 relevance = 1.10,
-                suggestionScore = (150.0 - distance / 250.0).coerceAtLeast(30.0),
+                suggestionScore = (170.0 - distance / 300.0).coerceAtLeast(30.0),
                 distanceFromRouteMeters = distance.roundToInt(),
                 suggestedDwellMinutes = 8 * 60,
                 url = tags.optString("website").ifBlank { tags.optString("contact:website") }
                     .takeIf { it.startsWith("http://") || it.startsWith("https://") },
                 attribution = "© OpenStreetMap contributors",
-                rationale = "Day ${stage.day} overnight option · near planned daily travel end",
+                rationale = "Day ${stage.day} overnight option · near replanned daily travel end",
             )
         }
         return points.distinctBy { it.id }.sortedByDescending { it.suggestionScore }
     }
 
     private fun discoverCharging(anchorIndex: Int, anchor: GeoPoint): List<ScenePointUi> {
-        val radius = 6_000
+        val radius = 7_500
         val query = buildString {
             append("[out:json][timeout:9];")
-            append("nwr(around:$radius,${anchor.lat},${anchor.lon})[amenity=charging_station];out center 36;")
-            append("nwr(around:$radius,${anchor.lat},${anchor.lon})[service:bicycle:charging=yes];out center 24;")
+            append("nwr(around:$radius,${anchor.lat},${anchor.lon})[amenity=charging_station];out center 40;")
+            append("nwr(around:$radius,${anchor.lat},${anchor.lon})[service:bicycle:charging=yes];out center 32;")
         }
         val elements = execute(query, 100 + anchorIndex)
         val result = mutableListOf<ScenePointUi>()
@@ -150,27 +185,28 @@ object JourneySupportDiscovery {
             val tags = element.optJSONObject("tags") ?: JSONObject()
             val point = elementPoint(element) ?: continue
             val distance = haversineMeters(anchor, point)
-            val name = tags.optString("name").trim().ifBlank { "E-bike charging" }
             val bikeSpecific = tags.optString("bicycle") == "yes" ||
                 tags.optString("service:bicycle:charging") == "yes" ||
                 tags.keys().asSequence().any { key -> key.startsWith("socket:") }
+            if (!bikeSpecific) continue
+            val name = tags.optString("name").trim().ifBlank { "E-bike charging" }
             result += ScenePointUi(
                 id = "journey-ebike-$anchorIndex-${element.optString("type")}-${element.optLong("id")}",
                 name = name,
                 kind = StopKind.SCENIC.name,
                 subtype = "ebike_charging",
                 point = point,
-                relevance = if (bikeSpecific) 1.20 else 1.00,
-                suggestionScore = ((if (bikeSpecific) 170.0 else 145.0) - distance / 180.0).coerceAtLeast(30.0),
+                relevance = 1.20,
+                suggestionScore = (175.0 - distance / 180.0).coerceAtLeast(30.0),
                 distanceFromRouteMeters = distance.roundToInt(),
                 suggestedDwellMinutes = 60,
                 url = tags.optString("website").ifBlank { tags.optString("contact:website") }
                     .takeIf { it.startsWith("http://") || it.startsWith("https://") },
                 attribution = "© OpenStreetMap contributors",
-                rationale = "E-bike charging option · near battery-range anchor $anchorIndex",
+                rationale = "Bicycle/plug-compatible charging option · near battery-range anchor $anchorIndex",
             )
         }
-        return result.distinctBy { it.id }.sortedByDescending { it.suggestionScore }.take(5)
+        return result.distinctBy { it.id }.sortedByDescending { it.suggestionScore }.take(7)
     }
 
     private fun overnightFallback(stage: JourneyStageBreak, vehicle: VehicleProfile) = ScenePointUi(
@@ -187,7 +223,7 @@ object JourneySupportDiscovery {
         suggestionScore = 110.0,
         suggestedDwellMinutes = 8 * 60,
         attribution = "Journey planning anchor",
-        rationale = "Daily travel limit reached here · search nearby overnight options",
+        rationale = "Daily itinerary limit reached here · search nearby overnight options and Scenic POIs",
     )
 
     private fun chargingFallback(anchorIndex: Int, point: GeoPoint, vehicle: VehicleProfile) = ScenePointUi(
