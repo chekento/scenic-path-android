@@ -27,13 +27,15 @@ object NativeRoundTripPlanner {
         val fixedStops = plan.stops.filter { it.mustVisit && it.point != null }
         val fixedDwell = fixedStops.sumOf { it.dwellMinutes }
         val requested = plan.requestedAlternatives.coerceIn(2, 5)
+        val generation = maxOf(plan.alternativeGeneration, requested - 2)
         val waypointSets = RoundTripPolicy.waypointSets(
             origin = origin,
             vehicle = effective.vehicle,
             budgetMinutes = budget,
             autoSuggestStops = plan.autoSuggestStops,
-            count = (requested + 2).coerceAtMost(6),
+            count = (requested + 3).coerceAtMost(6),
             fixedDwellMinutes = fixedDwell,
+            generation = generation,
         )
 
         val rawRoutes = coroutineScope {
@@ -56,15 +58,7 @@ object NativeRoundTripPlanner {
             rawRoutes.map { (index, shaping, route) ->
                 async(Dispatchers.IO) {
                     val discoveries = if (plan.autoSuggestStops && plan.enabledSceneKinds.isNotEmpty()) {
-                        withTimeoutOrNull(7_500) {
-                            runCatching {
-                                FastRoutePoiDiscovery.discover(
-                                    route = route.points,
-                                    enabledKinds = plan.enabledSceneKinds,
-                                    maxResults = 72,
-                                )
-                            }.getOrElse { emptyList() }
-                        }.orEmpty()
+                        discoverRoundTripPois(route.points, plan.enabledSceneKinds, budget)
                     } else emptyList()
                     RoundRaw(index, shaping, route, discoveries)
                 }
@@ -90,6 +84,7 @@ object NativeRoundTripPlanner {
                     fixedStops = fixedStops,
                     budget = budget,
                     usedStopIds = usedStopIds,
+                    generation = generation,
                 )
             }
 
@@ -99,8 +94,10 @@ object NativeRoundTripPlanner {
             candidate.experienceScore * 0.72 + utilization * 28.0
         }
         val diverse = RouteDiversityPolicy.order(qualityOrdered, requested)
-        if (diverse.firstOrNull()?.scenePoints?.isNotEmpty() == true) {
-            ScenicPoiSharedState.publish(diverse.first().points, diverse.first().scenePoints)
+        diverse.forEach { candidate ->
+            if (candidate.scenePoints.isNotEmpty()) {
+                ScenicPoiSharedState.publish(candidate.points, candidate.scenePoints)
+            }
         }
         RoutePlanUi(
             candidates = diverse,
@@ -109,10 +106,57 @@ object NativeRoundTripPlanner {
             note = buildString {
                 append("Round trip · returns to start · target $budget min total outing")
                 append(" · ${diverse.size} deliberately different loop${if (diverse.size == 1) "" else "s"}")
+                if (generation > 0) append(" · alternative generation ${generation + 1}")
                 val best = diverse.firstOrNull()?.budgetUsedMinutes?.roundToInt()
                 if (best != null) append(" · best route uses about $best min")
                 if (diverse.firstOrNull()?.autoStopIds?.isNotEmpty() == true) append(" · real Smart Stop waypoints included")
             },
+        )
+    }
+
+    private suspend fun discoverRoundTripPois(
+        route: List<GeoPoint>,
+        enabledKinds: Set<StopKind>,
+        budgetMinutes: Int,
+    ): List<ScenePointUi> = coroutineScope {
+        val fast = async(Dispatchers.IO) {
+            withTimeoutOrNull(13_500) {
+                runCatching {
+                    FastRoutePoiDiscovery.discover(route, enabledKinds, maxResults = 120)
+                }.getOrElse { emptyList() }
+            }.orEmpty()
+        }
+        val rapid = async(Dispatchers.IO) {
+            withTimeoutOrNull(8_000) {
+                runCatching {
+                    RapidRoutePoiDiscovery.discover(route, enabledKinds, maxResults = 120)
+                }.getOrElse { emptyList() }
+            }.orEmpty()
+        }
+        val broad = async(Dispatchers.IO) {
+            if (budgetMinutes < 90) return@async emptyList()
+            val radius = when {
+                budgetMinutes >= 300 -> 42_000
+                budgetMinutes >= 210 -> 34_000
+                budgetMinutes >= 150 -> 28_000
+                else -> 22_000
+            }
+            withTimeoutOrNull(10_000) {
+                runCatching {
+                    PrecisionRoutePoiDiscovery.discover(
+                        route = route,
+                        enabledKinds = enabledKinds,
+                        maxResults = 120,
+                        radiusMeters = radius,
+                        maxSamples = 10,
+                    )
+                }.getOrElse { emptyList() }
+            }.orEmpty()
+        }
+        PrecisionRoutePoiDiscovery.mergeForDisplay(
+            first = fast.await() + rapid.await(),
+            second = broad.await(),
+            maxResults = 220,
         )
     }
 
@@ -131,16 +175,17 @@ object NativeRoundTripPlanner {
         fixedStops: List<PlannedStop>,
         budget: Int,
         usedStopIds: MutableSet<String>,
+        generation: Int,
     ): RouteCandidateUi? {
         val fixedDwell = fixedStops.sumOf { it.dwellMinutes }
         val baseOuting = item.route.durationSeconds / 60.0 + fixedDwell
         if (baseOuting > budget * 1.08) return null
 
-        val filtered = item.discoveries
+        val eligible = item.discoveries
             .filter { NativeAutoStopPolicy.foodMatches(it, preferences) }
             .filterNot { it.id in usedStopIds }
         var selected = if (plan.autoSuggestStops) {
-            NativeAutoStopPolicy.select(filtered.ifEmpty { item.discoveries }, preferences, plan.enabledSceneKinds)
+            NativeAutoStopPolicy.select(eligible, preferences, plan.enabledSceneKinds)
         } else emptyList()
         var routed = item.route
 
@@ -197,7 +242,7 @@ object NativeRoundTripPlanner {
         val utilization = RoundTripPolicy.utilizationScore(outing, budget)
         val scenic = (55.0 + poiQuality * 25.0 + utilization * 20.0).coerceIn(0.0, 100.0)
         return RouteCandidateUi(
-            id = "native-round-${item.index}",
+            id = "native-round-g$generation-${item.index}",
             character = if (plan.routeCharacter == RouteCharacter.DIRECT) RouteCharacter.DIRECT.name else RouteCharacter.BEAUTIFUL.name,
             distanceMeters = routed.distanceMeters,
             durationSeconds = routed.durationSeconds,
@@ -207,7 +252,7 @@ object NativeRoundTripPlanner {
             provider = "Valhalla / OpenStreetMap · round-trip generator",
             scenePoints = scenePoints,
             strongestSignals = listOf("roundTrip", "budgetUtilization", "routeDiversity") + if (included.isNotEmpty()) listOf("automaticSmartStops") else emptyList(),
-            variantLabel = if (item.index == 0) "Best round tour" else "Round tour ${item.index + 1}",
+            variantLabel = if (generation == 0 && item.index == 0) "Best round tour" else "Round tour ${item.index + 1}",
             experienceScore = scenic,
             autoStopIds = selected.map { it.id },
             driveExtraMinutes = routed.durationSeconds / 60.0,
