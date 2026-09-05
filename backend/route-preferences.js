@@ -1,48 +1,30 @@
 export function balancedPreferences(preferences = {}) {
   return {
     ...preferences,
-    maxExtraMinutes: Math.max(30, Number(preferences.maxExtraMinutes) || 0),
-    maxExtraPercent: Math.max(25, Number(preferences.maxExtraPercent) || 0),
-    avoidMotorways: false,
-    windingness: 50,
-    hilliness: 40,
+    windingness: Math.min(55, Math.max(35, Number(preferences.windingness) || 50)),
+    hilliness: Math.min(45, Math.max(25, Number(preferences.hilliness) || 40)),
   };
 }
 
 export function beautifulPreferences(preferences = {}) {
   return {
     ...preferences,
-    maxExtraMinutes: Math.max(45, Number(preferences.maxExtraMinutes) || 0),
-    maxExtraPercent: Math.max(35, Number(preferences.maxExtraPercent) || 0),
-    avoidMotorways: true,
-    windingness: 75,
-    hilliness: 60,
-  };
-}
-
-export function directPreferences(preferences = {}) {
-  return {
-    ...preferences,
-    avoidMotorways: false,
-    windingness: 20,
-    hilliness: 20,
+    windingness: Math.max(65, Number(preferences.windingness) || 70),
+    hilliness: Math.max(45, Number(preferences.hilliness) || 50),
+    // `false` means motorways are allowed, not required. Keep an explicit false untouched;
+    // a true hard constraint must also remain true.
+    avoidMotorways: preferences.avoidMotorways !== false,
   };
 }
 
 /**
- * Apply only the selected routing-priority preset. Day-trip scope keeps the user's chosen
- * time budget and enforces only the structural minimum needed for a useful outing.
+ * Final execution must preserve every explicit user choice. Presets are applied when the user
+ * chooses them in the UI; they are not silently re-applied during route calculation.
  */
-export function preferencesForCharacter(preferences = {}, character = "BEAUTIFUL", mode = "QUICK") {
-  const characterized = character === "DIRECT"
-    ? directPreferences(preferences)
-    : character === "BALANCED"
-      ? balancedPreferences(preferences)
-      : character === "CUSTOM"
-        ? { ...preferences }
-        : beautifulPreferences(preferences);
-
-  return mode === "DAY_TRIP"
-    ? { ...characterized, maxExtraMinutes: Math.max(30, Number(characterized.maxExtraMinutes) || 0) }
-    : characterized;
+export function executionPreferences(preferences = {}, mode = "QUICK") {
+  const result = { ...preferences };
+  if (mode === "DAY_TRIP") {
+    result.maxExtraMinutes = Math.max(30, Number(result.maxExtraMinutes) || 0);
+  }
+  return result;
 }
