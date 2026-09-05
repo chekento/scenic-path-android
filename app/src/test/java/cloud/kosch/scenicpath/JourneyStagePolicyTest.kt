@@ -69,12 +69,50 @@ class JourneyStagePolicyTest {
     @Test
     fun differentRouteGeometriesProduceDifferentPoiKeys() {
         val north = route
-        val east = listOf(
-            GeoPoint(47.87, 12.65),
-            GeoPoint(49.50, 13.50),
-            GeoPoint(51.00, 12.80),
-            GeoPoint(53.67, 10.24),
-        )
+        val east = alternativeRoute()
         assertTrue(ScenicPoiSharedState.routeKey(north) != ScenicPoiSharedState.routeKey(east))
     }
+
+    @Test
+    fun poiMemoryIsSeparatedByRouteUnlessAllRoutesIsExplicitlyEnabled() {
+        val north = route
+        val east = alternativeRoute()
+        val a = ScenePointUi(
+            id = "north-view",
+            name = "North view",
+            kind = StopKind.VIEWPOINT.name,
+            subtype = "viewpoint",
+            point = north[1],
+            relevance = 1.0,
+        )
+        val b = ScenePointUi(
+            id = "east-view",
+            name = "East view",
+            kind = StopKind.VIEWPOINT.name,
+            subtype = "viewpoint",
+            point = east[1],
+            relevance = 1.0,
+        )
+
+        ScenicSceneSelectionState.reset()
+        ScenicPoiSharedState.clear()
+        try {
+            ScenicPoiSharedState.publish(north, listOf(a))
+            ScenicPoiSharedState.publish(east, listOf(b))
+            assertEquals(listOf("north-view"), ScenicPoiSharedState.pointsFor(north).map { it.id })
+            assertEquals(listOf("east-view"), ScenicPoiSharedState.pointsFor(east).map { it.id })
+
+            ScenicPoiSharedState.updateShowAllRoutes(true)
+            assertEquals(setOf("north-view", "east-view"), ScenicPoiSharedState.pointsFor(north).map { it.id }.toSet())
+        } finally {
+            ScenicPoiSharedState.clear()
+        }
+    }
+
+    private fun alternativeRoute() = listOf(
+        GeoPoint(47.87, 12.65),
+        GeoPoint(49.50, 13.50),
+        GeoPoint(51.00, 12.80),
+        GeoPoint(53.67, 10.24),
+    )
 }
