@@ -93,6 +93,7 @@ object ScenicApi {
             return@withContext emptyList()
         }
 
+        requireProductionServicesConfigured()
         val backend = runCatching { searchBackend(normalized, bias) }.getOrNull().orEmpty()
         if (backend.isNotEmpty()) return@withContext backend
 
@@ -126,13 +127,32 @@ object ScenicApi {
             }
         }
 
-        runCatching { planBackend(origin, destination, plan, effectivePreferences) }
+        runCatching {
+            requireProductionServicesConfigured()
+            planBackend(origin, destination, plan, effectivePreferences)
+        }
+    }
+
+    private fun requireProductionServicesConfigured() {
+        check(BuildConfig.DEBUG || BuildConfig.PRODUCTION_SERVICES_CONFIGURED) {
+            "This Scenic Path release is missing its production service configuration."
+        }
+        if (!BuildConfig.DEBUG) {
+            check(baseUrl.startsWith("https://")) {
+                "Scenic Path release backend must use HTTPS."
+            }
+        }
     }
 
     private fun searchBackend(query: String, bias: GeoPoint?): List<PlaceSuggestion> {
         val encoded = URLEncoder.encode(query, Charsets.UTF_8.name())
         val biasQuery = bias?.let { "&lat=${it.lat}&lon=${it.lon}" } ?: ""
-        val connection = open("$baseUrl/v1/search?q=$encoded$biasQuery", "GET")
+        val connection = open(
+            "$baseUrl/v1/search?q=$encoded$biasQuery",
+            method = "GET",
+            connectTimeoutMs = 6_000,
+            readTimeoutMs = 10_000,
+        )
         return connection.useJson { body ->
             val results = body.optJSONArray("results") ?: JSONArray()
             buildList {
@@ -215,7 +235,12 @@ object ScenicApi {
             })
         }
 
-        val connection = open("$baseUrl/v1/plan", "POST").apply {
+        val connection = open(
+            "$baseUrl/v1/plan",
+            method = "POST",
+            connectTimeoutMs = 8_000,
+            readTimeoutMs = 45_000,
+        ).apply {
             doOutput = true
             setRequestProperty("Content-Type", "application/json; charset=utf-8")
             outputStream.bufferedWriter(Charsets.UTF_8).use { it.write(body.toString()) }
@@ -328,14 +353,23 @@ object ScenicApi {
         }
     }
 
-    private fun open(url: String, method: String, timeoutMs: Int = 4_000): HttpURLConnection =
-        (URL(url).openConnection() as HttpURLConnection).apply {
+    private fun open(
+        url: String,
+        method: String,
+        connectTimeoutMs: Int = 6_000,
+        readTimeoutMs: Int = 10_000,
+    ): HttpURLConnection {
+        if (!BuildConfig.DEBUG) {
+            check(url.startsWith("https://")) { "Cleartext network request blocked in release build." }
+        }
+        return (URL(url).openConnection() as HttpURLConnection).apply {
             requestMethod = method
-            connectTimeout = timeoutMs
-            readTimeout = timeoutMs
+            connectTimeout = connectTimeoutMs
+            readTimeout = readTimeoutMs
             setRequestProperty("Accept", "application/json")
             setRequestProperty("User-Agent", "ScenicPath-Android/${BuildConfig.VERSION_NAME}")
         }
+    }
 
     private inline fun <T> HttpURLConnection.useJson(block: (JSONObject) -> T): T {
         try {
