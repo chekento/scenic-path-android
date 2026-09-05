@@ -107,8 +107,11 @@ object ScenicApi {
         preferences: ScenicPreferences,
     ): Result<RoutePlanUi> = withContext(Dispatchers.IO) {
         val effectivePreferences = preferences
-            .copy(vehicle = VehicleSettingsState.profile)
-            .forCharacter(plan.routeCharacter)
+            .copy(
+                vehicle = VehicleSettingsState.profile,
+                constraintsCommitted = true,
+            )
+            .forPlan(plan)
 
         if (BuildConfig.DEBUG) {
             if (RoundTripPolicy.shouldCreateRoundTrip(plan, origin, destination)) {
