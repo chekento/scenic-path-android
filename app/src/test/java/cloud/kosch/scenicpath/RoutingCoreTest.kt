@@ -76,6 +76,85 @@ class RoutingCoreTest {
     }
 
     @Test
+    fun dayTripWithSameStartAndDestinationCreatesRoundTripIntent() {
+        val start = GeoPoint(53.675, 10.24)
+        assertTrue(
+            RoundTripPolicy.shouldCreateRoundTrip(
+                TripPlan(mode = PlanningMode.DAY_TRIP),
+                start,
+                start,
+            )
+        )
+        assertFalse(
+            RoundTripPolicy.shouldCreateRoundTrip(
+                TripPlan(mode = PlanningMode.QUICK),
+                start,
+                start,
+            )
+        )
+    }
+
+    @Test
+    fun roundTripBudgetScoringPrefersUsingMostOfSelectedTime() {
+        assertTrue(RoundTripPolicy.utilizationScore(220.0, 240) > RoundTripPolicy.utilizationScore(120.0, 240))
+        assertTrue(RoundTripPolicy.utilizationScore(220.0, 240) > RoundTripPolicy.utilizationScore(260.0, 240))
+    }
+
+    @Test
+    fun roundTripSeedsCreateDifferentTourDirections() {
+        val start = GeoPoint(53.675, 10.24)
+        val sets = RoundTripPolicy.waypointSets(
+            origin = start,
+            vehicle = VehicleProfile.defaults(VehicleKind.CAR),
+            budgetMinutes = 240,
+            autoSuggestStops = true,
+            count = 4,
+        )
+        assertEquals(4, sets.size)
+        assertTrue(sets.all { it.size == 3 })
+        assertEquals(4, sets.map { set -> "%.4f:%.4f".format(set.first().lat, set.first().lon) }.toSet().size)
+    }
+
+    @Test
+    fun alternativeTwoPrefersDifferentCorridorOverNearCopy() {
+        fun candidate(id: String, points: List<GeoPoint>, score: Double, stopIds: List<String>) = RouteCandidateUi(
+            id = id,
+            character = RouteCharacter.BEAUTIFUL.name,
+            distanceMeters = 10_000.0,
+            durationSeconds = 1_200.0,
+            scenicScore = score,
+            extraMinutes = 10.0,
+            points = points,
+            provider = "test",
+            experienceScore = score,
+            autoStopIds = stopIds,
+        )
+        val primary = candidate(
+            "primary",
+            listOf(GeoPoint(53.60, 10.00), GeoPoint(53.61, 10.05), GeoPoint(53.62, 10.10)),
+            95.0,
+            listOf("castle", "cafe"),
+        )
+        val nearCopy = candidate(
+            "near-copy",
+            listOf(GeoPoint(53.6005, 10.0005), GeoPoint(53.6105, 10.0505), GeoPoint(53.6205, 10.1005)),
+            93.0,
+            listOf("castle", "cafe"),
+        )
+        val different = candidate(
+            "different",
+            listOf(GeoPoint(53.60, 10.00), GeoPoint(53.67, 9.98), GeoPoint(53.70, 10.08), GeoPoint(53.62, 10.10)),
+            82.0,
+            listOf("viewpoint", "museum"),
+        )
+
+        val ordered = RouteDiversityPolicy.order(listOf(primary, nearCopy, different), 2)
+        assertEquals("primary", ordered[0].id)
+        assertEquals("different", ordered[1].id)
+        assertTrue(RouteDiversityPolicy.diversity(primary, different) > RouteDiversityPolicy.diversity(primary, nearCopy))
+    }
+
+    @Test
     fun liveNavigationRecognizesArrivalAtRouteEnd() {
         val route = listOf(
             GeoPoint(53.0000, 10.0000),
