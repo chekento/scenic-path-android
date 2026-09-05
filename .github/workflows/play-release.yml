@@ -2,14 +2,9 @@ name: Play Release AAB
 
 on:
   workflow_dispatch:
-    inputs:
-      release_label:
-        description: "Human-readable release label"
-        required: false
-        default: "internal-test"
   push:
     branches:
-      - "play-rc/**"
+      - 'play-rc/**'
 
 permissions:
   contents: read
@@ -88,7 +83,7 @@ jobs:
       - name: Upload signed Play AAB
         uses: actions/upload-artifact@v4
         with:
-          name: scenic-path-play-aab-${{ inputs.release_label || 'rc' }}
+          name: scenic-path-play-aab-rc
           path: |
             app/build/outputs/bundle/release/*.aab
             play-aab-sha256.txt
