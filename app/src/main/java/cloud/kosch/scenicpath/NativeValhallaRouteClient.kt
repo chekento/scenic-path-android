@@ -4,11 +4,6 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.net.HttpURLConnection
 import java.net.URL
-import kotlin.math.asin
-import kotlin.math.cos
-import kotlin.math.pow
-import kotlin.math.sin
-import kotlin.math.sqrt
 
 data class NativeNetworkRoute(
     val distanceMeters: Double,
@@ -98,9 +93,14 @@ object NativeValhallaRouteClient {
                 }
             }
             if (points.size < 2) error("Valhalla $costing route shape is empty")
+            val distanceMeters = summary.optDouble("length", 0.0) * 1000.0
             NativeNetworkRoute(
-                distanceMeters = summary.optDouble("length", 0.0) * 1000.0,
-                durationSeconds = summary.optDouble("time", 0.0),
+                distanceMeters = distanceMeters,
+                durationSeconds = RouteTimeSanity.normalizeDurationSeconds(
+                    distanceMeters = distanceMeters,
+                    providerDurationSeconds = summary.optDouble("time", 0.0),
+                    vehicle = vehicle,
+                ),
                 points = points,
             )
         } finally {
