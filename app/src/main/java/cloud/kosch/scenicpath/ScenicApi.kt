@@ -59,7 +59,6 @@ data class RouteCandidateUi(
     val totalExtraMinutes: Double = extraMinutes,
     val corridorRadiusKm: Double = 0.0,
     val dataConfidence: Double = 0.0,
-    /** For round trips this is absolute outing time used from the selected day-trip budget. */
     val budgetUsedMinutes: Double? = null,
     val budgetMinutes: Int? = null,
     val isRoundTrip: Boolean = false,
@@ -86,10 +85,8 @@ object ScenicApi {
         if (BuildConfig.DEBUG) {
             val device = searchDeviceGeocoder(context, normalized)
             if (device.isNotEmpty()) return@withContext device
-
             val osm = runCatching { OsmPlaceSearch.search(normalized, bias) }.getOrNull().orEmpty()
             if (osm.isNotEmpty()) return@withContext osm
-
             if (!baseUrl.contains("10.0.2.2") && !baseUrl.contains("127.0.0.1") && !baseUrl.contains("localhost")) {
                 val backend = runCatching { searchBackend(normalized, bias) }.getOrNull().orEmpty()
                 if (backend.isNotEmpty()) return@withContext backend
@@ -100,7 +97,6 @@ object ScenicApi {
         requireProductionServicesConfigured()
         val backend = runCatching { searchBackend(normalized, bias) }.getOrNull().orEmpty()
         if (backend.isNotEmpty()) return@withContext backend
-
         searchDeviceGeocoder(context, normalized)
     }
 
@@ -115,7 +111,13 @@ object ScenicApi {
             .forCharacter(plan.routeCharacter)
 
         if (BuildConfig.DEBUG) {
-            return@withContext runCatching {
+            if (RoundTripPolicy.shouldCreateRoundTrip(plan, origin, destination)) {
+                return@withContext runCatching {
+                    NativeRoundTripPlanner.plan(origin, plan, effectivePreferences)
+                }
+            }
+
+            val baseResult = runCatching {
                 VehicleAwareJourneyPlanner.plan(origin, destination, plan, effectivePreferences)
             }.recoverCatching { primaryError ->
                 if (effectivePreferences.vehicle.kind == VehicleKind.CAR) {
@@ -123,6 +125,16 @@ object ScenicApi {
                 } else {
                     throw primaryError
                 }
+            }
+            if (baseResult.isFailure) return@withContext baseResult
+            return@withContext runCatching {
+                NativeAlternativePlanner.augment(
+                    origin = origin,
+                    destination = destination,
+                    plan = plan,
+                    preferences = effectivePreferences,
+                    base = baseResult.getOrThrow(),
+                )
             }
         }
 
