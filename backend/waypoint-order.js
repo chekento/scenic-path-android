@@ -1,9 +1,12 @@
 const toRad = degrees => degrees * Math.PI / 180;
 
 function localXY(point, origin) {
-  const meanLat = toRad((point.lat + origin.lat) / 2);
+  // Use one fixed local tangent plane for every stop. Using each point's own mean latitude made
+  // east/west progress change slightly with lateral offset, so a far-off stop could be sorted
+  // ahead of a nearer stop even when both were at the same along-route longitude.
+  const referenceLat = toRad(origin.lat);
   return {
-    x: (point.lon - origin.lon) * Math.cos(meanLat) * 111_320,
+    x: (point.lon - origin.lon) * Math.cos(referenceLat) * 111_320,
     y: (point.lat - origin.lat) * 110_540,
   };
 }
