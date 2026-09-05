@@ -79,6 +79,8 @@ fun ScenicExperienceRootV2(
     val destination = destinationSelection?.point
     val activeRoute = routePlan?.candidates?.getOrNull(selectedCandidateIndex)
     val rootOsdVisible = activePanel == null && !externalOverlayVisible && !navigationActive
+    val isRoundTripSelection = origin != null && destination != null &&
+        plan.mode == PlanningMode.DAY_TRIP && RoundTripPolicy.haversineMeters(origin, destination) <= 350.0
 
     val startLabel = startSelection?.title ?: when {
         location.point != null -> "Current location"
@@ -87,9 +89,6 @@ fun ScenicExperienceRootV2(
     }
     val destinationLabel = destinationSelection?.title.orEmpty()
 
-    // Vehicle settings are routing inputs, not decoration. Keep the live planner preferences in
-    // lock-step with the persisted vehicle profile so the very next calculation uses the vehicle
-    // that the user just selected.
     LaunchedEffect(vehicleProfile) {
         if (preferences.vehicle != vehicleProfile) {
             preferences = preferences.copy(vehicle = vehicleProfile)
@@ -124,7 +123,12 @@ fun ScenicExperienceRootV2(
         val hadRoute = routePlan != null
         when (mode) {
             QuickModeV2.DIRECT -> {
-                plan = plan.copy(mode = PlanningMode.QUICK, routeCharacter = RouteCharacter.DIRECT, autoSuggestStops = false)
+                plan = plan.copy(
+                    mode = PlanningMode.QUICK,
+                    routeCharacter = RouteCharacter.DIRECT,
+                    autoSuggestStops = false,
+                    requestedAlternatives = 1,
+                )
                 preferences = preferences.copy(
                     maxExtraMinutes = 10,
                     maxExtraPercent = 10,
@@ -136,7 +140,12 @@ fun ScenicExperienceRootV2(
                 )
             }
             QuickModeV2.BALANCED -> {
-                plan = plan.copy(mode = PlanningMode.QUICK, routeCharacter = RouteCharacter.BALANCED, autoSuggestStops = true)
+                plan = plan.copy(
+                    mode = PlanningMode.QUICK,
+                    routeCharacter = RouteCharacter.BALANCED,
+                    autoSuggestStops = true,
+                    requestedAlternatives = maxOf(2, plan.requestedAlternatives),
+                )
                 preferences = preferences.copy(
                     maxExtraMinutes = 30,
                     maxExtraPercent = 25,
@@ -148,7 +157,12 @@ fun ScenicExperienceRootV2(
                 )
             }
             QuickModeV2.SCENIC -> {
-                plan = plan.copy(mode = PlanningMode.QUICK, routeCharacter = RouteCharacter.BEAUTIFUL, autoSuggestStops = true)
+                plan = plan.copy(
+                    mode = PlanningMode.QUICK,
+                    routeCharacter = RouteCharacter.BEAUTIFUL,
+                    autoSuggestStops = true,
+                    requestedAlternatives = maxOf(2, plan.requestedAlternatives),
+                )
                 preferences = preferences.copy(
                     maxExtraMinutes = 60,
                     maxExtraPercent = 40,
@@ -160,7 +174,12 @@ fun ScenicExperienceRootV2(
                 )
             }
             QuickModeV2.DISCOVER -> {
-                plan = plan.copy(mode = PlanningMode.DAY_TRIP, routeCharacter = RouteCharacter.BEAUTIFUL, autoSuggestStops = true)
+                plan = plan.copy(
+                    mode = PlanningMode.DAY_TRIP,
+                    routeCharacter = RouteCharacter.BEAUTIFUL,
+                    autoSuggestStops = true,
+                    requestedAlternatives = maxOf(2, plan.requestedAlternatives),
+                )
                 preferences = preferences.copy(
                     maxExtraMinutes = 120,
                     maxExtraPercent = 70,
@@ -175,9 +194,14 @@ fun ScenicExperienceRootV2(
         if (hadRoute) routeDirty = true
     }
 
-    fun executeBuildRoute(fromOverride: GeoPoint? = null) {
+    fun executeBuildRoute(
+        fromOverride: GeoPoint? = null,
+        planOverride: TripPlan? = null,
+        preserveSelection: Boolean = false,
+    ) {
         val from = fromOverride ?: origin
         val to = destination
+        val buildPlan = planOverride ?: plan
 
         if (from == null || to == null) {
             activePanel = null
@@ -204,19 +228,21 @@ fun ScenicExperienceRootV2(
         activePanel = null
         minimizedPanel = null
         routeBarExpanded = false
+        val previousIndex = selectedCandidateIndex
 
         val effectivePreferences = preferences.copy(vehicle = vehicleProfile)
         scope.launch {
-            ScenicApi.planRoute(from, to, plan, effectivePreferences)
+            ScenicApi.planRoute(from, to, buildPlan, effectivePreferences)
                 .onSuccess { result ->
                     routeLoading = false
                     if (result.candidates.isNotEmpty()) {
                         routePlan = result
-                        selectedCandidateIndex = 0
+                        selectedCandidateIndex = if (preserveSelection) {
+                            previousIndex.coerceIn(0, result.candidates.lastIndex)
+                        } else 0
                         routeDirty = false
                         preferences = effectivePreferences
-                        // A navigation reroute becomes a route from the actual current GPS point,
-                        // so the planner must not keep displaying an obsolete manually chosen start.
+                        plan = buildPlan
                         if (fromOverride != null) startSelection = null
                         topExpanded = false
                         routeBarExpanded = false
@@ -243,6 +269,44 @@ fun ScenicExperienceRootV2(
 
     fun buildRoute() = executeBuildRoute()
     fun rerouteFromCurrentLocation(point: GeoPoint) = executeBuildRoute(point)
+
+    fun requestMoreRoutes() {
+        if (routeLoading || plan.requestedAlternatives >= 5) return
+        val next = plan.copy(requestedAlternatives = (plan.requestedAlternatives + 1).coerceAtMost(5))
+        plan = next
+        executeBuildRoute(planOverride = next, preserveSelection = true)
+    }
+
+    fun makeRoundTripFromStart() {
+        val start = origin
+        if (start == null) {
+            routeIssue = RouteIssueV2.START
+            routeError = "Choose a start place or enable live GPS before creating a round trip."
+            topExpanded = true
+            return
+        }
+        val nextPlan = plan.copy(
+            mode = PlanningMode.DAY_TRIP,
+            routeCharacter = RouteCharacter.BEAUTIFUL,
+            autoSuggestStops = true,
+            requestedAlternatives = maxOf(2, plan.requestedAlternatives),
+        )
+        plan = nextPlan
+        preferences = preferences.copy(
+            maxExtraMinutes = maxOf(120, preferences.maxExtraMinutes),
+            maxExtraPercent = maxOf(70, preferences.maxExtraPercent),
+            maxStops = maxOf(6, preferences.maxStops),
+            avoidMotorways = true,
+            vehicle = vehicleProfile,
+        )
+        destinationSelection = PlaceSuggestion(
+            id = "round-trip-start-${System.nanoTime()}",
+            title = startLabel,
+            subtitle = "Round trip · return to starting point",
+            point = start,
+        )
+        clearEndpointRoute()
+    }
 
     fun addAlternative(stop: ScenePointUi) {
         if (plan.stops.any { it.id == stop.id }) return
@@ -344,6 +408,9 @@ fun ScenicExperienceRootV2(
                     hasRoute = routePlan != null,
                     routeDirty = routeDirty,
                     vehicleProfile = vehicleProfile,
+                    roundTripActive = isRoundTripSelection,
+                    canRoundTrip = origin != null,
+                    onRoundTrip = ::makeRoundTripFromStart,
                     onStart = { openPanel(ExperiencePanelV2.START) },
                     onDestination = { openPanel(ExperiencePanelV2.DESTINATION) },
                     onPlanner = { openPanel(ExperiencePanelV2.PLANNER) },
@@ -375,6 +442,9 @@ fun ScenicExperienceRootV2(
                         val count = routePlan?.candidates?.size ?: 0
                         if (count > 0) selectedCandidateIndex = (selectedCandidateIndex + 1) % count
                     },
+                    onAddRoute = ::requestMoreRoutes,
+                    canAddRoute = plan.requestedAlternatives < 5,
+                    addingRoute = routeLoading,
                     onStops = { openPanel(ExperiencePanelV2.STOPS) },
                     onPlanner = { openPanel(ExperiencePanelV2.PLANNER) },
                     modifier = Modifier
@@ -539,6 +609,9 @@ private fun TopRoutePanelV2(
     hasRoute: Boolean,
     routeDirty: Boolean,
     vehicleProfile: VehicleProfile,
+    roundTripActive: Boolean,
+    canRoundTrip: Boolean,
+    onRoundTrip: () -> Unit,
     onStart: () -> Unit,
     onDestination: () -> Unit,
     onPlanner: () -> Unit,
@@ -567,9 +640,13 @@ private fun TopRoutePanelV2(
                     Text("Scenic Path", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
                     Text("The beautiful way", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 } else {
-                    Text("${startLabel.take(18)} → ${destinationLabel.ifBlank { "Destination" }.take(18)}", fontWeight = FontWeight.SemiBold, maxLines = 1)
                     Text(
-                        "${activeQuickMode?.label ?: plan.routeCharacter.label} · ${vehicleProfile.kind.emoji} ${vehicleProfile.kind.label} · +${preferences.maxExtraMinutes} min${if (routeDirty) " · changes pending" else ""}",
+                        if (roundTripActive) "Round trip · $startLabel" else "${startLabel.take(18)} → ${destinationLabel.ifBlank { "Destination" }.take(18)}",
+                        fontWeight = FontWeight.SemiBold,
+                        maxLines = 1,
+                    )
+                    Text(
+                        "${activeQuickMode?.label ?: plan.routeCharacter.label} · ${vehicleProfile.kind.emoji} ${vehicleProfile.kind.label} · ${if (plan.mode == PlanningMode.DAY_TRIP) "${preferences.maxExtraMinutes} min budget" else "+${preferences.maxExtraMinutes} min"}${if (routeDirty) " · changes pending" else ""}",
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         maxLines = 1,
@@ -584,7 +661,13 @@ private fun TopRoutePanelV2(
 
         if (expanded) {
             PlaceFieldV2("Start", startLabel, Icons.Default.MyLocation, startSupporting, onStart)
-            PlaceFieldV2("Destination", destinationLabel.ifBlank { "Where do you want to go?" }, Icons.Default.Flag, destinationSupporting, onDestination)
+            PlaceFieldV2(
+                if (roundTripActive) "Return point" else "Destination",
+                destinationLabel.ifBlank { "Where do you want to go?" },
+                if (roundTripActive) Icons.Default.Loop else Icons.Default.Flag,
+                destinationSupporting,
+                onDestination,
+            )
 
             Text("Route mode", style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.SemiBold)
             Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(7.dp)) {
@@ -593,7 +676,10 @@ private fun TopRoutePanelV2(
                 }
             }
             Text(
-                activeQuickMode?.description ?: "Custom settings are active. Advanced planner keeps full Scenic DNA and route constraints available.",
+                if (roundTripActive) {
+                    "Round-trip mode uses the selected day budget as a target: Scenic Path tries to fill it with a beautiful loop and worthwhile stops, then returns to the start."
+                } else activeQuickMode?.description
+                    ?: "Custom settings are active. Advanced planner keeps full Scenic DNA and route constraints available.",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -602,18 +688,30 @@ private fun TopRoutePanelV2(
                 if (!locationPermissionGranted) {
                     AssistChip(onClick = onEnableGps, label = { Text("Enable GPS") }, leadingIcon = { Icon(Icons.Default.GpsFixed, null, Modifier.size(18.dp)) })
                 }
+                AssistChip(
+                    onClick = onRoundTrip,
+                    enabled = canRoundTrip,
+                    label = { Text(if (roundTripActive) "Round trip active" else "Round trip from start") },
+                    leadingIcon = { Icon(Icons.Default.Loop, null, Modifier.size(18.dp)) },
+                )
                 AssistChip(onClick = onVehicleSettings, label = { Text("${vehicleProfile.kind.emoji} ${vehicleProfile.kind.label}") })
                 AssistChip(onClick = onPlanner, label = { Text("Advanced planner") }, leadingIcon = { Icon(Icons.Default.Tune, null, Modifier.size(18.dp)) })
                 AssistChip(onClick = onStops, label = { Text("Smart Stops") }, leadingIcon = { Icon(Icons.Default.AddLocationAlt, null, Modifier.size(18.dp)) })
-                AssistChip(onClick = onPlanner, label = { Text("+${preferences.maxExtraMinutes} min") }, leadingIcon = { Icon(Icons.Default.MoreTime, null, Modifier.size(18.dp)) })
+                AssistChip(
+                    onClick = onPlanner,
+                    label = { Text(if (plan.mode == PlanningMode.DAY_TRIP) "${preferences.maxExtraMinutes} min budget" else "+${preferences.maxExtraMinutes} min") },
+                    leadingIcon = { Icon(Icons.Default.MoreTime, null, Modifier.size(18.dp)) },
+                )
             }
 
             Button(onClick = onBuildRoute, enabled = !routeLoading, modifier = Modifier.fillMaxWidth().height(50.dp)) {
-                Icon(Icons.Default.Route, null)
+                Icon(if (roundTripActive) Icons.Default.Loop else Icons.Default.Route, null)
                 Spacer(Modifier.width(8.dp))
                 Text(
                     when {
                         routeDirty && hasRoute -> "Rebuild route with changes"
+                        roundTripActive && hasRoute -> "Recalculate round trip"
+                        roundTripActive -> "Create scenic round trip"
                         hasRoute -> "Recalculate route"
                         else -> "Plan route"
                     }
@@ -656,11 +754,16 @@ private fun RouteSummaryBarV2(
     onToggle: () -> Unit,
     onPrevious: () -> Unit,
     onNext: () -> Unit,
+    onAddRoute: () -> Unit,
+    canAddRoute: Boolean,
+    addingRoute: Boolean,
     onStops: () -> Unit,
     onPlanner: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val included = route.scenePoints.filter { it.includedInRoute || it.id in route.autoStopIds }
+    val budgetUsed = route.budgetUsedMinutes
+    val budget = route.budgetMinutes
     Card(
         modifier = modifier.fillMaxWidth(),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.97f)),
@@ -668,12 +771,18 @@ private fun RouteSummaryBarV2(
     ) {
         Column {
             Row(Modifier.fillMaxWidth().padding(start = 12.dp, end = 4.dp, top = 8.dp, bottom = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-                Icon(if (route.character == RouteCharacter.DIRECT.name) Icons.Default.NearMe else Icons.Default.Explore, null, tint = MaterialTheme.colorScheme.primary)
+                Icon(if (route.isRoundTrip) Icons.Default.Loop else if (route.character == RouteCharacter.DIRECT.name) Icons.Default.NearMe else Icons.Default.Explore, null, tint = MaterialTheme.colorScheme.primary)
                 Spacer(Modifier.width(9.dp))
                 Column(Modifier.weight(1f)) {
                     Text(route.variantLabel ?: route.character.lowercase().replaceFirstChar { it.uppercase() }, fontWeight = FontWeight.Bold, maxLines = 1)
                     Text(
-                        "${formatDistanceV2(route.distanceMeters)} · ${formatDurationV2(route.durationSeconds)} · +${route.totalExtraMinutes.roundToInt()}m total",
+                        if (route.isRoundTrip && budgetUsed != null && budget != null) {
+                            "${formatDistanceV2(route.distanceMeters)} · ${formatDurationV2(route.durationSeconds)} drive · ${budgetUsed.roundToInt()}/$budget min day"
+                        } else if (budgetUsed != null && budget != null) {
+                            "${formatDistanceV2(route.distanceMeters)} · ${formatDurationV2(route.durationSeconds)} · ${budgetUsed.roundToInt()}/$budget min exploration"
+                        } else {
+                            "${formatDistanceV2(route.distanceMeters)} · ${formatDurationV2(route.durationSeconds)} · +${route.totalExtraMinutes.roundToInt()}m total"
+                        },
                         style = MaterialTheme.typography.labelMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
@@ -683,6 +792,14 @@ private fun RouteSummaryBarV2(
                     Text("${candidateIndex + 1}/$candidateCount", style = MaterialTheme.typography.labelSmall)
                     IconButton(onClick = onNext, modifier = Modifier.size(34.dp)) { Icon(Icons.Default.ChevronRight, "Next route") }
                 }
+                IconButton(
+                    onClick = onAddRoute,
+                    enabled = canAddRoute && !addingRoute,
+                    modifier = Modifier.size(38.dp),
+                ) {
+                    if (addingRoute) CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
+                    else Icon(Icons.Default.AddCircleOutline, "Add another alternative route")
+                }
                 IconButton(onClick = onToggle, modifier = Modifier.size(38.dp)) {
                     Icon(if (expanded) Icons.Default.ExpandMore else Icons.Default.ExpandLess, if (expanded) "Minimize route details" else "Show route details")
                 }
@@ -691,9 +808,16 @@ private fun RouteSummaryBarV2(
                 HorizontalDivider()
                 Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(9.dp)) {
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        MetricV2("Drive detour", "+${route.driveExtraMinutes.roundToInt()}m", Modifier.weight(1f))
-                        MetricV2("Visits", "${route.dwellMinutes}m", Modifier.weight(1f))
-                        MetricV2("Score", route.experienceScore.roundToInt().toString(), Modifier.weight(1f))
+                        if (route.isRoundTrip) {
+                            MetricV2("Driving", "${(route.durationSeconds / 60).roundToInt()}m", Modifier.weight(1f))
+                            MetricV2("Visits", "${route.dwellMinutes}m", Modifier.weight(1f))
+                            val percent = if (budgetUsed != null && budget != null && budget > 0) (budgetUsed / budget * 100).roundToInt() else 0
+                            MetricV2("Budget used", "$percent%", Modifier.weight(1f))
+                        } else {
+                            MetricV2("Drive detour", "+${route.driveExtraMinutes.roundToInt()}m", Modifier.weight(1f))
+                            MetricV2("Visits", "${route.dwellMinutes}m", Modifier.weight(1f))
+                            MetricV2("Score", route.experienceScore.roundToInt().toString(), Modifier.weight(1f))
+                        }
                     }
                     if (included.isNotEmpty()) {
                         Text("Included stops", fontWeight = FontWeight.SemiBold)
@@ -707,6 +831,13 @@ private fun RouteSummaryBarV2(
                                 Text("${stop.suggestedDwellMinutes}m", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                             }
                         }
+                    }
+                    if (candidateIndex == 1) {
+                        Text(
+                            "Alternative 2 is deliberately selected for a different road corridor and, where available, different automatic waypoints.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
                     }
                     Row(Modifier.fillMaxWidth()) {
                         OutlinedButton(onClick = onStops, modifier = Modifier.weight(1f)) {
