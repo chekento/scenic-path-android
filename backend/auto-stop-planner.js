@@ -5,20 +5,25 @@ import { combinedDwellMinutes } from "./route-time.js";
 const clamp = (value, min, max) => Math.max(min, Math.min(max, value));
 
 export function automaticStopLimit(maxExtraMinutes = 0, configuredMaxStops = 5) {
-  const budgetLimit = maxExtraMinutes >= 210 ? 3
-    : maxExtraMinutes >= 100 ? 2
-      : maxExtraMinutes >= 30 ? 1
-        : 0;
+  const budgetLimit = maxExtraMinutes >= 420 ? 7
+    : maxExtraMinutes >= 300 ? 6
+      : maxExtraMinutes >= 210 ? 5
+        : maxExtraMinutes >= 150 ? 4
+          : maxExtraMinutes >= 100 ? 3
+            : maxExtraMinutes >= 60 ? 2
+              : maxExtraMinutes >= 30 ? 1
+                : 0;
   return Math.max(0, Math.min(configuredMaxStops ?? 5, budgetLimit));
 }
 
 export function autoStopDistanceLimitMeters(maxExtraMinutes = 0) {
   if (maxExtraMinutes < 45) return 6_000;
-  if (maxExtraMinutes < 90) return 10_000;
-  if (maxExtraMinutes < 150) return 14_000;
-  if (maxExtraMinutes < 210) return 18_000;
-  if (maxExtraMinutes < 300) return 23_000;
-  return 27_000;
+  if (maxExtraMinutes < 90) return 12_000;
+  if (maxExtraMinutes < 150) return 20_000;
+  if (maxExtraMinutes < 210) return 30_000;
+  if (maxExtraMinutes < 300) return 42_000;
+  if (maxExtraMinutes < 420) return 58_000;
+  return 70_000;
 }
 
 function dnaWeight(point, preferences = {}) {
@@ -72,8 +77,15 @@ export function stopUtility(point, preferences = {}) {
   const relevance = clamp(point.relevance ?? point.suggestionScore ?? 0.5, 0, 1.3);
   const dna = clamp(dnaWeight(point, preferences), 0, 1);
   const distancePenalty = Math.max(0, point.distanceFromRouteMeters ?? 0) / 430;
-  const dwellPenalty = Math.max(0, point.suggestedDwellMinutes ?? 20) * 0.18;
-  return relevance * 60 + dna * 42 + heritageBonus(point) + foodQualityBonus(point) - distancePenalty - dwellPenalty;
+  const dwell = Math.max(0, point.suggestedDwellMinutes ?? 20);
+  const budget = Math.max(0, preferences.maxExtraMinutes ?? 0);
+  const dwellPenaltyFactor = budget >= 300 ? 0.025
+    : budget >= 210 ? 0.045
+      : budget >= 120 ? 0.08
+        : budget >= 60 ? 0.13
+          : 0.20;
+  const longVisitBonus = budget >= 180 ? clamp(dwell, 30, 180) * 0.055 : 0;
+  return relevance * 60 + dna * 42 + heritageBonus(point) + foodQualityBonus(point) + longVisitBonus - distancePenalty - dwell * dwellPenaltyFactor;
 }
 
 export function chooseInitialAutoStops(scenePoints = [], preferences = {}, enabledSceneKinds = []) {
