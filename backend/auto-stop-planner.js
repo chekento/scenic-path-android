@@ -11,6 +11,15 @@ export function automaticStopLimit(maxExtraMinutes = 0, configuredMaxStops = 5) 
   return Math.max(0, Math.min(configuredMaxStops ?? 5, budgetLimit));
 }
 
+export function autoStopDistanceLimitMeters(maxExtraMinutes = 0) {
+  if (maxExtraMinutes < 45) return 6_000;
+  if (maxExtraMinutes < 90) return 10_000;
+  if (maxExtraMinutes < 150) return 14_000;
+  if (maxExtraMinutes < 210) return 18_000;
+  if (maxExtraMinutes < 300) return 23_000;
+  return 27_000;
+}
+
 function dnaWeight(point, preferences = {}) {
   const w = preferences.weights ?? {};
   switch (point.kind) {
@@ -67,14 +76,16 @@ export function stopUtility(point, preferences = {}) {
 }
 
 export function chooseInitialAutoStops(scenePoints = [], preferences = {}, enabledSceneKinds = []) {
-  const maxStops = automaticStopLimit(preferences.maxExtraMinutes ?? 0, preferences.maxStops ?? 5);
+  const budgetMinutes = preferences.maxExtraMinutes ?? 0;
+  const maxStops = automaticStopLimit(budgetMinutes, preferences.maxStops ?? 5);
   if (maxStops <= 0) return [];
 
   const enabled = new Set(enabledSceneKinds);
+  const maxDistanceMeters = autoStopDistanceLimitMeters(budgetMinutes);
   const eligible = scenePoints
     .filter(point => point?.point && Number.isFinite(point.point.lat) && Number.isFinite(point.point.lon))
     .filter(point => enabled.size === 0 || enabled.has(point.kind) || point.kind === "SCENIC")
-    .filter(point => (point.distanceFromRouteMeters ?? 0) <= 12_000)
+    .filter(point => (point.distanceFromRouteMeters ?? 0) <= maxDistanceMeters)
     .sort((a, b) => stopUtility(b, preferences) - stopUtility(a, preferences));
 
   const selected = [];
@@ -84,9 +95,7 @@ export function chooseInitialAutoStops(scenePoints = [], preferences = {}, enabl
     return true;
   };
 
-  // With meaningful exploration budget, FOOD is an explicit product category and gets a
-  // reserved slot if verified/usable food data exists.
-  if ((preferences.maxExtraMinutes ?? 0) >= 60 && enabled.has("FOOD")) {
+  if (budgetMinutes >= 60 && enabled.has("FOOD")) {
     const food = eligible
       .filter(point => point.kind === "FOOD")
       .sort((a, b) => foodQualityBonus(b) + stopUtility(b, preferences) - foodQualityBonus(a) - stopUtility(a, preferences))[0];
@@ -96,7 +105,6 @@ export function chooseInitialAutoStops(scenePoints = [], preferences = {}, enabl
   for (const point of eligible) {
     if (selected.length >= maxStops) break;
     if (selected.some(existing => existing.id === point.id)) continue;
-    // Prefer category diversity when alternatives exist.
     if (selected.some(existing => existing.kind === point.kind) && eligible.some(other => !selected.some(s => s.kind === other.kind))) {
       continue;
     }
