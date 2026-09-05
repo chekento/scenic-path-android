@@ -31,28 +31,31 @@ object JourneyStagePolicy {
     }
 
     /**
-     * Returns only intermediate day ends. A journey below the configured healthy-day threshold
-     * has no overnight suggestion at all.
+     * Returns only intermediate day ends. Visit/dwell time consumes the same real travel day as
+     * driving. Without a complete per-stop timeline we distribute dwell across route progress;
+     * this deliberately errs toward an earlier overnight rather than pretending visits cost no time.
      */
     fun overnightBreaks(
         route: List<GeoPoint>,
         durationSeconds: Double,
         vehicle: VehicleProfile,
+        dwellMinutes: Int = 0,
     ): List<JourneyStageBreak> {
         if (!vehicle.overnightPlanningEnabled || route.size < 2 || durationSeconds <= 0.0) return emptyList()
-        val totalMinutes = durationSeconds / 60.0
+        val driveMinutes = durationSeconds / 60.0
+        val totalMinutes = driveMinutes + dwellMinutes.coerceAtLeast(0)
         val dailyMinutes = effectiveDailyMinutes(vehicle).toDouble()
         if (totalMinutes <= dailyMinutes + 10.0) return emptyList()
 
         val breakCount = floor((totalMinutes - 1.0) / dailyMinutes).toInt().coerceAtLeast(0)
         return (1..breakCount).map { day ->
             val elapsed = day * dailyMinutes
-            val fraction = (elapsed / totalMinutes).coerceIn(0.0, 1.0)
+            val itineraryFraction = (elapsed / totalMinutes).coerceIn(0.0, 1.0)
             JourneyStageBreak(
                 day = day,
-                point = pointAtFraction(route, fraction),
+                point = pointAtFraction(route, itineraryFraction),
                 elapsedTravelMinutes = elapsed.toInt(),
-                routeFraction = fraction,
+                routeFraction = itineraryFraction,
             )
         }
     }
