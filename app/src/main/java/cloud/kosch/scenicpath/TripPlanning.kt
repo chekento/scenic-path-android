@@ -37,12 +37,13 @@ data class TripPlan(
     val autoSuggestStops: Boolean = true,
     val preserveScenicIntentOnReroute: Boolean = true,
     val enabledSceneKinds: Set<StopKind> = allSelectableSceneKinds,
-    /**
-     * Total number of route variants requested from the planner. Two are shown by default so
-     * Alternative 2 can deliberately use another corridor/stop set. The UI can grow this up to
-     * five with the + Route action without changing the user's scenic preferences.
-     */
+    /** Total number of route variants requested from the planner. */
     val requestedAlternatives: Int = 2,
+    /**
+     * Incremented only when the user presses + Route. Existing alternatives remain stable while
+     * the next planning pass deliberately explores a new set of corridor/loop seeds.
+     */
+    val alternativeGeneration: Int = 0,
 )
 
 /**
