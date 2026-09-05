@@ -120,56 +120,58 @@ object NativeValhallaRouteClient {
         vehicle: VehicleProfile,
         preferences: ScenicPreferences,
         scenic: Boolean,
-    ): JSONObject = when (vehicle.kind) {
-        VehicleKind.BICYCLE -> JSONObject().apply {
-            put("bicycle_type", vehicle.bicycleType.apiValue)
-            put("use_roads", if (scenic) 0.05 else 0.30)
-            put("use_hills", (preferences.hilliness / 100.0).coerceIn(0.05, 0.85))
-            put("avoid_bad_surfaces", if (vehicle.allowUnpavedBikePaths) 0.35 else 0.92)
-            put("use_ferry", 0.35)
+    ): JSONObject {
+        val tuning = NativeRouteConstraintPolicy.tuning(vehicle, preferences, scenic)
+        return when (vehicle.kind) {
+            VehicleKind.BICYCLE -> JSONObject().apply {
+                put("bicycle_type", vehicle.bicycleType.apiValue)
+                tuning.useRoads?.let { put("use_roads", it) }
+                put("avoid_bad_surfaces", if (vehicle.allowUnpavedBikePaths) 0.35 else 0.92)
+                put("use_ferry", 0.35)
+            }
+            VehicleKind.MOTORCYCLE -> JSONObject().apply {
+                putTuning(tuning)
+                put("use_ferry", 0.35)
+                put("top_speed", 140)
+            }
+            VehicleKind.TRUCK -> JSONObject().apply {
+                putHeavyEnvelope(vehicle)
+                putTuning(tuning)
+                put("use_truck_route", 0.85)
+                put("low_class_factor", if (scenic) 1.7 else 2.0)
+                put("low_class_penalty", 45)
+                put("hgv_no_access_penalty", 43200)
+                put("top_speed", 90)
+            }
+            VehicleKind.COACH -> JSONObject().apply {
+                putAutoEnvelope(vehicle)
+                putTuning(tuning)
+                put("use_ferry", 0.25)
+                put("top_speed", 100)
+            }
+            VehicleKind.CAMPER -> JSONObject().apply {
+                putAutoEnvelope(vehicle)
+                putTuning(tuning)
+                put("use_ferry", 0.25)
+                put("exclude_unpaved", true)
+                put("top_speed", 115)
+            }
+            VehicleKind.CAR -> JSONObject().apply {
+                putAutoEnvelope(vehicle)
+                putTuning(tuning)
+                put("use_ferry", 0.35)
+                put("exclude_unpaved", true)
+            }
         }
-        VehicleKind.MOTORCYCLE -> JSONObject().apply {
-            put("use_highways", if (preferences.avoidMotorways) 0.0 else if (scenic) 0.18 else 0.8)
-            put("use_tolls", if (preferences.avoidTolls) 0.0 else 0.5)
-            put("use_trails", if (scenic) (preferences.windingness / 100.0 * 0.55).coerceIn(0.1, 0.55) else 0.0)
-            put("use_ferry", 0.35)
-            put("top_speed", 140)
-        }
-        VehicleKind.TRUCK -> JSONObject().apply {
-            putHeavyEnvelope(vehicle)
-            put("use_highways", if (preferences.avoidMotorways) 0.0 else if (scenic) 0.55 else 0.9)
-            put("use_tolls", if (preferences.avoidTolls) 0.0 else 0.5)
-            put("use_truck_route", 0.85)
-            put("low_class_factor", if (scenic) 1.7 else 2.0)
-            put("low_class_penalty", 45)
-            put("hgv_no_access_penalty", 43200)
-            put("top_speed", 90)
-        }
-        VehicleKind.COACH -> JSONObject().apply {
-            putAutoEnvelope(vehicle)
-            put("use_highways", if (preferences.avoidMotorways) 0.0 else if (scenic) 0.45 else 0.85)
-            put("use_tolls", if (preferences.avoidTolls) 0.0 else 0.5)
-            put("use_ferry", 0.25)
-            put("use_distance", if (scenic) 0.08 else 0.0)
-            put("top_speed", 100)
-        }
-        VehicleKind.CAMPER -> JSONObject().apply {
-            putAutoEnvelope(vehicle)
-            put("use_highways", if (preferences.avoidMotorways) 0.0 else if (scenic) 0.28 else 0.8)
-            put("use_tolls", if (preferences.avoidTolls) 0.0 else 0.5)
-            put("use_ferry", 0.25)
-            put("use_distance", if (scenic) 0.12 else 0.0)
-            put("exclude_unpaved", true)
-            put("top_speed", 115)
-        }
-        VehicleKind.CAR -> JSONObject().apply {
-            putAutoEnvelope(vehicle)
-            put("use_highways", if (preferences.avoidMotorways) 0.0 else if (scenic) 0.15 else 0.9)
-            put("use_tolls", if (preferences.avoidTolls) 0.0 else 0.5)
-            put("use_ferry", 0.35)
-            put("use_distance", if (scenic) 0.15 else 0.0)
-            put("exclude_unpaved", true)
-        }
+    }
+
+    private fun JSONObject.putTuning(tuning: NativeRouteTuning) {
+        tuning.useHighways?.let { put("use_highways", it) }
+        tuning.useTolls?.let { put("use_tolls", it) }
+        tuning.useHills?.let { put("use_hills", it) }
+        tuning.useDistance?.let { put("use_distance", it) }
+        tuning.useTrails?.let { put("use_trails", it) }
+        tuning.useRoads?.let { put("use_roads", it) }
     }
 
     private fun JSONObject.putAutoEnvelope(vehicle: VehicleProfile) {
