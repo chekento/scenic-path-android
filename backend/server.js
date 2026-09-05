@@ -3,7 +3,7 @@ import { rankRoutes } from "./scenic-score.js";
 import { analyzeCorridor } from "./corridor-analyzer.js";
 import { enrichRouteFromOsm } from "./osm-enrichment.js";
 import { enrichTopFoodAlongRoute } from "./food-enrichment.js";
-import { findPlaceDetails } from "./google-places.js";
+import { findPlaceDetails } from "./foursquare-places.js";
 import { selectSceneSuggestions } from "./scene-suggestions.js";
 import { orderRoutesForCharacter } from "./route-selection.js";
 import { insertAutomaticStops } from "./auto-stop-planner.js";
@@ -79,7 +79,7 @@ async function enrichCandidate(candidate, enabledSceneKinds, preferences, autoSu
 
   const topFood = candidate.character === "DIRECT" ? [] : await enrichTopFoodAlongRoute({
     points: candidate.points,
-    apiKey: process.env.GOOGLE_PLACES_API_KEY,
+    apiKey: process.env.FOURSQUARE_SERVICE_KEY,
     preferences,
     enabledSceneKinds,
   });
@@ -107,6 +107,7 @@ async function enrichCandidate(candidate, enabledSceneKinds, preferences, autoSu
     corridor: {
       source: enrichment.source,
       verifiedTopFoodCount: topFood.length,
+      topFoodProvider: topFood.length ? "Foursquare" : null,
       diagnostics: analysis.diagnostics,
       degradedReason: enrichment.reason,
       lateralOffsetKm: enrichment.lateralOffsetKm ?? 0,
@@ -204,12 +205,13 @@ const server = http.createServer(async (req, res) => {
     return json(res, 200, {
       ok: true,
       service: "scenic-path-backend",
-      version: "0.6.1",
+      version: "0.6.2-rc1",
       apiVersion: 1,
       placeSearch: process.env.PHOTON_URL ? "OpenStreetMap/Photon" : "TomTom fallback",
       corridorEnrichment: process.env.OSM_ENRICHMENT_URL ? "configured" : "geometry-only",
-      verifiedFood: process.env.GOOGLE_PLACES_API_KEY ? "configured" : "disabled",
-      popupRatings: process.env.GOOGLE_PLACES_API_KEY ? "Google Places" : "disabled",
+      verifiedFood: process.env.FOURSQUARE_SERVICE_KEY ? "configured" : "disabled",
+      popupRatings: process.env.FOURSQUARE_SERVICE_KEY ? "Foursquare" : "disabled",
+      foodAttribution: process.env.FOURSQUARE_SERVICE_KEY ? "Powered by Foursquare" : null,
       automaticSmartStops: true,
       vehicleAwareRouting: true,
       routeTimeBudgetValidation: true,
@@ -238,15 +240,19 @@ const server = http.createServer(async (req, res) => {
       if (!name || !Number.isFinite(lat) || !Number.isFinite(lon)) {
         return json(res, 400, { error: "name, lat and lon are required" });
       }
-      if (!process.env.GOOGLE_PLACES_API_KEY) {
-        return json(res, 200, { ratingSource: null, providerConfigured: false });
+      if (!process.env.FOURSQUARE_SERVICE_KEY) {
+        return json(res, 200, { ratingSource: null, providerAttribution: null, providerConfigured: false });
       }
       const details = await findPlaceDetails({
-        apiKey: process.env.GOOGLE_PLACES_API_KEY,
+        apiKey: process.env.FOURSQUARE_SERVICE_KEY,
         name,
         center: { lat, lon },
       });
-      return json(res, 200, details ? { ...details, providerConfigured: true } : { providerConfigured: true });
+      return json(res, 200, details ? { ...details, providerConfigured: true } : {
+        providerConfigured: true,
+        ratingSource: "Foursquare",
+        providerAttribution: "Powered by Foursquare",
+      });
     } catch (error) {
       console.error("poi-details:", error);
       return json(res, 502, { error: error.message });
