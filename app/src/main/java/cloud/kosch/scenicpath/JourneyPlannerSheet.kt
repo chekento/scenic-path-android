@@ -35,10 +35,13 @@ fun JourneyPlannerSheet(
 
     val isDayTrip = draftPlan.mode == PlanningMode.DAY_TRIP
     val budget = draftPreferences.maxExtraMinutes
-    val corridorKm = (4.0 + budget * 0.15).coerceIn(6.0, 42.0)
+    val corridorKm = NativeAutoStopPolicy.distanceLimitMeters(budget) / 1000.0
     val autoStops = autoStopPreview(budget, draftPreferences.maxStops)
     val dirty = draftPlan != plan || draftPreferences != preferences
     val sceneCount = draftPlan.enabledSceneKinds.size
+    val vehicleKind = draftPreferences.vehicle.kind
+    val supportsRoadAvoidance = NativeRouteConstraintPolicy.supportsRoadAvoidance(vehicleKind)
+    val supportsWindingAndHills = NativeRouteConstraintPolicy.supportsWindingAndHills(vehicleKind)
 
     LaunchedEffect(rebuildRequested, plan, preferences) {
         if (rebuildRequested && plan == draftPlan && preferences == draftPreferences) {
@@ -80,9 +83,9 @@ fun JourneyPlannerSheet(
                     }
                     Text(
                         if (isDayTrip) {
-                            "$budget min time budget · ~${corridorKm.roundToInt()} km discovery radius · up to $autoStops automatic Smart Stops · ${draftPlan.requestedAlternatives} route variants"
+                            "$budget min time budget · ~${corridorKm.roundToInt()} km POI reach · up to $autoStops automatic Smart Stops · ${draftPlan.requestedAlternatives} route variants"
                         } else {
-                            "+$budget min · max ${draftPreferences.maxExtraPercent}% drive detour · ~${corridorKm.roundToInt()} km discovery corridor · up to $autoStops automatic Smart Stops"
+                            "+$budget min · max ${draftPreferences.maxExtraPercent}% drive detour · ~${corridorKm.roundToInt()} km POI reach · up to $autoStops automatic Smart Stops"
                         },
                         style = MaterialTheme.typography.titleMedium,
                         fontWeight = FontWeight.Bold,
@@ -218,7 +221,7 @@ fun JourneyPlannerSheet(
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Column(Modifier.weight(1f)) {
                             Text("Maximum automatic stops", fontWeight = FontWeight.Medium)
-                            Text("Budget tiers still cap the practical number: 1 from 30 min, 2 from 100 min, 3 from 210 min.", style = MaterialTheme.typography.bodySmall)
+                            Text("Practical cap grows with time: 1 / 2 / 3 / 4 / 5 / 6 as the exploration budget becomes larger, never exceeding your chosen maximum.", style = MaterialTheme.typography.bodySmall)
                         }
                         Text(draftPreferences.maxStops.toString(), fontWeight = FontWeight.Bold)
                     }
@@ -392,29 +395,63 @@ fun JourneyPlannerSheet(
                 Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainer)) {
                     Column(Modifier.padding(15.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                         Text("Hard route constraints", fontWeight = FontWeight.SemiBold)
-                        SettingSwitchV5("Avoid motorways", "Applied inside the routing cost model.", draftPreferences.avoidMotorways) {
-                            draftPreferences = draftPreferences.copy(avoidMotorways = it)
-                        }
-                        SettingSwitchV5("Avoid tolls", "Prefer routes without toll roads.", draftPreferences.avoidTolls) {
-                            draftPreferences = draftPreferences.copy(avoidTolls = it)
+                        Text(
+                            "Constraints change the routing engine itself or reject routes outside your limits; they are not merely score hints.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                        if (supportsRoadAvoidance) {
+                            SettingSwitchV5(
+                                "Avoid motorways",
+                                "Sets motorway preference to zero in native routing and requests motorway avoidance in production routing.",
+                                draftPreferences.avoidMotorways,
+                            ) { draftPreferences = draftPreferences.copy(avoidMotorways = it) }
+                            SettingSwitchV5(
+                                "Avoid tolls",
+                                "Sets toll preference to zero / requests toll-road avoidance where the vehicle mode supports it.",
+                                draftPreferences.avoidTolls,
+                            ) { draftPreferences = draftPreferences.copy(avoidTolls = it) }
+                        } else {
+                            Text(
+                                "Bicycle routing uses bicycle type and surface permission instead of car-style motorway/toll controls.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
                         }
                         IntPreferenceSliderV5(
                             if (isDayTrip) "Maximum road-time variation" else "Maximum drive detour",
                             draftPreferences.maxExtraPercent,
+                            if (isDayTrip) {
+                                "For trips with a different destination, caps driving-time growth versus the efficient baseline. Same-point round trips use the total day budget instead."
+                            } else {
+                                "Hard cap on driving-time growth versus the efficient baseline. POI visit time is counted separately in the minute budget."
+                            },
                         ) {
                             draftPreferences = draftPreferences.copy(maxExtraPercent = it)
                         }
-                        IntPreferenceSliderV5("Winding roads", draftPreferences.windingness) {
-                            draftPreferences = draftPreferences.copy(windingness = it)
-                        }
-                        IntPreferenceSliderV5("Hills & relief", draftPreferences.hilliness) {
-                            draftPreferences = draftPreferences.copy(hilliness = it)
+                        if (supportsWindingAndHills) {
+                            IntPreferenceSliderV5(
+                                "Winding roads",
+                                draftPreferences.windingness,
+                                "Car / motorcycle: higher values reduce highway preference and increase winding or secondary-road preference.",
+                            ) { draftPreferences = draftPreferences.copy(windingness = it) }
+                            IntPreferenceSliderV5(
+                                "Hills & relief",
+                                draftPreferences.hilliness,
+                                "Car / motorcycle: higher values directly increase hill preference in the scenic route cost model.",
+                            ) { draftPreferences = draftPreferences.copy(hilliness = it) }
+                        } else {
+                            Text(
+                                "Winding-road and hill sliders are hidden for ${vehicleKind.label} because the active production/native provider pair cannot honor them consistently for this vehicle.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
                         }
 
                         HorizontalDivider()
                         Text("Scenic DNA", fontWeight = FontWeight.SemiBold)
                         Text(
-                            "Categories decide what may appear; DNA decides what should win inside those categories.",
+                            "Categories decide what may appear. DNA weights directly change POI utility and route scoring, so increasing a theme makes matching routes and stops win more often.",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
@@ -479,12 +516,8 @@ private fun formatBudgetChip(minutes: Int, isDayTrip: Boolean): String {
     return if (isDayTrip) value else "+$value"
 }
 
-private fun autoStopPreview(budgetMinutes: Int, configuredMax: Int): Int = when {
-    budgetMinutes >= 210 -> minOf(3, configuredMax.coerceAtLeast(0))
-    budgetMinutes >= 100 -> minOf(2, configuredMax.coerceAtLeast(0))
-    budgetMinutes >= 30 -> minOf(1, configuredMax.coerceAtLeast(0))
-    else -> 0
-}
+private fun autoStopPreview(budgetMinutes: Int, configuredMax: Int): Int =
+    NativeAutoStopPolicy.limit(budgetMinutes, configuredMax)
 
 private fun <T> List<T>.moveItem(from: Int, to: Int): List<T> {
     if (from !in indices || to !in indices || from == to) return this
@@ -515,11 +548,14 @@ private fun SettingSwitchV5(title: String, subtitle: String, checked: Boolean, o
 }
 
 @Composable
-private fun IntPreferenceSliderV5(label: String, value: Int, onChange: (Int) -> Unit) {
+private fun IntPreferenceSliderV5(label: String, value: Int, subtitle: String? = null, onChange: (Int) -> Unit) {
     Column {
         Row {
             Text(label, Modifier.weight(1f))
             Text("$value%", fontWeight = FontWeight.SemiBold)
+        }
+        if (!subtitle.isNullOrBlank()) {
+            Text(subtitle, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
         Slider(value = value.toFloat(), onValueChange = { onChange(it.roundToInt()) }, valueRange = 0f..100f)
     }
