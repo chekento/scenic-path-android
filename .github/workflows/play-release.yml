@@ -17,7 +17,7 @@ jobs:
       SCENIC_API_BASE_URL: ${{ secrets.SCENIC_API_BASE_URL }}
       SCENIC_MAP_STYLE_URL: ${{ secrets.SCENIC_MAP_STYLE_URL }}
       SCENIC_PRIVACY_POLICY_URL: ${{ secrets.SCENIC_PRIVACY_POLICY_URL }}
-      SCENIC_UPLOAD_STORE_FILE: ${{ runner.temp }}/scenic-upload.jks
+      SCENIC_UPLOAD_STORE_FILE: /tmp/scenic-upload.jks
       SCENIC_UPLOAD_STORE_PASSWORD: ${{ secrets.PLAY_UPLOAD_STORE_PASSWORD }}
       SCENIC_UPLOAD_KEY_ALIAS: ${{ secrets.PLAY_UPLOAD_KEY_ALIAS }}
       SCENIC_UPLOAD_KEY_PASSWORD: ${{ secrets.PLAY_UPLOAD_KEY_PASSWORD }}
