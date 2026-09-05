@@ -10,6 +10,8 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.SmallFloatingActionButton
 import androidx.compose.material3.Surface
@@ -35,6 +37,7 @@ class MainActivity : ComponentActivity() {
                     mutableStateOf(hasForegroundLocationPermission())
                 }
                 var showVehicleSettings by remember { mutableStateOf(false) }
+                var showNavigationDisclaimer by remember { mutableStateOf(true) }
                 val permissionLauncher = rememberLauncherForActivityResult(
                     ActivityResultContracts.RequestMultiplePermissions()
                 ) { result ->
@@ -72,6 +75,24 @@ class MainActivity : ComponentActivity() {
                         current = VehicleSettingsState.profile,
                         onSave = { VehicleSettingsState.update(this@MainActivity, it) },
                         onDismiss = { showVehicleSettings = false },
+                    )
+                }
+
+                if (showNavigationDisclaimer) {
+                    AlertDialog(
+                        onDismissRequest = { showNavigationDisclaimer = false },
+                        title = { Text("Navigation safety") },
+                        text = {
+                            Text(
+                                "Scenic Path navigation is advisory. Always follow traffic laws, road signs, closures and real-world conditions. " +
+                                    "Do not interact with the app while driving; stop safely before changing the route or Smart Stops."
+                            )
+                        },
+                        confirmButton = {
+                            Button(onClick = { showNavigationDisclaimer = false }) {
+                                Text("I understand")
+                            }
+                        },
                     )
                 }
             }
