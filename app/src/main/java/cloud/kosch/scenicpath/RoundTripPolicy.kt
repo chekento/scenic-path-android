@@ -29,10 +29,11 @@ object RoundTripPolicy {
         autoSuggestStops: Boolean,
         count: Int,
         fixedDwellMinutes: Int = 0,
+        generation: Int = 0,
     ): List<List<GeoPoint>> {
         val desired = count.coerceIn(2, 6)
         val speedKmh = when (vehicle.kind) {
-            VehicleKind.BICYCLE -> 18.0
+            VehicleKind.BICYCLE -> if (vehicle.eBikeEnabled) 17.0 else 15.0
             VehicleKind.TRUCK -> 42.0
             VehicleKind.COACH -> 46.0
             VehicleKind.CAMPER -> 48.0
@@ -44,9 +45,11 @@ object RoundTripPolicy {
         // origin -> A -> B -> C -> origin is about 5.46 radii for an equilateral ring.
         val baseRadiusMeters = (targetKm * 1000.0 / 5.46).coerceIn(2_500.0, 70_000.0)
         val scales = listOf(0.86, 1.0, 1.12, 0.94, 1.06, 0.80)
+        val seed = generation.coerceAtLeast(0)
         return (0 until desired).map { variant ->
-            val orientation = (variant * 57.0 + if (variant % 2 == 0) 12.0 else 31.0) % 120.0
-            val radius = baseRadiusMeters * scales[variant % scales.size]
+            val seededIndex = variant + seed * 3
+            val orientation = (seededIndex * 57.0 + if (seededIndex % 2 == 0) 12.0 else 31.0 + seed * 19.0) % 120.0
+            val radius = baseRadiusMeters * scales[seededIndex % scales.size] * (1.0 + (seed % 3 - 1) * 0.035)
             listOf(
                 project(origin, orientation, radius),
                 project(origin, orientation + 120.0, radius),
