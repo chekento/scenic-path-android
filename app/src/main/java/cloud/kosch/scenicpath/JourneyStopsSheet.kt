@@ -28,6 +28,7 @@ fun JourneyStopsSheet(
     onDismiss: () -> Unit,
 ) {
     val enabledKinds = prototypeSelectableSceneKinds
+    val showAllRoutes = ScenicPoiSharedState.showAllRoutes
     var enriched by remember(route?.id, enabledKinds) { mutableStateOf<List<ScenePointUi>>(emptyList()) }
     var enrichmentLoading by remember(route?.id, enabledKinds) { mutableStateOf(route != null && route.points.size >= 2 && enabledKinds.isNotEmpty()) }
     var enrichmentFailed by remember(route?.id, enabledKinds) { mutableStateOf(false) }
@@ -78,8 +79,6 @@ fun JourneyStopsSheet(
         }
     }
     val merged = remember(routePoints, enriched, enabledKinds) {
-        // Current route inclusions remain visible even if the user has just changed the draft
-        // filter. Every optional discovery result must match the committed category set exactly.
         val included = routePoints.filter { it.includedInRoute }
         val optional = mergeStopsStrict(routePoints.filterNot { it.includedInRoute } + enriched, enabledKinds, 360)
         (included + optional.filterNot { option -> included.any { it.id == option.id } }).take(360)
@@ -131,13 +130,27 @@ fun JourneyStopsSheet(
 
                 item(key = "filters") {
                     Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow)) {
-                        Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(5.dp)) {
+                        Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                             Text("Committed filter", fontWeight = FontWeight.SemiBold)
                             Text(
-                                if (enabledKinds.isEmpty()) "No automatic POI categories are enabled."
-                                else "${enabledKinds.size}/${allSelectableSceneKinds.size} categories · disabled categories cannot appear as optional stops.",
+                                if (enabledKinds.isEmpty()) "No scenic POI categories are enabled. Journey-support markers can still remain visible."
+                                else "${enabledKinds.size}/${allSelectableSceneKinds.size} scenic categories · disabled categories cannot appear as optional scenic stops.",
                                 style = MaterialTheme.typography.bodySmall,
                             )
+                            HorizontalDivider()
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Column(Modifier.weight(1f)) {
+                                    Text("Map POIs", fontWeight = FontWeight.SemiBold)
+                                    Text(
+                                        if (showAllRoutes) "Show POIs collected for all loaded route alternatives" else "Show POIs for the currently selected route only",
+                                        style = MaterialTheme.typography.bodySmall,
+                                    )
+                                }
+                                Switch(
+                                    checked = showAllRoutes,
+                                    onCheckedChange = ScenicPoiSharedState::setShowAllRoutes,
+                                )
+                            }
                         }
                     }
                 }
@@ -166,7 +179,7 @@ fun JourneyStopsSheet(
                                     Row(verticalAlignment = Alignment.CenterVertically) {
                                         CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp)
                                         Spacer(Modifier.width(8.dp))
-                                        Text("Searching the route corridor…", style = MaterialTheme.typography.bodySmall)
+                                        Text("Searching this route corridor…", style = MaterialTheme.typography.bodySmall)
                                     }
                                 }
                                 if (enrichmentFailed) {
@@ -211,7 +224,7 @@ fun JourneyStopsSheet(
                         item(key = "no-results") {
                             Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow)) {
                                 Text(
-                                    if (enabledKinds.isEmpty()) "No categories are enabled. Change the planner filter to discover POIs."
+                                    if (enabledKinds.isEmpty()) "No scenic categories are enabled. Journey-support markers appear only when the route actually needs them."
                                     else "No matching POIs were found on this pass. Try a deeper refresh or add a place manually.",
                                     Modifier.padding(14.dp),
                                 )
@@ -264,10 +277,13 @@ private fun StopCard(
                     point.openNow?.let { add(if (it) "open" else "closed") }
                 }
                 Text(meta.joinToString(" · "), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                point.rationale?.takeIf { isJourneySupportPoint(point) }?.let {
+                    Text(it, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary)
+                }
             }
             if (included) {
                 Icon(Icons.Default.CheckCircle, "Included", tint = MaterialTheme.colorScheme.primary)
-            } else {
+            } else if (!isJourneySupportPoint(point)) {
                 FilledTonalIconButton(onClick = onAdd) { Icon(Icons.Default.AddLocationAlt, "Add ${point.name}") }
             }
         }
@@ -276,15 +292,18 @@ private fun StopCard(
 }
 
 private fun mergeStopsStrict(points: List<ScenePointUi>, enabledKinds: Set<StopKind>, maxResults: Int): List<ScenePointUi> {
-    if (enabledKinds.isEmpty() || maxResults <= 0) return emptyList()
+    if (maxResults <= 0) return emptyList()
     val enabledNames = enabledKinds.mapTo(mutableSetOf()) { it.name }
     return points
-        .filter { it.kind in enabledNames }
+        .filter { it.kind in enabledNames || isJourneySupportPoint(it) }
         .groupBy { it.id }
         .map { (_, versions) -> versions.maxByOrNull(::browserScore) ?: versions.first() }
         .sortedByDescending(::browserScore)
         .take(maxResults)
 }
+
+private fun isJourneySupportPoint(point: ScenePointUi): Boolean =
+    point.subtype.orEmpty().startsWith("overnight_") || point.subtype.orEmpty().startsWith("ebike_")
 
 private fun browserScore(point: ScenePointUi): Double =
     point.suggestionScore * 50.0 + point.relevance * 30.0 + (point.rating ?: 0.0) * 6.0 + ln(((point.ratingCount ?: 0) + 10).toDouble()) - point.distanceFromRouteMeters / 1500.0
