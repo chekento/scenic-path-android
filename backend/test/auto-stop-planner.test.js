@@ -53,6 +53,22 @@ test("automatic stop limit grows with available exploration time", () => {
   assert.equal(automaticStopLimit(300, 2), 2);
 });
 
+test("empty enabled category set means no automatic stops", () => {
+  const selected = chooseInitialAutoStops(
+    [poi({ id: "view", kind: "VIEWPOINT" }), poi({ id: "scenic", kind: "SCENIC" })],
+    preferences,
+    [],
+  );
+  assert.deepEqual(selected, []);
+});
+
+test("SCENIC candidates are excluded unless SCENIC is explicitly enabled", () => {
+  const scenic = poi({ id: "scenic", kind: "SCENIC", relevance: 1.0 });
+  const view = poi({ id: "view", kind: "VIEWPOINT", relevance: 0.8 });
+  const selected = chooseInitialAutoStops([scenic, view], preferences, ["VIEWPOINT"]);
+  assert.ok(selected.every(item => item.kind !== "SCENIC"));
+});
+
 test("Top Food receives a reserved slot when enabled and budget is sufficient", () => {
   const food = poi({
     id: "food",
