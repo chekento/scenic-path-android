@@ -12,6 +12,7 @@ class RoutingCoreTest {
         val source = ScenicPreferences(
             maxExtraMinutes = 240,
             maxExtraPercent = 90,
+            avoidMotorways = true,
             windingness = 95,
             hilliness = 90,
         )
@@ -20,6 +21,7 @@ class RoutingCoreTest {
 
         assertEquals(10, direct.maxExtraMinutes)
         assertEquals(10, direct.maxExtraPercent)
+        assertFalse(direct.avoidMotorways)
         assertEquals(20, direct.windingness)
         assertEquals(20, direct.hilliness)
     }
@@ -45,15 +47,23 @@ class RoutingCoreTest {
 
     @Test
     fun balancedCharacterProvidesMinimumExplorationWithoutDiscardingLargerBudget() {
-        val compact = ScenicPreferences(maxExtraMinutes = 5, maxExtraPercent = 5)
-            .forCharacter(RouteCharacter.BALANCED)
-        val generous = ScenicPreferences(maxExtraMinutes = 120, maxExtraPercent = 65)
-            .forCharacter(RouteCharacter.BALANCED)
+        val compact = ScenicPreferences(
+            maxExtraMinutes = 5,
+            maxExtraPercent = 5,
+            avoidMotorways = true,
+        ).forCharacter(RouteCharacter.BALANCED)
+        val generous = ScenicPreferences(
+            maxExtraMinutes = 120,
+            maxExtraPercent = 65,
+            avoidMotorways = true,
+        ).forCharacter(RouteCharacter.BALANCED)
 
         assertEquals(30, compact.maxExtraMinutes)
         assertEquals(25, compact.maxExtraPercent)
+        assertFalse(compact.avoidMotorways)
         assertEquals(120, generous.maxExtraMinutes)
         assertEquals(65, generous.maxExtraPercent)
+        assertFalse(generous.avoidMotorways)
         assertEquals(50, generous.windingness)
         assertEquals(40, generous.hilliness)
     }
@@ -97,6 +107,7 @@ class RoutingCoreTest {
 
         assertTrue(snapshot.offRoute)
         assertTrue(snapshot.offRouteMeters > 90.0)
+        assertTrue(snapshot.remainingMeters > 80.0)
         assertFalse(snapshot.arrived)
     }
 
