@@ -167,7 +167,8 @@ object NativeRoundTripPlanner {
                     break
                 }
             }
-            val weakest = NativeAutoStopPolicy.weakestRemovable(selected, preferences, plan.enabledSceneKinds) ?: run {
+            val weakest = NativeAutoStopPolicy.weakestRemovable(selected, preferences, plan.enabledSceneKinds)
+            if (weakest == null) {
                 selected = emptyList()
                 break
             }
