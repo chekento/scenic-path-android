@@ -48,15 +48,18 @@ fun ScenicPreferences.forCharacter(character: RouteCharacter): ScenicPreferences
         hilliness = 60,
     )
     RouteCharacter.BALANCED -> copy(
-        // Character presets define a floor, not a replacement for the user's budget.
+        // A character preset is a coherent baseline. Explicit exceptions remain available through
+        // the Advanced constraints / Custom character instead of leaking in from the previous mode.
         maxExtraMinutes = maxOf(maxExtraMinutes, 30),
         maxExtraPercent = maxOf(maxExtraPercent, 25),
+        avoidMotorways = false,
         windingness = 50,
         hilliness = 40,
     )
     RouteCharacter.DIRECT -> copy(
         maxExtraMinutes = 10,
         maxExtraPercent = 10,
+        avoidMotorways = false,
         windingness = 20,
         hilliness = 20,
     )
