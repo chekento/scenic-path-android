@@ -81,10 +81,12 @@ export function chooseInitialAutoStops(scenePoints = [], preferences = {}, enabl
   if (maxStops <= 0) return [];
 
   const enabled = new Set(enabledSceneKinds);
+  if (enabled.size === 0) return [];
+
   const maxDistanceMeters = autoStopDistanceLimitMeters(budgetMinutes);
   const eligible = scenePoints
     .filter(point => point?.point && Number.isFinite(point.point.lat) && Number.isFinite(point.point.lon))
-    .filter(point => enabled.size === 0 || enabled.has(point.kind) || point.kind === "SCENIC")
+    .filter(point => enabled.has(point.kind))
     .filter(point => (point.distanceFromRouteMeters ?? 0) <= maxDistanceMeters)
     .sort((a, b) => stopUtility(b, preferences) - stopUtility(a, preferences));
 
