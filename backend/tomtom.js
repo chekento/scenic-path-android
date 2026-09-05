@@ -30,6 +30,26 @@ export function vehicleConfig(preferences = {}, requestedRouteType = "thrilling"
   return { kind, travelMode, routeType, vehicle };
 }
 
+/** Pure projection used by tests and by the actual TomTom request builder. */
+export function routeConstraintConfig(preferences = {}, requestedRouteType = "thrilling") {
+  const config = vehicleConfig(preferences, requestedRouteType);
+  const avoid = [];
+  if (preferences.avoidMotorways && config.travelMode !== "bicycle") avoid.push("motorways");
+  if (preferences.avoidTolls && config.travelMode !== "bicycle") avoid.push("tollRoads");
+  if (config.kind === "BICYCLE" && config.vehicle.allowUnpavedBikePaths === false) avoid.push("unpavedRoads");
+
+  return {
+    ...config,
+    avoid,
+    hilliness: config.routeType === "thrilling" && ["car", "motorcycle"].includes(config.travelMode)
+      ? level(preferences.hilliness ?? 50)
+      : null,
+    windingness: config.routeType === "thrilling" && ["car", "motorcycle"].includes(config.travelMode)
+      ? level(preferences.windingness ?? 50)
+      : null,
+  };
+}
+
 export async function tomTomRoute({
   apiKey,
   origin,
@@ -44,7 +64,7 @@ export async function tomTomRoute({
     .map((point) => `${point.lat},${point.lon}`)
     .join(":");
 
-  const config = vehicleConfig(preferences, routeType);
+  const config = routeConstraintConfig(preferences, routeType);
   const params = new URLSearchParams({
     key: apiKey,
     routeType: config.routeType,
@@ -57,16 +77,9 @@ export async function tomTomRoute({
     maxAlternatives: config.routeType === "thrilling" && waypoints.length === 0 ? "2" : "0"
   });
 
-  if (config.routeType === "thrilling" && ["car", "motorcycle"].includes(config.travelMode)) {
-    params.set("hilliness", level(preferences.hilliness ?? 50));
-    params.set("windingness", level(preferences.windingness ?? 50));
-  }
-
-  if (preferences.avoidMotorways && config.travelMode !== "bicycle") params.append("avoid", "motorways");
-  if (preferences.avoidTolls && config.travelMode !== "bicycle") params.append("avoid", "tollRoads");
-  if (config.kind === "BICYCLE" && config.vehicle.allowUnpavedBikePaths === false) {
-    params.append("avoid", "unpavedRoads");
-  }
+  if (config.hilliness) params.set("hilliness", config.hilliness);
+  if (config.windingness) params.set("windingness", config.windingness);
+  config.avoid.forEach(value => params.append("avoid", value));
 
   if (["CAMPER", "TRUCK", "COACH"].includes(config.kind)) {
     const v = config.vehicle;
