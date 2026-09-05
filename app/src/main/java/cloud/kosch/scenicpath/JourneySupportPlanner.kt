@@ -12,7 +12,7 @@ object JourneySupportPlanner {
     suspend fun enrich(
         plan: RoutePlanUi,
         vehicle: VehicleProfile,
-        enabledKinds: Set<StopKind> = allSelectableSceneKinds,
+        enabledKinds: Set<StopKind> = prototypeSelectableSceneKinds,
     ): RoutePlanUi = withContext(Dispatchers.IO) {
         if (plan.candidates.isEmpty()) return@withContext plan
 
