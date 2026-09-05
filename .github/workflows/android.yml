@@ -23,6 +23,9 @@ jobs:
         with:
           gradle-version: '9.1.0'
 
+      - name: JVM routing tests
+        run: gradle :app:testDebugUnitTest
+
       - name: Build debug APK
         run: gradle :app:assembleDebug
 
