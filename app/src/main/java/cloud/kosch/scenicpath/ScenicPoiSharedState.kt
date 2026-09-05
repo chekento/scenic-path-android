@@ -1,39 +1,79 @@
 package cloud.kosch.scenicpath
 
+import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
+import java.util.Locale
 
 /**
- * Durable POI memory for the currently open planning session.
+ * Durable POI memory keyed by routed geometry.
  *
- * The map itself owns the lifecycle boundary: while a calculated route is being edited and
- * recalculated, route geometry may change arbitrarily and this pool is append-only (subject to
- * balanced deduplication/capacity). When ScenicMap receives an empty route because start or
- * destination was changed, the pool is explicitly cleared before the next journey is built.
- *
- * This deliberately avoids deriving journey identity from routed coordinates. Valhalla may snap
- * the same logical start/destination to different road edges, so coordinates are routing output,
- * not a reliable planning-session id.
+ * Alternatives are real, independent routes. Keeping one append-only POI pool for an entire
+ * planning session made markers from Route 1 remain visible after switching to Route 2. This
+ * store therefore keeps a bounded pool per route fingerprint. The optional all-routes mode is
+ * explicit instead of accidental.
  */
 object ScenicPoiSharedState {
-    private const val MAX_SHARED_POINTS = 520
+    private const val MAX_SHARED_POINTS_PER_ROUTE = 520
+    private const val MAX_ROUTE_POOLS = 8
 
-    private val publishedPoints = mutableStateOf<List<ScenePointUi>>(emptyList())
+    private var publishedByRoute: Map<String, List<ScenePointUi>> by mutableStateOf(emptyMap())
+
+    var showAllRoutes: Boolean by mutableStateOf(false)
+        private set
+
+    fun setShowAllRoutes(enabled: Boolean) {
+        showAllRoutes = enabled
+    }
 
     fun publish(route: List<GeoPoint>, points: List<ScenePointUi>) {
         if (route.size < 2 || points.isEmpty()) return
+        val key = routeKey(route)
+        val current = publishedByRoute[key].orEmpty()
         val next = PrecisionRoutePoiDiscovery.mergeForDisplay(
             first = points,
-            second = publishedPoints.value,
-            maxResults = MAX_SHARED_POINTS,
+            second = current,
+            maxResults = MAX_SHARED_POINTS_PER_ROUTE,
         )
-        if (next.isNotEmpty()) publishedPoints.value = next
+        if (next.isEmpty()) return
+
+        val updated = LinkedHashMap(publishedByRoute)
+        updated.remove(key)
+        updated[key] = next
+        while (updated.size > MAX_ROUTE_POOLS) {
+            updated.remove(updated.keys.first())
+        }
+        publishedByRoute = updated
     }
 
     fun pointsFor(route: List<GeoPoint>): List<ScenePointUi> {
-        return if (route.size >= 2) publishedPoints.value else emptyList()
+        if (route.size < 2) return emptyList()
+        if (!showAllRoutes) return publishedByRoute[routeKey(route)].orEmpty()
+        return PrecisionRoutePoiDiscovery.mergeForDisplay(
+            first = publishedByRoute.values.flatten(),
+            second = emptyList(),
+            maxResults = MAX_SHARED_POINTS_PER_ROUTE,
+        )
+    }
+
+    fun clearRoute(route: List<GeoPoint>) {
+        if (route.size < 2) return
+        val key = routeKey(route)
+        if (key !in publishedByRoute) return
+        publishedByRoute = publishedByRoute - key
     }
 
     fun clear() {
-        publishedPoints.value = emptyList()
+        publishedByRoute = emptyMap()
+        showAllRoutes = false
+    }
+
+    internal fun routeKey(route: List<GeoPoint>): String {
+        if (route.size < 2) return "empty"
+        val samples = RouteCoveragePolicy.sampleByDistance(route, 12)
+        val signature = samples.joinToString("|") { point ->
+            String.format(Locale.US, "%.4f,%.4f", point.lat, point.lon)
+        }
+        return "${route.size}:${signature.hashCode()}"
     }
 }
