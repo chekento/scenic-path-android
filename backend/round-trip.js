@@ -34,7 +34,7 @@ function project(origin, bearingDegrees, distanceMeters) {
 
 function speedKmh(preferences = {}) {
   switch (preferences.vehicle?.kind) {
-    case "BICYCLE": return 18;
+    case "BICYCLE": return preferences.vehicle?.eBikeEnabled ? 17 : 15;
     case "TRUCK": return 42;
     case "COACH": return 46;
     case "CAMPER": return 48;
@@ -61,9 +61,14 @@ export function roundTripWaypointSets({
   const radius = Math.max(2_500, Math.min(70_000, targetKm * 1000 / 5.46));
   const scales = [0.86, 1.0, 1.12, 0.94, 1.06, 0.8];
   const desired = Math.max(2, Math.min(6, count));
+  // Server callers request +2 shaping candidates. As + Route grows the requested count from
+  // 2 -> 3 -> 4 -> 5, this generation changes as well and intentionally explores new bearings.
+  const generation = Math.max(0, count - 4);
   return Array.from({ length: desired }, (_, variant) => {
-    const orientation = (variant * 57 + (variant % 2 === 0 ? 12 : 31)) % 120;
-    const r = radius * scales[variant % scales.length];
+    const seededIndex = variant + generation * 3;
+    const orientation = (seededIndex * 57 + (seededIndex % 2 === 0 ? 12 : 31) + generation * 19) % 120;
+    const scaleJitter = 1 + ((generation % 3) - 1) * 0.035;
+    const r = radius * scales[seededIndex % scales.length] * scaleJitter;
     return [
       project(origin, orientation, r),
       project(origin, orientation + 120, r),
