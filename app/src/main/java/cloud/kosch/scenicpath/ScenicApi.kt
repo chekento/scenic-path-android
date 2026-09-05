@@ -59,6 +59,10 @@ data class RouteCandidateUi(
     val totalExtraMinutes: Double = extraMinutes,
     val corridorRadiusKm: Double = 0.0,
     val dataConfidence: Double = 0.0,
+    /** For round trips this is absolute outing time used from the selected day-trip budget. */
+    val budgetUsedMinutes: Double? = null,
+    val budgetMinutes: Int? = null,
+    val isRoundTrip: Boolean = false,
 )
 
 data class RoutePlanUi(
@@ -106,8 +110,6 @@ object ScenicApi {
         plan: TripPlan,
         preferences: ScenicPreferences,
     ): Result<RoutePlanUi> = withContext(Dispatchers.IO) {
-        // Vehicle settings are persistent/global. Copy the latest profile into the committed
-        // planner preferences so a vehicle change is guaranteed to affect the next rebuild.
         val effectivePreferences = preferences
             .copy(vehicle = VehicleSettingsState.profile)
             .forCharacter(plan.routeCharacter)
@@ -116,9 +118,6 @@ object ScenicApi {
             return@withContext runCatching {
                 VehicleAwareJourneyPlanner.plan(origin, destination, plan, effectivePreferences)
             }.recoverCatching { primaryError ->
-                // Only the ordinary car profile may use the older OSM fallback. Other vehicle
-                // types must never silently degrade to car routing, because that would make
-                // bridge/tunnel/HGV or bicycle access promises false.
                 if (effectivePreferences.vehicle.kind == VehicleKind.CAR) {
                     OsmScenicRoutingFallback.plan(origin, destination, plan, effectivePreferences)
                 } else {
@@ -212,6 +211,7 @@ object ScenicApi {
             put("destination", destination.toJson())
             put("mode", plan.mode.name)
             put("routeCharacter", plan.routeCharacter.name)
+            put("requestedAlternatives", plan.requestedAlternatives.coerceIn(1, 5))
             put("autoSuggestStops", plan.autoSuggestStops)
             put("preserveScenicIntentOnReroute", plan.preserveScenicIntentOnReroute)
             put("flexibleStopOrder", plan.flexibleStopOrder)
@@ -331,6 +331,9 @@ object ScenicApi {
                         totalExtraMinutes = item.optDouble("totalExtraMinutes", extraMinutes),
                         corridorRadiusKm = item.optDouble("corridorRadiusKm", 0.0),
                         dataConfidence = item.optDouble("dataConfidence", 0.0),
+                        budgetUsedMinutes = item.optDoubleOrNull("budgetUsedMinutes"),
+                        budgetMinutes = item.optIntOrNull("budgetMinutes"),
+                        isRoundTrip = item.optBoolean("isRoundTrip", false),
                     )
                 )
             }
