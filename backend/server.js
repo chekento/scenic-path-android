@@ -10,6 +10,13 @@ import { insertAutomaticStops } from "./auto-stop-planner.js";
 import { photonSearch } from "./photon-search.js";
 import { tomTomRoute } from "./tomtom.js";
 import { tomTomSearch } from "./tomtom-search.js";
+import { orderFlexibleStops } from "./waypoint-order.js";
+import {
+  isRoundTripRequest,
+  roundTripWaypointSets,
+  utilizationScore,
+} from "./round-trip.js";
+import { orderDiverseRoutes } from "./route-diversity.js";
 
 const port = Number(process.env.PORT || 8787);
 const json = (res, status, body) => {
@@ -49,6 +56,29 @@ function normalizeRoute(route, index, fastestSeconds, character, provider = "Tom
     totalExtraMinutes: Math.max(0, (durationSeconds - fastestSeconds) / 60),
     points: routePoints(route),
     provider,
+  };
+}
+
+function normalizeRoundRoute(route, index, character, waypoints, budgetMinutes, fixedDwellMinutes) {
+  const durationSeconds = route.summary?.travelTimeInSeconds ?? 0;
+  const outingMinutes = durationSeconds / 60 + fixedDwellMinutes;
+  return {
+    id: `tomtom-round-${character.toLowerCase()}-${index}`,
+    character,
+    durationSeconds,
+    fastestDurationSeconds: durationSeconds,
+    distanceMeters: route.summary?.lengthInMeters ?? 0,
+    extraMinutes: durationSeconds / 60,
+    driveExtraMinutes: durationSeconds / 60,
+    dwellMinutes: fixedDwellMinutes,
+    totalExtraMinutes: outingMinutes,
+    budgetUsedMinutes: outingMinutes,
+    budgetMinutes,
+    isRoundTrip: true,
+    points: routePoints(route),
+    provider: "TomTom · Scenic round trip",
+    roundTripWaypoints: waypoints,
+    variantLabel: `Round tour ${index + 1}`,
   };
 }
 
@@ -154,6 +184,27 @@ async function searchPlaces(query, lat, lon) {
   });
 }
 
+function bearingDegrees(origin, point) {
+  const lat1 = origin.lat * Math.PI / 180;
+  const lat2 = point.lat * Math.PI / 180;
+  const dLon = (point.lon - origin.lon) * Math.PI / 180;
+  const y = Math.sin(dLon) * Math.cos(lat2);
+  const x = Math.cos(lat1) * Math.sin(lat2) - Math.sin(lat1) * Math.cos(lat2) * Math.cos(dLon);
+  return (Math.atan2(y, x) * 180 / Math.PI + 360) % 360;
+}
+
+function orderLoopWaypoints(origin, shaping, fixedStops) {
+  if (!shaping.length) return fixedStops.map(stop => stop.position);
+  const startBearing = bearingDegrees(origin, shaping[0]);
+  return [
+    ...shaping.map((position, index) => ({ position, shape: true, index, bearing: bearingDegrees(origin, position) })),
+    ...fixedStops.map((stop, index) => ({ position: stop.position, shape: false, index, bearing: bearingDegrees(origin, stop.position) })),
+  ]
+    .map(item => ({ ...item, progress: (item.bearing - startBearing + 360) % 360 }))
+    .sort((a, b) => a.progress - b.progress || Number(b.shape) - Number(a.shape) || a.index - b.index)
+    .map(item => item.position);
+}
+
 async function applyAutomaticStops({
   ranked,
   origin,
@@ -164,38 +215,146 @@ async function applyAutomaticStops({
   preferences,
   enabledSceneKinds,
   autoSuggestStops,
+  roundTrip = false,
 }) {
-  if (autoSuggestStops === false || (preferences.maxExtraMinutes ?? 0) < 30) return ranked;
+  if (autoSuggestStops === false || (preferences.maxExtraMinutes ?? 0) < 30) {
+    return ranked.map(candidate => roundTrip ? {
+      ...candidate,
+      budgetUsedMinutes: candidate.durationSeconds / 60 + fixedDwellMinutes,
+      budgetMinutes: preferences.maxExtraMinutes,
+      isRoundTrip: true,
+    } : candidate);
+  }
 
-  // Exact insertion is intentionally bounded: at most the two strongest non-direct scenic
-  // variants are trial-routed. This keeps production latency predictable while still giving
-  // users more than one complete experience to compare.
+  const usedStopIds = new Set();
   let plannedCount = 0;
   const planned = [];
   for (const candidate of ranked) {
-    if (candidate.character === "DIRECT" || plannedCount >= 2 || !candidate.scenePoints?.length) {
+    if (candidate.character === "DIRECT" || plannedCount >= 5 || !candidate.scenePoints?.length) {
       planned.push(candidate);
       continue;
     }
     plannedCount += 1;
     try {
-      planned.push(await insertAutomaticStops({
-        candidate,
+      const unused = candidate.scenePoints.filter(point => !usedStopIds.has(point.id));
+      const candidateForStops = {
+        ...candidate,
+        scenePoints: unused.length ? unused : candidate.scenePoints,
+      };
+      const candidateFixed = roundTrip
+        ? [...(candidate.roundTripWaypoints ?? []), ...fixedWaypoints]
+        : fixedWaypoints;
+      let next = await insertAutomaticStops({
+        candidate: candidateForStops,
         origin,
         destination,
-        fixedWaypoints,
+        fixedWaypoints: candidateFixed,
         fixedDwellMinutes,
-        fastestSeconds,
+        fastestSeconds: roundTrip ? 0 : fastestSeconds,
         preferences,
         enabledSceneKinds,
         apiKey: process.env.TOMTOM_API_KEY,
-      }));
+      });
+      if (roundTrip) {
+        const outing = next.totalExtraMinutes ?? (next.durationSeconds / 60 + next.dwellMinutes);
+        next = {
+          ...next,
+          budgetUsedMinutes: outing,
+          budgetMinutes: preferences.maxExtraMinutes,
+          isRoundTrip: true,
+        };
+      }
+      (next.autoStopIds ?? []).forEach(id => usedStopIds.add(id));
+      planned.push(next);
     } catch (error) {
       console.warn("automatic Smart Stop insertion degraded:", error.message);
       planned.push(candidate);
     }
   }
   return planned;
+}
+
+function applyDayTripBudgetIntent(candidates, mode, preferences, roundTrip) {
+  if (mode !== "DAY_TRIP") return candidates;
+  const budget = Math.max(1, preferences.maxExtraMinutes ?? 0);
+  return candidates
+    .map(candidate => {
+      const used = roundTrip
+        ? candidate.budgetUsedMinutes ?? candidate.durationSeconds / 60 + (candidate.dwellMinutes ?? 0)
+        : candidate.totalExtraMinutes ?? candidate.extraMinutes ?? 0;
+      const useScore = utilizationScore(used, budget);
+      const quality = Math.max(0, Math.min(100, candidate.profileScore ?? candidate.experienceScore ?? candidate.scenicScore ?? 0));
+      return {
+        ...candidate,
+        budgetUsedMinutes: used,
+        budgetMinutes: budget,
+        profileScore: quality * 0.64 + useScore * 36,
+        experienceScore: Math.max(candidate.experienceScore ?? 0, (candidate.scenicScore ?? 0) * 0.72 + useScore * 28),
+      };
+    })
+    .filter(candidate => !roundTrip || candidate.budgetUsedMinutes <= budget * 1.03)
+    .sort((a, b) => b.profileScore - a.profileScore || b.experienceScore - a.experienceScore);
+}
+
+async function planRoundTrip(body, fixedStops, enabledSceneKinds, requestedCharacter, requestedCount) {
+  const preferences = beautifulPreferences(body.preferences);
+  const fixedDwellMinutes = fixedStops.reduce((sum, stop) => sum + Math.max(0, Number(stop.dwellMinutes) || 0), 0);
+  const sets = roundTripWaypointSets({
+    origin: body.origin,
+    preferences,
+    autoSuggestStops: body.autoSuggestStops !== false,
+    fixedDwellMinutes,
+    count: Math.max(requestedCount + 2, 4),
+  });
+
+  const raw = await Promise.all(sets.map(async (shape, index) => {
+    try {
+      const waypoints = orderLoopWaypoints(body.origin, shape, fixedStops);
+      const response = await tomTomRoute({
+        apiKey: process.env.TOMTOM_API_KEY,
+        origin: body.origin,
+        destination: body.origin,
+        waypoints,
+        preferences,
+        routeType: requestedCharacter === "DIRECT" ? "fastest" : "thrilling",
+      });
+      const route = response.routes?.[0];
+      return route ? normalizeRoundRoute(
+        route,
+        index,
+        requestedCharacter === "DIRECT" ? "DIRECT" : "BEAUTIFUL",
+        shape,
+        preferences.maxExtraMinutes,
+        fixedDwellMinutes,
+      ) : null;
+    } catch (error) {
+      console.warn(`round-trip variant ${index + 1} degraded:`, error.message);
+      return null;
+    }
+  }));
+
+  const candidates = dedupeCandidates(raw.filter(Boolean));
+  if (!candidates.length) throw new Error("No routable round trip matched the selected day-trip area");
+
+  const enriched = await Promise.all(candidates.map(candidate =>
+    enrichCandidate(candidate, enabledSceneKinds, preferences, body.autoSuggestStops)
+  ));
+  const scenicRanked = rankRoutes(enriched, preferences);
+  const withStops = await applyAutomaticStops({
+    ranked: scenicRanked,
+    origin: body.origin,
+    destination: body.origin,
+    fixedWaypoints: fixedStops.map(stop => stop.position),
+    fixedDwellMinutes,
+    fastestSeconds: 0,
+    preferences,
+    enabledSceneKinds,
+    autoSuggestStops: body.autoSuggestStops,
+    roundTrip: true,
+  });
+  const budgetRanked = applyDayTripBudgetIntent(withStops, "DAY_TRIP", preferences, true);
+  const fallback = budgetRanked.length ? budgetRanked : withStops.sort((a, b) => a.totalExtraMinutes - b.totalExtraMinutes);
+  return orderDiverseRoutes(fallback, requestedCount);
 }
 
 const server = http.createServer(async (req, res) => {
@@ -215,6 +374,8 @@ const server = http.createServer(async (req, res) => {
       automaticSmartStops: true,
       vehicleAwareRouting: true,
       routeTimeBudgetValidation: true,
+      budgetDrivenRoundTrips: true,
+      diverseAlternatives: true,
     });
   }
 
@@ -266,9 +427,13 @@ const server = http.createServer(async (req, res) => {
         return json(res, 400, { error: "origin, destination and preferences are required" });
       }
 
-      const orderedStops = (body.stops ?? [])
-        .filter((stop) => stop.position && Number.isFinite(stop.position.lat) && Number.isFinite(stop.position.lon));
-      const waypoints = orderedStops.map((stop) => stop.position);
+      const validStops = (body.stops ?? [])
+        .filter(stop => stop.position && Number.isFinite(stop.position.lat) && Number.isFinite(stop.position.lon));
+      const roundTrip = isRoundTripRequest(body);
+      const orderedStops = body.flexibleStopOrder && !roundTrip
+        ? orderFlexibleStops(validStops, body.origin, body.destination)
+        : validStops;
+      const waypoints = orderedStops.map(stop => stop.position);
       const fixedDwellMinutes = orderedStops.reduce(
         (sum, stop) => sum + Math.max(0, Number(stop.dwellMinutes) || 0),
         0,
@@ -277,6 +442,26 @@ const server = http.createServer(async (req, res) => {
       const requestedCharacter = ["BEAUTIFUL", "BALANCED", "DIRECT", "CUSTOM"].includes(body.routeCharacter)
         ? body.routeCharacter
         : "BEAUTIFUL";
+      const requestedCount = Math.max(1, Math.min(5, Number(body.requestedAlternatives) || 2));
+
+      if (roundTrip) {
+        const ranked = await planRoundTrip(body, orderedStops, enabledSceneKinds, requestedCharacter, requestedCount);
+        const clean = ranked.map(({ roundTripWaypoints, ...candidate }) => candidate);
+        return json(res, 200, {
+          baseline: null,
+          candidates: clean,
+          stops: orderedStops,
+          plan: {
+            mode: "DAY_TRIP",
+            routeCharacter: requestedCharacter,
+            enabledSceneKinds,
+            autoSuggestStops: body.autoSuggestStops !== false,
+            roundTrip: true,
+            requestedAlternatives: requestedCount,
+          },
+          note: `Day-trip round route · returns to start · targets ${body.preferences.maxExtraMinutes} min total outing time · ${clean.length} deliberately different route variant${clean.length === 1 ? "" : "s"}.`,
+        });
+      }
 
       const fastestRaw = await tomTomRoute({
         apiKey: process.env.TOMTOM_API_KEY,
@@ -337,13 +522,16 @@ const server = http.createServer(async (req, res) => {
         preferences: body.preferences,
         enabledSceneKinds,
         autoSuggestStops: body.autoSuggestStops,
+        roundTrip: false,
       });
-      const ranked = orderRoutesForCharacter(
+      let ranked = orderRoutesForCharacter(
         withAutoStops,
         requestedCharacter,
         body.preferences,
         fastestSeconds,
       );
+      ranked = applyDayTripBudgetIntent(ranked, body.mode, body.preferences, false);
+      ranked = orderDiverseRoutes(ranked, requestedCount);
 
       return json(res, 200, {
         baseline: {
@@ -358,9 +546,11 @@ const server = http.createServer(async (req, res) => {
           routeCharacter: requestedCharacter,
           enabledSceneKinds,
           autoSuggestStops: body.autoSuggestStops !== false,
-          preserveScenicIntentOnReroute: body.preserveScenicIntentOnReroute !== false
+          preserveScenicIntentOnReroute: body.preserveScenicIntentOnReroute !== false,
+          flexibleStopOrder: body.flexibleStopOrder !== false,
+          requestedAlternatives: requestedCount,
         },
-        note: buildPlanNote(ranked, process.env.OSM_ENRICHMENT_URL),
+        note: buildPlanNote(ranked, process.env.OSM_ENRICHMENT_URL, body.mode, body.preferences.maxExtraMinutes),
       });
     } catch (error) {
       console.error(error);
@@ -371,13 +561,15 @@ const server = http.createServer(async (req, res) => {
   return json(res, 404, { error: "not found" });
 });
 
-function buildPlanNote(candidates, enrichmentUrl) {
+function buildPlanNote(candidates, enrichmentUrl, mode, budgetMinutes) {
   const included = candidates.reduce((max, candidate) => Math.max(max, candidate.autoStopIds?.length ?? 0), 0);
   const base = enrichmentUrl
     ? "Routes ranked with corridor geometry plus configured landscape/scene enrichment."
     : "Routes ranked with road geometry; configure OSM_ENRICHMENT_URL for full landscape/scene enrichment.";
-  if (included > 0) return `${base} ${included} automatic Smart Stop${included === 1 ? "" : "s"} validated inside the selected time budget.`;
-  return `${base} Automatic Smart Stop candidates are shown when available.`;
+  const budget = mode === "DAY_TRIP" ? ` Day-trip ranking actively targets the selected ${budgetMinutes} min exploration budget.` : "";
+  const alternatives = candidates.length > 1 ? ` Alternative 2 is selected for corridor/stop diversity; ${candidates.length} variants currently loaded.` : "";
+  if (included > 0) return `${base}${budget} ${included} automatic Smart Stop${included === 1 ? "" : "s"} validated inside the selected time budget.${alternatives}`;
+  return `${base}${budget} Automatic Smart Stop candidates are shown when available.${alternatives}`;
 }
 
 server.listen(port, () => console.log(`Scenic Path backend listening on :${port}`));
