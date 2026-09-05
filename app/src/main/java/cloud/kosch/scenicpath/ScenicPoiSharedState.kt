@@ -22,7 +22,7 @@ object ScenicPoiSharedState {
     var showAllRoutes: Boolean by mutableStateOf(false)
         private set
 
-    fun setShowAllRoutes(enabled: Boolean) {
+    fun updateShowAllRoutes(enabled: Boolean) {
         showAllRoutes = enabled
     }
 
