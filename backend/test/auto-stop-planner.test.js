@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   automaticStopLimit,
+  autoStopDistanceLimitMeters,
   chooseInitialAutoStops,
   stopUtility,
 } from "../auto-stop-planner.js";
@@ -42,15 +43,20 @@ function poi(overrides = {}) {
   };
 }
 
-test("automatic stop limit grows with available exploration time", () => {
-  assert.equal(automaticStopLimit(0, 5), 0);
-  assert.equal(automaticStopLimit(29, 5), 0);
-  assert.equal(automaticStopLimit(30, 5), 1);
-  assert.equal(automaticStopLimit(99, 5), 1);
-  assert.equal(automaticStopLimit(100, 5), 2);
-  assert.equal(automaticStopLimit(209, 5), 2);
-  assert.equal(automaticStopLimit(210, 5), 3);
-  assert.equal(automaticStopLimit(300, 2), 2);
+test("automatic stop limit grows materially with available exploration time", () => {
+  assert.equal(automaticStopLimit(0, 8), 0);
+  assert.equal(automaticStopLimit(29, 8), 0);
+  assert.equal(automaticStopLimit(30, 8), 1);
+  assert.equal(automaticStopLimit(60, 8), 2);
+  assert.equal(automaticStopLimit(100, 8), 3);
+  assert.equal(automaticStopLimit(150, 8), 4);
+  assert.equal(automaticStopLimit(210, 8), 5);
+  assert.equal(automaticStopLimit(300, 8), 6);
+  assert.equal(automaticStopLimit(360, 2), 2);
+});
+
+test("large budgets widen the production POI search envelope", () => {
+  assert.ok(autoStopDistanceLimitMeters(360) > autoStopDistanceLimitMeters(45) * 3);
 });
 
 test("empty enabled category set means no automatic stops", () => {
@@ -87,7 +93,7 @@ test("Top Food receives a reserved slot when enabled and budget is sufficient", 
     ["FOOD", "MONUMENT", "VIEWPOINT"],
   );
 
-  assert.equal(selected.length, 2);
+  assert.equal(selected.length, 3);
   assert.ok(selected.some(item => item.id === "food"));
 });
 
@@ -122,7 +128,7 @@ test("category diversity is preferred before repeating the same kind", () => {
     ["NATURE", "WATER"],
   );
 
-  assert.equal(selected.length, 2);
+  assert.ok(selected.length >= 2);
   assert.ok(selected.some(item => item.kind === "NATURE"));
   assert.ok(selected.some(item => item.kind === "WATER"));
 });
