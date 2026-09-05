@@ -17,6 +17,8 @@ import {
   utilizationScore,
 } from "./round-trip.js";
 import { orderDiverseRoutes } from "./route-diversity.js";
+import { withManualDwell } from "./route-time.js";
+import { balancedPreferences, beautifulPreferences, executionPreferences } from "./route-preferences.js";
 
 const port = Number(process.env.PORT || 8787);
 const json = (res, status, body) => {
@@ -145,23 +147,6 @@ async function enrichCandidate(candidate, enabledSceneKinds, preferences, autoSu
   };
 }
 
-function balancedPreferences(preferences) {
-  return {
-    ...preferences,
-    windingness: Math.min(55, Math.max(35, preferences.windingness ?? 50)),
-    hilliness: Math.min(45, Math.max(25, preferences.hilliness ?? 40)),
-  };
-}
-
-function beautifulPreferences(preferences) {
-  return {
-    ...preferences,
-    windingness: Math.max(65, preferences.windingness ?? 70),
-    hilliness: Math.max(45, preferences.hilliness ?? 50),
-    avoidMotorways: preferences.avoidMotorways !== false,
-  };
-}
-
 async function searchPlaces(query, lat, lon) {
   if (process.env.PHOTON_URL) {
     const osmResults = await photonSearch({
@@ -217,13 +202,15 @@ async function applyAutomaticStops({
   autoSuggestStops,
   roundTrip = false,
 }) {
+  const withoutAutomaticStops = candidate => roundTrip ? {
+    ...candidate,
+    budgetUsedMinutes: candidate.durationSeconds / 60 + fixedDwellMinutes,
+    budgetMinutes: preferences.maxExtraMinutes,
+    isRoundTrip: true,
+  } : withManualDwell(candidate, fixedDwellMinutes);
+
   if (autoSuggestStops === false || (preferences.maxExtraMinutes ?? 0) < 30) {
-    return ranked.map(candidate => roundTrip ? {
-      ...candidate,
-      budgetUsedMinutes: candidate.durationSeconds / 60 + fixedDwellMinutes,
-      budgetMinutes: preferences.maxExtraMinutes,
-      isRoundTrip: true,
-    } : candidate);
+    return ranked.map(withoutAutomaticStops);
   }
 
   const usedStopIds = new Set();
@@ -231,7 +218,7 @@ async function applyAutomaticStops({
   const planned = [];
   for (const candidate of ranked) {
     if (candidate.character === "DIRECT" || plannedCount >= 5 || !candidate.scenePoints?.length) {
-      planned.push(candidate);
+      planned.push(withoutAutomaticStops(candidate));
       continue;
     }
     plannedCount += 1;
@@ -268,7 +255,7 @@ async function applyAutomaticStops({
       planned.push(next);
     } catch (error) {
       console.warn("automatic Smart Stop insertion degraded:", error.message);
-      planned.push(candidate);
+      planned.push(withoutAutomaticStops(candidate));
     }
   }
   return planned;
@@ -297,7 +284,7 @@ function applyDayTripBudgetIntent(candidates, mode, preferences, roundTrip) {
 }
 
 async function planRoundTrip(body, fixedStops, enabledSceneKinds, requestedCharacter, requestedCount) {
-  const preferences = beautifulPreferences(body.preferences);
+  const preferences = executionPreferences(body.preferences, "DAY_TRIP");
   const fixedDwellMinutes = fixedStops.reduce((sum, stop) => sum + Math.max(0, Number(stop.dwellMinutes) || 0), 0);
   const sets = roundTripWaypointSets({
     origin: body.origin,
@@ -322,7 +309,7 @@ async function planRoundTrip(body, fixedStops, enabledSceneKinds, requestedChara
       return route ? normalizeRoundRoute(
         route,
         index,
-        requestedCharacter === "DIRECT" ? "DIRECT" : "BEAUTIFUL",
+        requestedCharacter,
         shape,
         preferences.maxExtraMinutes,
         fixedDwellMinutes,
@@ -443,9 +430,11 @@ const server = http.createServer(async (req, res) => {
         ? body.routeCharacter
         : "BEAUTIFUL";
       const requestedCount = Math.max(1, Math.min(5, Number(body.requestedAlternatives) || 2));
+      const mode = body.mode ?? "QUICK";
+      const preferences = executionPreferences(body.preferences, mode);
 
       if (roundTrip) {
-        const ranked = await planRoundTrip(body, orderedStops, enabledSceneKinds, requestedCharacter, requestedCount);
+        const ranked = await planRoundTrip({ ...body, preferences }, orderedStops, enabledSceneKinds, requestedCharacter, requestedCount);
         const clean = ranked.map(({ roundTripWaypoints, ...candidate }) => candidate);
         return json(res, 200, {
           baseline: null,
@@ -459,7 +448,7 @@ const server = http.createServer(async (req, res) => {
             roundTrip: true,
             requestedAlternatives: requestedCount,
           },
-          note: `Day-trip round route · returns to start · targets ${body.preferences.maxExtraMinutes} min total outing time · ${clean.length} deliberately different route variant${clean.length === 1 ? "" : "s"}.`,
+          note: `Day-trip round route · returns to start · targets ${preferences.maxExtraMinutes} min total outing time · ${clean.length} deliberately different route variant${clean.length === 1 ? "" : "s"}.`,
         });
       }
 
@@ -468,7 +457,7 @@ const server = http.createServer(async (req, res) => {
         origin: body.origin,
         destination: body.destination,
         waypoints,
-        preferences: body.preferences,
+        preferences,
         routeType: "fastest"
       });
       const fastestRoute = fastestRaw.routes?.[0];
@@ -481,7 +470,7 @@ const server = http.createServer(async (req, res) => {
           origin: body.origin,
           destination: body.destination,
           waypoints,
-          preferences: beautifulPreferences(body.preferences),
+          preferences: beautifulPreferences(preferences),
           routeType: "thrilling"
         }),
         tomTomRoute({
@@ -489,7 +478,7 @@ const server = http.createServer(async (req, res) => {
           origin: body.origin,
           destination: body.destination,
           waypoints,
-          preferences: balancedPreferences(body.preferences),
+          preferences: balancedPreferences(preferences),
           routeType: "thrilling"
         })
       ]);
@@ -502,14 +491,14 @@ const server = http.createServer(async (req, res) => {
 
       const enriched = await Promise.all(
         dedupeCandidates(rawCandidates).map(candidate =>
-          enrichCandidate(candidate, enabledSceneKinds, body.preferences, body.autoSuggestStops)
+          enrichCandidate(candidate, enabledSceneKinds, preferences, body.autoSuggestStops)
         )
       );
-      const scenicRanked = rankRoutes(enriched, body.preferences);
+      const scenicRanked = rankRoutes(enriched, preferences);
       const initiallyRanked = orderRoutesForCharacter(
         scenicRanked,
         requestedCharacter,
-        body.preferences,
+        preferences,
         fastestSeconds,
       );
       const withAutoStops = await applyAutomaticStops({
@@ -519,7 +508,7 @@ const server = http.createServer(async (req, res) => {
         fixedWaypoints: waypoints,
         fixedDwellMinutes,
         fastestSeconds,
-        preferences: body.preferences,
+        preferences,
         enabledSceneKinds,
         autoSuggestStops: body.autoSuggestStops,
         roundTrip: false,
@@ -527,10 +516,10 @@ const server = http.createServer(async (req, res) => {
       let ranked = orderRoutesForCharacter(
         withAutoStops,
         requestedCharacter,
-        body.preferences,
+        preferences,
         fastestSeconds,
       );
-      ranked = applyDayTripBudgetIntent(ranked, body.mode, body.preferences, false);
+      ranked = applyDayTripBudgetIntent(ranked, mode, preferences, false);
       ranked = orderDiverseRoutes(ranked, requestedCount);
 
       return json(res, 200, {
@@ -542,7 +531,7 @@ const server = http.createServer(async (req, res) => {
         candidates: ranked,
         stops: orderedStops,
         plan: {
-          mode: body.mode ?? "QUICK",
+          mode,
           routeCharacter: requestedCharacter,
           enabledSceneKinds,
           autoSuggestStops: body.autoSuggestStops !== false,
@@ -550,7 +539,7 @@ const server = http.createServer(async (req, res) => {
           flexibleStopOrder: body.flexibleStopOrder !== false,
           requestedAlternatives: requestedCount,
         },
-        note: buildPlanNote(ranked, process.env.OSM_ENRICHMENT_URL, body.mode, body.preferences.maxExtraMinutes),
+        note: buildPlanNote(ranked, process.env.OSM_ENRICHMENT_URL, mode, preferences.maxExtraMinutes),
       });
     } catch (error) {
       console.error(error);
