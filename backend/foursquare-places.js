@@ -88,6 +88,23 @@ export function normalizeFoursquarePlace(place) {
   };
 }
 
+/**
+ * Quality controls are hard user constraints, not ranking hints. Unknown rating/review-count
+ * values cannot satisfy a positive minimum; "open now" likewise requires an explicit true value.
+ */
+export function matchesFoodThresholds(
+  place,
+  { minRating = 4.6, minRatings = 100, openNow = false } = {},
+) {
+  if (!place) return false;
+  const rating = finite(place.rating);
+  const ratingCount = finite(place.ratingCount);
+  if (minRating > 0 && (rating == null || rating < minRating)) return false;
+  if (minRatings > 0 && (ratingCount == null || ratingCount < minRatings)) return false;
+  if (openNow && place.openNow !== true) return false;
+  return true;
+}
+
 async function requestPlaces({ apiKey, params }) {
   if (!apiKey) return [];
   const url = new URL(`${API_BASE}/places/search`);
@@ -129,13 +146,9 @@ export async function searchTopFood({
     },
   });
 
-  const thresholdMatches = places.filter(place =>
-    place.rating != null &&
-    place.rating >= minRating &&
-    (place.ratingCount == null || place.ratingCount >= minRatings)
-  );
-  const pool = thresholdMatches.length ? thresholdMatches : places;
-  return pool.sort((a, b) => b.scenicFoodScore - a.scenicFoodScore);
+  return places
+    .filter(place => matchesFoodThresholds(place, { minRating, minRatings, openNow }))
+    .sort((a, b) => b.scenicFoodScore - a.scenicFoodScore);
 }
 
 function distanceMeters(a, b) {
