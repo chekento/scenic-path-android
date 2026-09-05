@@ -62,6 +62,9 @@ function toScenePoint(item) {
  * Turn raw corridor observations into a small, diverse set of useful optional stops.
  * Extra time expands the accepted POI space; exact detour validation still happens before
  * an automatic stop is inserted into a route.
+ *
+ * enabledSceneKinds is a hard inclusion filter. An empty list therefore means no suggestions,
+ * rather than silently reverting to every category.
  */
 export function selectSceneSuggestions({
   points,
@@ -71,6 +74,8 @@ export function selectSceneSuggestions({
   maxExtraMinutes = 0,
 }) {
   const enabled = new Set(enabledSceneKinds);
+  if (enabled.size === 0) return [];
+
   const samples = samplePolyline(points, { spacingMeters: 700, maxSamples: 120 });
   const routeKm = Math.max(0.1, routeLengthMeters(points) / 1000);
   const desired = Math.max(3, Math.min(24, Math.max(maxStops * 3, Math.round(routeKm / 18) + 3)));
@@ -79,7 +84,7 @@ export function selectSceneSuggestions({
 
   const ranked = observations
     .filter(observation => observation.kind && observation.point)
-    .filter(observation => enabled.size === 0 || enabled.has(observation.kind) || observation.kind === "SCENIC")
+    .filter(observation => enabled.has(observation.kind))
     .map(observation => {
       const distanceFromRouteMeters = nearestDistance(observation.point, samples);
       const proximity = clamp(1 - distanceFromRouteMeters / maxDistanceMeters);
@@ -107,8 +112,6 @@ export function selectSceneSuggestions({
     return true;
   };
 
-  // FOOD is a product promise, not an incidental category. If enabled and verified food
-  // data exists, reserve one slot for the strongest rating/review-confidence candidate.
   if (enabled.has("FOOD")) {
     const topFood = ranked
       .filter(item => item.observation.kind === "FOOD")
@@ -116,8 +119,6 @@ export function selectSceneSuggestions({
     addIfUseful(topFood);
   }
 
-  // Reserve one candidate for each other enabled category that has data before common
-  // nature/water categories are allowed to fill the remaining list.
   for (const kind of enabled) {
     if (kind === "FOOD") continue;
     addIfUseful(ranked.find(item => item.observation.kind === kind));
