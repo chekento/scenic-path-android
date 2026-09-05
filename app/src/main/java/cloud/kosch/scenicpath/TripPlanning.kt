@@ -46,31 +46,33 @@ data class TripPlan(
 )
 
 /**
- * RouteCharacter is only a routing-priority axis. It never silently shortens a time budget.
- * The visible Quick-mode presets (Direct/Balanced/Scenic/Discover) are responsible for choosing
- * concrete budget defaults such as Direct = 10 minutes.
+ * RouteCharacter is a routing-priority preset while editing. Once constraints are committed for
+ * execution, deeper planners must treat them as authoritative and never silently overwrite them.
  */
-fun ScenicPreferences.forCharacter(character: RouteCharacter): ScenicPreferences = when (character) {
-    RouteCharacter.BEAUTIFUL -> copy(
-        maxExtraMinutes = maxOf(maxExtraMinutes, 45),
-        maxExtraPercent = maxOf(maxExtraPercent, 35),
-        avoidMotorways = true,
-        windingness = 75,
-        hilliness = 60,
-    )
-    RouteCharacter.BALANCED -> copy(
-        maxExtraMinutes = maxOf(maxExtraMinutes, 30),
-        maxExtraPercent = maxOf(maxExtraPercent, 25),
-        avoidMotorways = false,
-        windingness = 50,
-        hilliness = 40,
-    )
-    RouteCharacter.DIRECT -> copy(
-        avoidMotorways = false,
-        windingness = 20,
-        hilliness = 20,
-    )
-    RouteCharacter.CUSTOM -> this
+fun ScenicPreferences.forCharacter(character: RouteCharacter): ScenicPreferences {
+    if (constraintsCommitted) return this
+    return when (character) {
+        RouteCharacter.BEAUTIFUL -> copy(
+            maxExtraMinutes = maxOf(maxExtraMinutes, 45),
+            maxExtraPercent = maxOf(maxExtraPercent, 35),
+            avoidMotorways = true,
+            windingness = 75,
+            hilliness = 60,
+        )
+        RouteCharacter.BALANCED -> copy(
+            maxExtraMinutes = maxOf(maxExtraMinutes, 30),
+            maxExtraPercent = maxOf(maxExtraPercent, 25),
+            avoidMotorways = false,
+            windingness = 50,
+            hilliness = 40,
+        )
+        RouteCharacter.DIRECT -> copy(
+            avoidMotorways = false,
+            windingness = 20,
+            hilliness = 20,
+        )
+        RouteCharacter.CUSTOM -> this
+    }
 }
 
 fun ScenicPreferences.forPlan(plan: TripPlan): ScenicPreferences {
