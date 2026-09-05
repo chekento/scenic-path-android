@@ -4,7 +4,7 @@ function level(v) {
   return "normal";
 }
 
-function vehicleConfig(preferences = {}, requestedRouteType = "thrilling") {
+export function vehicleConfig(preferences = {}, requestedRouteType = "thrilling") {
   const vehicle = preferences.vehicle ?? {};
   const kind = vehicle.kind ?? "CAR";
   const travelMode = {
@@ -17,7 +17,14 @@ function vehicleConfig(preferences = {}, requestedRouteType = "thrilling") {
   }[kind] ?? "car";
 
   let routeType = requestedRouteType;
-  if (kind === "BICYCLE" && routeType === "thrilling") routeType = "shortest";
+  if (kind === "BICYCLE") {
+    // TomTom does not expose Valhalla-style bicycle sub-costings. Give the user's bicycle type a
+    // real production effect through the supported route strategy: road/city bikes prioritize
+    // travel time, while hybrid/cross/MTB profiles prioritize a shorter path. Surface permission
+    // is handled separately through the unpaved-roads avoidance below.
+    const bikeType = vehicle.bicycleType ?? "hybrid";
+    routeType = ["road", "city"].includes(bikeType) ? "fastest" : "shortest";
+  }
   if (["CAMPER", "TRUCK", "COACH"].includes(kind) && routeType === "thrilling") routeType = "fastest";
 
   return { kind, travelMode, routeType, vehicle };
@@ -57,10 +64,10 @@ export async function tomTomRoute({
 
   if (preferences.avoidMotorways && config.travelMode !== "bicycle") params.append("avoid", "motorways");
   if (preferences.avoidTolls && config.travelMode !== "bicycle") params.append("avoid", "tollRoads");
+  if (config.kind === "BICYCLE" && config.vehicle.allowUnpavedBikePaths === false) {
+    params.append("avoid", "unpavedRoads");
+  }
 
-  // TomTom expects metric dimensions and vehicle/axle weights in kilograms. For tall/wide/heavy
-  // profiles these values allow mapped bridge, tunnel and road restrictions to participate in
-  // route selection instead of treating every vehicle like a passenger car.
   if (["CAMPER", "TRUCK", "COACH"].includes(config.kind)) {
     const v = config.vehicle;
     if (Number.isFinite(v.heightMeters)) params.set("vehicleHeight", String(v.heightMeters));
