@@ -69,6 +69,7 @@ async function enrichCandidate(candidate, enabledSceneKinds, preferences, autoSu
       enrichment = await enrichRouteFromOsm({
         points: candidate.points,
         endpoint: process.env.OSM_ENRICHMENT_URL,
+        maxExtraMinutes: preferences.maxExtraMinutes ?? 0,
       });
     } catch (error) {
       console.warn("corridor enrichment degraded:", error.message);
@@ -94,6 +95,7 @@ async function enrichCandidate(candidate, enabledSceneKinds, preferences, autoSu
     observations,
     enabledSceneKinds,
     maxStops: preferences.maxStops ?? 5,
+    maxExtraMinutes: preferences.maxExtraMinutes ?? 0,
   });
 
   return {
@@ -107,6 +109,7 @@ async function enrichCandidate(candidate, enabledSceneKinds, preferences, autoSu
       verifiedTopFoodCount: topFood.length,
       diagnostics: analysis.diagnostics,
       degradedReason: enrichment.reason,
+      lateralOffsetKm: enrichment.lateralOffsetKm ?? 0,
     },
   };
 }
