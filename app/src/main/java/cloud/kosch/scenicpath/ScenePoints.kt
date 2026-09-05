@@ -151,6 +151,8 @@ val scenicCategoryLanes: List<ScenicCategoryLane> = listOf(
     ScenicCategoryLane("zoos-wildlife", "Zoos & animal parks", "🦒"),
     ScenicCategoryLane("theme-parks", "Theme parks", "🎢"),
     ScenicCategoryLane("scenic-highlights", "Scenic attractions", "✨"),
+    ScenicCategoryLane("overnight-options", "Overnight options", "🛏️"),
+    ScenicCategoryLane("ebike-charging", "E-bike charging", "🔌"),
 )
 
 private val scenicCategoryLaneById: Map<String, ScenicCategoryLane> = scenicCategoryLanes.associateBy { it.id }
@@ -186,9 +188,11 @@ fun scenicCategoryLaneFor(point: ScenePointUi): ScenicCategoryLane {
             "windmill", "watermill" -> "mills-industrial"
             else -> "towers-lighthouses"
         }
-        StopKind.SCENIC, StopKind.CUSTOM -> when (subtype) {
-            "zoo" -> "zoos-wildlife"
-            "theme_park" -> "theme-parks"
+        StopKind.SCENIC, StopKind.CUSTOM -> when {
+            subtype in setOf("overnight_hotel", "overnight_camp", "overnight_parking", "overnight_truck", "overnight_option", "overnight_search") -> "overnight-options"
+            subtype in setOf("ebike_charging", "ebike_charge_search") -> "ebike-charging"
+            subtype == "zoo" -> "zoos-wildlife"
+            subtype == "theme_park" -> "theme-parks"
             else -> "scenic-highlights"
         }
     }
@@ -205,7 +209,7 @@ fun sceneKindForRawType(type: String?): StopKind {
         "art" in t || "gallery" in t -> StopKind.ART
         listOf("waterfall", "beach", "water", "lake", "river", "spring").any(t::contains) -> StopKind.WATER
         listOf("peak", "natural", "landmark", "cape", "stone", "rock", "cave", "geological", "forest", "wood").any(t::contains) -> StopKind.NATURE
-        listOf("zoo", "theme_park", "attraction", "scenic").any(t::contains) -> StopKind.SCENIC
+        listOf("overnight", "ebike", "charging", "zoo", "theme_park", "attraction", "scenic").any(t::contains) -> StopKind.SCENIC
         listOf("monument", "castle", "defensive_castle", "stately", "palace", "manor", "ruins", "memorial", "historic", "fort", "archaeological_site", "battlefield").any(t::contains) -> StopKind.MONUMENT
         listOf("church", "worship", "cathedral", "mosque", "synagogue", "temple", "chapel").any(t::contains) -> StopKind.WORSHIP
         listOf("food", "cafe", "restaurant").any(t::contains) -> StopKind.FOOD
