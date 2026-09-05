@@ -16,9 +16,7 @@ class RoutingCoreTest {
             windingness = 95,
             hilliness = 90,
         )
-
         val direct = source.forCharacter(RouteCharacter.DIRECT)
-
         assertEquals(10, direct.maxExtraMinutes)
         assertEquals(10, direct.maxExtraPercent)
         assertFalse(direct.avoidMotorways)
@@ -35,9 +33,7 @@ class RoutingCoreTest {
             windingness = 25,
             hilliness = 20,
         )
-
         val beautiful = source.forCharacter(RouteCharacter.BEAUTIFUL)
-
         assertEquals(180, beautiful.maxExtraMinutes)
         assertEquals(70, beautiful.maxExtraPercent)
         assertTrue(beautiful.avoidMotorways)
@@ -47,17 +43,10 @@ class RoutingCoreTest {
 
     @Test
     fun balancedCharacterProvidesMinimumExplorationWithoutDiscardingLargerBudget() {
-        val compact = ScenicPreferences(
-            maxExtraMinutes = 5,
-            maxExtraPercent = 5,
-            avoidMotorways = true,
-        ).forCharacter(RouteCharacter.BALANCED)
-        val generous = ScenicPreferences(
-            maxExtraMinutes = 120,
-            maxExtraPercent = 65,
-            avoidMotorways = true,
-        ).forCharacter(RouteCharacter.BALANCED)
-
+        val compact = ScenicPreferences(maxExtraMinutes = 5, maxExtraPercent = 5, avoidMotorways = true)
+            .forCharacter(RouteCharacter.BALANCED)
+        val generous = ScenicPreferences(maxExtraMinutes = 120, maxExtraPercent = 65, avoidMotorways = true)
+            .forCharacter(RouteCharacter.BALANCED)
         assertEquals(30, compact.maxExtraMinutes)
         assertEquals(25, compact.maxExtraPercent)
         assertFalse(compact.avoidMotorways)
@@ -69,13 +58,30 @@ class RoutingCoreTest {
     }
 
     @Test
+    fun scenicAttractionsAreExplicitlySelectable() {
+        assertTrue(StopKind.SCENIC in allSelectableSceneKinds)
+        assertFalse(StopKind.CUSTOM in allSelectableSceneKinds)
+    }
+
+    @Test
+    fun committedSceneSelectionCanIntentionallyBeEmpty() {
+        ScenicSceneSelectionState.activate(emptySet())
+        try {
+            assertTrue(ScenicSceneSelectionState.activeKinds.isEmpty())
+            assertTrue(prototypeSelectableSceneKinds.isEmpty())
+        } finally {
+            ScenicSceneSelectionState.reset()
+        }
+        assertEquals(allSelectableSceneKinds, ScenicSceneSelectionState.activeKinds)
+    }
+
+    @Test
     fun liveNavigationRecognizesArrivalAtRouteEnd() {
         val route = listOf(
             GeoPoint(53.0000, 10.0000),
             GeoPoint(53.0010, 10.0000),
             GeoPoint(53.0020, 10.0000),
         )
-
         val snapshot = LiveNavigationEngine.snapshot(
             route = route,
             location = route.last(),
@@ -83,7 +89,6 @@ class RoutingCoreTest {
             gpsBearingDegrees = null,
             stops = emptyList(),
         )
-
         assertTrue(snapshot.arrived)
         assertEquals(NavigationTurn.ARRIVE, snapshot.nextManeuver?.turn)
         assertTrue(snapshot.remainingMeters < 80.0)
@@ -96,7 +101,6 @@ class RoutingCoreTest {
             GeoPoint(53.0010, 10.0000),
             GeoPoint(53.0020, 10.0000),
         )
-
         val snapshot = LiveNavigationEngine.snapshot(
             route = route,
             location = GeoPoint(53.0030, 10.0050),
@@ -104,7 +108,6 @@ class RoutingCoreTest {
             gpsBearingDegrees = 90f,
             stops = emptyList(),
         )
-
         assertTrue(snapshot.offRoute)
         assertTrue(snapshot.offRouteMeters > 90.0)
         assertTrue(snapshot.remainingMeters > 80.0)
@@ -125,7 +128,6 @@ class RoutingCoreTest {
             kind = StopKind.SCENIC,
             point = route[2],
         )
-
         val snapshot = LiveNavigationEngine.snapshot(
             route = route,
             location = route.first(),
@@ -133,7 +135,6 @@ class RoutingCoreTest {
             gpsBearingDegrees = null,
             stops = listOf(stop),
         )
-
         assertEquals(stop.id, snapshot.nextStop?.id)
         assertTrue((snapshot.nextStopDistanceMeters ?: 0.0) > 0.0)
         assertFalse(snapshot.arrived)
@@ -143,7 +144,6 @@ class RoutingCoreTest {
     fun heavyVehicleDefaultsCarryPhysicalRestrictions() {
         val truck = VehicleProfile.defaults(VehicleKind.TRUCK)
         val car = VehicleProfile.defaults(VehicleKind.CAR)
-
         assertTrue(truck.hasPhysicalRestrictions)
         assertFalse(car.hasPhysicalRestrictions)
         assertTrue(truck.heightMeters > car.heightMeters)
