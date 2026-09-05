@@ -1,4 +1,17 @@
-# Copy to local.properties. Never commit local.properties.
-# For development only. Production secrets belong on the backend.
-SCENIC_API_BASE_URL=http://10.0.2.2:8787
-MAP_STYLE_URL=https://demotiles.maplibre.org/style.json
+# Copy to local.properties for local development. Never commit local.properties.
+
+# Debug backend / map configuration.
+SCENIC_DEBUG_API_BASE_URL=http://10.0.2.2:8787
+MAP_STYLE_URL=https://tiles.openfreemap.org/styles/liberty
+
+# Production release values. A signed Play release must use public HTTPS services.
+# SCENIC_API_BASE_URL=https://api.example.com
+# SCENIC_MAP_STYLE_URL=https://maps.example.com/style.json
+# SCENIC_PRIVACY_POLICY_URL=https://example.com/scenic-path/privacy
+
+# Optional local release-signing configuration.
+# In GitHub Actions these are populated from encrypted repository/environment secrets.
+# SCENIC_UPLOAD_STORE_FILE=/absolute/path/to/scenic-upload.jks
+# SCENIC_UPLOAD_STORE_PASSWORD=...
+# SCENIC_UPLOAD_KEY_ALIAS=...
+# SCENIC_UPLOAD_KEY_PASSWORD=...
