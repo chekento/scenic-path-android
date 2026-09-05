@@ -2,11 +2,13 @@ package cloud.kosch.scenicpath
 
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlin.math.max
 
 /**
  * Adds route variants to the native/debug planner by forcing unused Scenic POIs as real waypoints.
- * This is intentionally different from simply asking for the same provider route twice.
+ * Each + Route generation deliberately moves deeper into a new POI/corridor pool instead of
+ * re-requesting the same alternative set.
  */
 object NativeAlternativePlanner {
     suspend fun augment(
@@ -22,9 +24,30 @@ object NativeAlternativePlanner {
         }
 
         val primary = base.candidates.first()
+        val generation = maxOf(plan.alternativeGeneration, requested - 2)
         val manualIds = plan.stops.mapTo(mutableSetOf()) { it.id }
         val used = primary.autoStopIds.toMutableSet()
-        val available = primary.scenePoints
+
+        val broad = if (preferences.maxExtraMinutes >= 90 && plan.enabledSceneKinds.isNotEmpty()) {
+            withTimeoutOrNull(10_000) {
+                runCatching {
+                    PrecisionRoutePoiDiscovery.discover(
+                        route = primary.points,
+                        enabledKinds = plan.enabledSceneKinds,
+                        maxResults = 180,
+                        radiusMeters = NativeAutoStopPolicy.distanceLimitMeters(preferences.maxExtraMinutes),
+                        maxSamples = if (preferences.maxExtraMinutes >= 240) 14 else 10,
+                    )
+                }.getOrElse { emptyList() }
+            }.orEmpty()
+        } else emptyList()
+
+        val discoveryPool = PrecisionRoutePoiDiscovery.mergeForDisplay(
+            first = primary.scenePoints,
+            second = broad,
+            maxResults = 260,
+        )
+        val available = discoveryPool
             .filterNot { it.id in manualIds || it.id in used || it.includedInRoute }
             .filter { NativeAutoStopPolicy.foodMatches(it, preferences) }
             .sortedByDescending { point ->
@@ -35,18 +58,16 @@ object NativeAlternativePlanner {
         val baselineSeconds = base.baselineDurationSeconds ?: base.candidates.minOf { it.durationSeconds }
         val fixedStops = plan.stops.filter { it.mustVisit && it.point != null }
         val fixedDwell = fixedStops.sumOf { it.dwellMinutes }
-        val stopsPerAlternative = when {
-            preferences.maxExtraMinutes >= 210 -> 3
-            preferences.maxExtraMinutes >= 100 -> 2
-            else -> 1
-        }
+        val stopsPerAlternative = NativeAutoStopPolicy.limit(preferences.maxExtraMinutes, preferences.maxStops)
+            .coerceIn(1, 4)
+        val generationOffset = generation * stopsPerAlternative
 
         for (variant in 1 until requested) {
             val selected = available
                 .filterNot { it.id in used }
-                .drop((variant - 1) * stopsPerAlternative)
+                .drop(generationOffset + (variant - 1) * stopsPerAlternative)
                 .take(stopsPerAlternative)
-            if (selected.isEmpty()) break
+            if (selected.isEmpty()) continue
 
             val anchors = buildList {
                 fixedStops.forEach { stop -> stop.point?.let { add(stop.id to it) } }
@@ -70,41 +91,61 @@ object NativeAlternativePlanner {
             val withinPercent = baselineSeconds <= 0 || routed.durationSeconds <= baselineSeconds * (1 + preferences.maxExtraPercent / 100.0) + 1
             if (!withinMinutes || !withinPercent) continue
 
+            val routeSpecificPois = withTimeoutOrNull(8_000) {
+                runCatching {
+                    RapidRoutePoiDiscovery.discover(
+                        route = routed.points,
+                        enabledKinds = plan.enabledSceneKinds,
+                        maxResults = 140,
+                    )
+                }.getOrElse { emptyList() }
+            }.orEmpty()
             val selectedIds = selected.mapTo(mutableSetOf()) { it.id }
-            val scenePoints = primary.scenePoints.map { point ->
+            val scenePool = PrecisionRoutePoiDiscovery.mergeForDisplay(
+                first = routeSpecificPois + discoveryPool,
+                second = selected,
+                maxResults = 260,
+            )
+            val scenePoints = scenePool.map { point ->
                 point.copy(
                     includedInRoute = point.id in selectedIds || point.id in manualIds,
-                    rationale = if (point.id in selectedIds) "Alternative corridor highlight · deliberately different from the primary route" else point.rationale,
+                    rationale = when {
+                        point.id in selectedIds -> "Alternative corridor highlight · deliberately different from earlier route generations"
+                        point in routeSpecificPois -> listOfNotNull("POI on this alternative's own corridor", point.rationale).joinToString(" · ")
+                        else -> point.rationale
+                    },
                 )
             }
             val provisional = RouteCandidateUi(
-                id = "native-alt-${variant + 1}",
+                id = "native-alt-g$generation-${variant + 1}",
                 character = plan.routeCharacter.name,
                 distanceMeters = routed.distanceMeters,
                 durationSeconds = routed.durationSeconds,
-                scenicScore = (primary.scenicScore * 0.92 + selected.map { it.relevance }.averageOrZero() * 8.0).coerceIn(0.0, 100.0),
+                scenicScore = (primary.scenicScore * 0.90 + selected.map { it.relevance }.averageOrZero() * 10.0).coerceIn(0.0, 100.0),
                 extraMinutes = driveExtra,
                 points = routed.points,
                 provider = "Valhalla / OpenStreetMap · generated alternative",
                 scenePoints = scenePoints,
-                strongestSignals = (primary.strongestSignals + listOf("alternativeCorridor", "differentWaypoints")).distinct().take(8),
-                variantLabel = "Alternative ${variant + 1} · different places",
-                experienceScore = (primary.experienceScore * 0.90 + selected.map { NativeAutoStopPolicy.utility(it, preferences) }.averageOrZero() * 0.10).coerceIn(0.0, 100.0),
+                strongestSignals = (primary.strongestSignals + listOf("alternativeCorridor", "differentWaypoints", "routeSpecificPois")).distinct().take(8),
+                variantLabel = "Alternative ${variant + 1} · new corridor",
+                experienceScore = (primary.experienceScore * 0.88 + selected.map { NativeAutoStopPolicy.utility(it, preferences) }.averageOrZero() * 0.12).coerceIn(0.0, 100.0),
                 autoStopIds = selected.map { it.id },
                 driveExtraMinutes = driveExtra,
                 dwellMinutes = fixedDwell + autoDwell,
                 totalExtraMinutes = totalExtra,
-                corridorRadiusKm = primary.corridorRadiusKm,
-                dataConfidence = 0.9,
+                corridorRadiusKm = max(primary.corridorRadiusKm, NativeAutoStopPolicy.distanceLimitMeters(preferences.maxExtraMinutes) / 1000.0),
+                dataConfidence = if (routeSpecificPois.isEmpty()) 0.86 else 0.93,
                 budgetUsedMinutes = if (plan.mode == PlanningMode.DAY_TRIP) totalExtra else null,
                 budgetMinutes = if (plan.mode == PlanningMode.DAY_TRIP) preferences.maxExtraMinutes else null,
             )
             val diversity = RouteDiversityPolicy.diversity(primary, provisional)
-            if (diversity < 0.10 && generated.isNotEmpty()) continue
-            generated += provisional.copy(
-                experienceScore = (provisional.experienceScore + diversity * 12.0).coerceAtMost(100.0)
+            if (diversity < 0.08 && generated.isNotEmpty()) continue
+            val accepted = provisional.copy(
+                experienceScore = (provisional.experienceScore + diversity * 14.0).coerceAtMost(100.0)
             )
+            generated += accepted
             used += selectedIds
+            if (accepted.scenePoints.isNotEmpty()) ScenicPoiSharedState.publish(accepted.points, accepted.scenePoints)
         }
 
         val existingFallbacks = base.candidates.drop(1)
@@ -124,7 +165,7 @@ object NativeAlternativePlanner {
             candidates = RouteDiversityPolicy.order(dayTripAdjusted, requested),
             note = buildString {
                 base.note?.let { append(it); append(" · ") }
-                append("Alternative 2 prioritizes another corridor and unused Scenic waypoints")
+                append("Alternative generation ${generation + 1} explores unused POIs and another corridor")
                 if (requested > 2) append(" · + Route can expand to $requested variants")
             },
         )
