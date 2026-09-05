@@ -48,3 +48,23 @@ test("corridor enrichment surfaces landscape and selected scene points", () => {
   assert.equal(result.scenePoints.length, 1);
   assert.equal(result.scenePoints[0].kind, "WATER");
 });
+
+test("empty category selection produces no corridor scene points", () => {
+  const observations = [
+    { id: "scenic", point: { lat: 53.6005, lon: 10.02 }, kind: "SCENIC", name: "Attraction", relevance: 1 },
+  ];
+  const result = analyzeCorridor({ points: straight, observations, enabledSceneKinds: [] });
+  assert.deepEqual(result.scenePoints, []);
+});
+
+test("SCENIC corridor points require explicit SCENIC category", () => {
+  const observations = [
+    { id: "scenic", point: { lat: 53.6005, lon: 10.02 }, kind: "SCENIC", name: "Attraction", relevance: 1 },
+    { id: "view", point: { lat: 53.6006, lon: 10.03 }, kind: "VIEWPOINT", name: "View", relevance: 0.8 },
+  ];
+  const without = analyzeCorridor({ points: straight, observations, enabledSceneKinds: ["VIEWPOINT"] });
+  assert.ok(without.scenePoints.every(point => point.kind !== "SCENIC"));
+  const withScenic = analyzeCorridor({ points: straight, observations, enabledSceneKinds: ["SCENIC"] });
+  assert.equal(withScenic.scenePoints.length, 1);
+  assert.equal(withScenic.scenePoints[0].kind, "SCENIC");
+});
