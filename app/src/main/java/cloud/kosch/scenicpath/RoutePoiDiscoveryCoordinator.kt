@@ -35,13 +35,13 @@ object RoutePoiDiscoveryCoordinator {
         if (route.size < 2 || enabledKinds.isEmpty() || maxResults <= 0) return@withContext emptyList()
         val key = cacheKey(route, enabledKinds)
         val now = System.currentTimeMillis()
-        cache[key]?.takeIf { it.points.isNotEmpty() && now - it.storedAtMs <= CACHE_TTL_MS }?.let {
+        readEntry(key)?.takeIf { it.points.isNotEmpty() && now - it.storedAtMs <= CACHE_TTL_MS }?.let {
             return@withContext it.points.take(maxResults)
         }
 
         mutex.withLock {
             val recheckNow = System.currentTimeMillis()
-            cache[key]?.let { entry ->
+            readEntry(key)?.let { entry ->
                 if (entry.points.isNotEmpty() && recheckNow - entry.storedAtMs <= CACHE_TTL_MS) {
                     return@withLock entry.points.take(maxResults)
                 }
@@ -89,9 +89,9 @@ object RoutePoiDiscoveryCoordinator {
                 merged = PrecisionRoutePoiDiscovery.mergeForDisplay(merged, precision, maxResults)
             }
 
-            val existing = cache[key]?.points.orEmpty()
+            val existing = readEntry(key)?.points.orEmpty()
             val finalPoints = PrecisionRoutePoiDiscovery.mergeForDisplay(merged, existing, maxResults)
-            putBounded(
+            writeEntry(
                 key,
                 CacheEntry(
                     points = finalPoints,
@@ -110,16 +110,18 @@ object RoutePoiDiscoveryCoordinator {
         val filtered = points.filter { point -> isTravelSupportPoint(point) || point.kind in allowedNames }
         if (filtered.isEmpty()) return
         val key = cacheKey(route, enabledKinds)
-        val current = cache[key]?.points.orEmpty()
+        val current = readEntry(key)?.points.orEmpty()
         val merged = PrecisionRoutePoiDiscovery.mergeForDisplay(filtered, current, 420)
-        putBounded(key, CacheEntry(merged, System.currentTimeMillis()))
+        writeEntry(key, CacheEntry(merged, System.currentTimeMillis()))
     }
 
     fun invalidate(route: List<GeoPoint>) {
         if (route.size < 2) return
         val prefix = ScenicPoiSharedState.routeKey(route) + ":"
-        val keys = cache.keys.filter { it.startsWith(prefix) }
-        keys.forEach(cache::remove)
+        synchronized(cache) {
+            val keys = cache.keys.filter { it.startsWith(prefix) }
+            keys.forEach(cache::remove)
+        }
     }
 
     internal fun minimumUsefulCount(route: List<GeoPoint>): Int {
@@ -135,9 +137,13 @@ object RoutePoiDiscoveryCoordinator {
     private fun cacheKey(route: List<GeoPoint>, enabledKinds: Set<StopKind>): String =
         ScenicPoiSharedState.routeKey(route) + ":" + enabledKinds.map { it.name }.sorted().joinToString(",")
 
-    private fun putBounded(key: String, entry: CacheEntry) {
-        cache.remove(key)
-        cache[key] = entry
-        while (cache.size > MAX_CACHE_ENTRIES) cache.remove(cache.keys.first())
+    private fun readEntry(key: String): CacheEntry? = synchronized(cache) { cache[key] }
+
+    private fun writeEntry(key: String, entry: CacheEntry) {
+        synchronized(cache) {
+            cache.remove(key)
+            cache[key] = entry
+            while (cache.size > MAX_CACHE_ENTRIES) cache.remove(cache.keys.first())
+        }
     }
 }
