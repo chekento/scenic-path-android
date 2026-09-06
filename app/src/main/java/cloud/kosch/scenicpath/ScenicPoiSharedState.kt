@@ -46,9 +46,15 @@ object ScenicPoiSharedState {
         publishedByRoute = updated
     }
 
+    /** Route-local storage only, ignoring the optional UI setting that shows all alternatives. */
+    fun pointsForOwnRoute(route: List<GeoPoint>): List<ScenePointUi> {
+        if (route.size < 2) return emptyList()
+        return publishedByRoute[routeKey(route)].orEmpty()
+    }
+
     fun pointsFor(route: List<GeoPoint>): List<ScenePointUi> {
         if (route.size < 2) return emptyList()
-        if (!showAllRoutes) return publishedByRoute[routeKey(route)].orEmpty()
+        if (!showAllRoutes) return pointsForOwnRoute(route)
         return PrecisionRoutePoiDiscovery.mergeForDisplay(
             first = publishedByRoute.values.flatten(),
             second = emptyList(),
