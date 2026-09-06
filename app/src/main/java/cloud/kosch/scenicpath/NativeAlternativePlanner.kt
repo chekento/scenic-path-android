@@ -2,7 +2,6 @@ package cloud.kosch.scenicpath
 
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
-import kotlinx.coroutines.withTimeoutOrNull
 import kotlin.math.max
 
 /**
@@ -28,18 +27,13 @@ object NativeAlternativePlanner {
         val manualIds = plan.stops.mapTo(mutableSetOf()) { it.id }
         val used = primary.autoStopIds.toMutableSet()
 
-        val broad = if (preferences.maxExtraMinutes >= 90 && plan.enabledSceneKinds.isNotEmpty()) {
-            withTimeoutOrNull(10_000) {
-                runCatching {
-                    PrecisionRoutePoiDiscovery.discover(
-                        route = primary.points,
-                        enabledKinds = plan.enabledSceneKinds,
-                        maxResults = 180,
-                        radiusMeters = NativeAutoStopPolicy.distanceLimitMeters(preferences.maxExtraMinutes),
-                        maxSamples = if (preferences.maxExtraMinutes >= 240) 14 else 10,
-                    )
-                }.getOrElse { emptyList() }
-            }.orEmpty()
+        val broad = if (plan.enabledSceneKinds.isNotEmpty()) {
+            RoutePoiDiscoveryCoordinator.discover(
+                route = primary.points,
+                enabledKinds = plan.enabledSceneKinds,
+                maxResults = 180,
+                broad = preferences.maxExtraMinutes >= 90,
+            )
         } else emptyList()
 
         val discoveryPool = PrecisionRoutePoiDiscovery.mergeForDisplay(
@@ -91,15 +85,14 @@ object NativeAlternativePlanner {
             val withinPercent = baselineSeconds <= 0 || routed.durationSeconds <= baselineSeconds * (1 + preferences.maxExtraPercent / 100.0) + 1
             if (!withinMinutes || !withinPercent) continue
 
-            val routeSpecificPois = withTimeoutOrNull(8_000) {
-                runCatching {
-                    RapidRoutePoiDiscovery.discover(
-                        route = routed.points,
-                        enabledKinds = plan.enabledSceneKinds,
-                        maxResults = 140,
-                    )
-                }.getOrElse { emptyList() }
-            }.orEmpty()
+            val routeSpecificPois = if (plan.enabledSceneKinds.isNotEmpty()) {
+                RoutePoiDiscoveryCoordinator.discover(
+                    route = routed.points,
+                    enabledKinds = plan.enabledSceneKinds,
+                    maxResults = 140,
+                    broad = false,
+                )
+            } else emptyList()
             val selectedIds = selected.mapTo(mutableSetOf()) { it.id }
             val scenePool = PrecisionRoutePoiDiscovery.mergeForDisplay(
                 first = routeSpecificPois + discoveryPool,
@@ -145,11 +138,34 @@ object NativeAlternativePlanner {
             )
             generated += accepted
             used += selectedIds
-            if (accepted.scenePoints.isNotEmpty()) ScenicPoiSharedState.publish(accepted.points, accepted.scenePoints)
+            if (accepted.scenePoints.isNotEmpty()) {
+                ScenicPoiSharedState.publish(accepted.points, accepted.scenePoints)
+                RoutePoiDiscoveryCoordinator.seed(
+                    route = accepted.points,
+                    enabledKinds = plan.enabledSceneKinds,
+                    points = accepted.scenePoints,
+                )
+            }
         }
 
         val existingFallbacks = base.candidates.drop(1)
-        val pool = listOf(primary) + generated + existingFallbacks
+        val pool = (listOf(primary) + generated + existingFallbacks).map { candidate ->
+            if (candidate.scenePoints.isNotEmpty() || plan.enabledSceneKinds.isEmpty()) {
+                candidate
+            } else {
+                val known = ScenicPoiSharedState.knownPointsNear(
+                    route = candidate.points,
+                    enabledKinds = plan.enabledSceneKinds,
+                    maxDistanceMeters = 22_000.0,
+                    maxResults = 180,
+                )
+                if (known.isEmpty()) candidate else candidate.copy(
+                    scenePoints = known,
+                    dataConfidence = max(candidate.dataConfidence, 0.75),
+                    strongestSignals = (candidate.strongestSignals + "knownRouteLocalPoiFallback").distinct().take(8),
+                )
+            }
+        }
         val dayTripAdjusted = if (plan.mode == PlanningMode.DAY_TRIP) {
             pool.map { candidate ->
                 val usedMinutes = candidate.totalExtraMinutes
