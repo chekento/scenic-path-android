@@ -80,8 +80,12 @@ object PhotonCorridorPoiDiscovery {
         }
         if (activePacks.isEmpty()) return@withContext emptyList()
 
-        val routeForDistance = sampleRoute(route, 520)
-        val windows = splitRoute(route, 90_000.0).take(6)
+        // Long routes used to be split into ~90 km windows and then truncated with take(6),
+        // silently dropping everything after roughly 540 km. Use a route-length-aware window
+        // size instead: the complete route is always covered, while very long trips stay
+        // bounded to roughly twelve Photon corridor windows.
+        val routeForDistance = RouteCoveragePolicy.sampleByDistance(route, 520)
+        val windows = splitRoute(route, RouteCoveragePolicy.fastWindowMeters(route))
         val all = coroutineScope {
             windows.flatMapIndexed { windowIndex, segment ->
                 activePacks.map { pack ->
@@ -303,21 +307,13 @@ object PhotonCorridorPoiDiscovery {
             meters += haversineMeters(route[index - 1], route[index])
             current += route[index]
             if (meters >= maxMeters && index < route.lastIndex) {
-                result += sampleRoute(current, 18)
+                result += RouteCoveragePolicy.sampleByDistance(current, 18)
                 current = mutableListOf(route[index])
                 meters = 0.0
             }
         }
-        if (current.size >= 2) result += sampleRoute(current, 18)
-        return result.ifEmpty { listOf(sampleRoute(route, 18)) }
-    }
-
-    private fun sampleRoute(route: List<GeoPoint>, maxSamples: Int): List<GeoPoint> {
-        if (route.size <= maxSamples) return route
-        val step = (route.size - 1).toDouble() / (maxSamples - 1).coerceAtLeast(1)
-        return (0 until maxSamples).map { index ->
-            route[(index * step).roundToInt().coerceIn(0, route.lastIndex)]
-        }
+        if (current.size >= 2) result += RouteCoveragePolicy.sampleByDistance(current, 18)
+        return result.ifEmpty { listOf(RouteCoveragePolicy.sampleByDistance(route, 18)) }
     }
 
     private fun haversineMeters(a: GeoPoint, b: GeoPoint): Double {

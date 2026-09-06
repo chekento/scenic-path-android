@@ -1,6 +1,8 @@
 package cloud.kosch.scenicpath
 
+import android.content.res.Resources
 import android.speech.tts.TextToSpeech
+import android.speech.tts.Voice
 import androidx.compose.foundation.layout.*
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
@@ -82,10 +84,14 @@ object LiveNavigationEngine {
 
         val nearestIndex = nearestRouteIndex(route, location)
         val offRoute = haversineMeters(route[nearestIndex], location)
+        val destinationDistance = haversineMeters(route.last(), location)
         val cumulative = cumulativeMeters(route)
         val total = cumulative.last().coerceAtLeast(1.0)
         val progressMeters = cumulative[nearestIndex]
-        val remaining = (total - progressMeters).coerceAtLeast(0.0)
+        val routeRemaining = (total - progressMeters).coerceAtLeast(0.0)
+        // If GPS has snapped nearest to the final polyline point while the user is still physically
+        // away from the destination, keep a meaningful remaining distance instead of reporting 0 m.
+        val remaining = if (offRoute > 90.0) max(routeRemaining, destinationDistance) else routeRemaining
         val progress = (progressMeters / total).coerceIn(0.0, 1.0)
 
         val routeBearing = when {
@@ -106,9 +112,18 @@ object LiveNavigationEngine {
             .filter { (_, index, _) -> index >= nearestIndex - 2 }
             .minByOrNull { (_, index, _) -> index }
         val nextDistance = next?.let { (_, _, meters) -> (meters - progressMeters).coerceAtLeast(0.0) }
-        val arrived = remaining < 80.0
+
+        // Route progress alone is insufficient for arrival: a user can be geographically closest
+        // to the final route vertex while still hundreds of metres away. Arrival therefore requires
+        // actual physical proximity to the destination.
+        val arrived = destinationDistance < 80.0
         val maneuver = if (arrived) {
-            NavigationManeuver(NavigationTurn.ARRIVE, "You have reached your destination", remaining, route.lastIndex)
+            NavigationManeuver(
+                NavigationTurn.ARRIVE,
+                "You have reached your destination",
+                destinationDistance,
+                route.lastIndex,
+            )
         } else {
             findNextManeuver(route, cumulative, nearestIndex, progressMeters)
         }
@@ -384,7 +399,11 @@ fun LiveNavigationHud(
                             Text("Reroute")
                         }
                     } else Spacer(Modifier.weight(1f))
-                    FilledTonalIconButton(onClick = onStop) { Icon(Icons.Default.StopCircle, "Stop navigation") }
+                }
+                OutlinedButton(onClick = onStop, modifier = Modifier.fillMaxWidth()) {
+                    Icon(Icons.Default.StopCircle, null)
+                    Spacer(Modifier.width(7.dp))
+                    Text("End navigation")
                 }
             }
         }
@@ -402,6 +421,9 @@ private fun NavigationMetric(label: String, value: String, modifier: Modifier = 
 @Composable
 fun NavigationVoiceGuide(snapshot: NavigationSnapshot, enabled: Boolean) {
     val context = LocalContext.current
+    val systemLocale = remember {
+        Resources.getSystem().configuration.locales[0] ?: Locale.getDefault()
+    }
     var tts by remember { mutableStateOf<TextToSpeech?>(null) }
     var ready by remember { mutableStateOf(false) }
     var lastMessageKey by remember { mutableStateOf<String?>(null) }
@@ -410,6 +432,27 @@ fun NavigationVoiceGuide(snapshot: NavigationSnapshot, enabled: Boolean) {
         val engine = TextToSpeech(context) { status -> ready = status == TextToSpeech.SUCCESS }
         tts = engine
         onDispose { runCatching { engine.stop(); engine.shutdown() } }
+    }
+
+    LaunchedEffect(ready, systemLocale) {
+        val engine = tts ?: return@LaunchedEffect
+        if (!ready) return@LaunchedEffect
+        runCatching {
+            engine.language = systemLocale
+            val matchingVoices = engine.voices.orEmpty()
+                .filter { voice -> voice.locale.language.equals(systemLocale.language, ignoreCase = true) }
+            val preferred = matchingVoices.sortedWith(
+                compareByDescending<Voice> { voice ->
+                    voice.locale.toLanguageTag().equals(systemLocale.toLanguageTag(), ignoreCase = true)
+                }
+                    .thenByDescending { voice -> !voice.isNetworkConnectionRequired }
+                    .thenByDescending { voice -> voice.quality }
+                    .thenBy { voice -> voice.latency }
+            ).firstOrNull()
+            if (preferred != null) engine.voice = preferred
+            engine.setSpeechRate(0.94f)
+            engine.setPitch(1.0f)
+        }
     }
 
     val nextStop = snapshot.nextStop
@@ -427,6 +470,7 @@ fun NavigationVoiceGuide(snapshot: NavigationSnapshot, enabled: Boolean) {
     LaunchedEffect(
         enabled,
         ready,
+        systemLocale,
         snapshot.offRoute,
         snapshot.arrived,
         nextStop?.id,
@@ -440,28 +484,24 @@ fun NavigationVoiceGuide(snapshot: NavigationSnapshot, enabled: Boolean) {
 
         when {
             snapshot.arrived -> {
-                message = "You have reached your destination."
+                message = NavigationSpeech.arrival(systemLocale)
                 key = "arrived"
             }
             snapshot.offRoute && snapshot.offRouteMeters > 150 -> {
-                message = "You are off the planned route. A new route can be calculated."
+                message = NavigationSpeech.offRoute(systemLocale)
                 key = "offroute"
             }
             maneuver != null && maneuver.turn != NavigationTurn.STRAIGHT && maneuverBucket > 0 -> {
-                message = when (maneuverBucket) {
-                    850 -> "In about 800 meters, ${maneuver.instruction.lowercase()}."
-                    260 -> "In about 250 meters, ${maneuver.instruction.lowercase()}."
-                    else -> maneuver.instruction + "."
-                }
-                key = "turn-${maneuver.routeIndex}-$maneuverBucket"
+                message = NavigationSpeech.turnAnnouncement(maneuver.turn, maneuverBucket, systemLocale)
+                key = "turn-${maneuver.routeIndex}-$maneuverBucket-${systemLocale.language}"
             }
             nextStop != null && nextDistance != null && nextDistance < 250 -> {
-                message = "Your Scenic stop, ${nextStop.name}, is just ahead."
-                key = "${nextStop.id}-near"
+                message = NavigationSpeech.stopAhead(nextStop.name, systemLocale)
+                key = "${nextStop.id}-near-${systemLocale.language}"
             }
             nextStop != null && nextDistance != null && nextDistance in 900.0..1100.0 -> {
-                message = "In about one kilometer, Scenic stop ${nextStop.name}."
-                key = "${nextStop.id}-1km"
+                message = NavigationSpeech.stopInOneKm(nextStop.name, systemLocale)
+                key = "${nextStop.id}-1km-${systemLocale.language}"
             }
             else -> return@LaunchedEffect
         }
@@ -469,7 +509,6 @@ fun NavigationVoiceGuide(snapshot: NavigationSnapshot, enabled: Boolean) {
         if (key != lastMessageKey) {
             lastMessageKey = key
             runCatching {
-                tts?.language = Locale.getDefault()
                 tts?.speak(message, TextToSpeech.QUEUE_FLUSH, null, "scenic-$key")
             }
         }

@@ -4,7 +4,7 @@ function level(v) {
   return "normal";
 }
 
-function vehicleConfig(preferences = {}, requestedRouteType = "thrilling") {
+export function vehicleConfig(preferences = {}, requestedRouteType = "thrilling") {
   const vehicle = preferences.vehicle ?? {};
   const kind = vehicle.kind ?? "CAR";
   const travelMode = {
@@ -17,10 +17,37 @@ function vehicleConfig(preferences = {}, requestedRouteType = "thrilling") {
   }[kind] ?? "car";
 
   let routeType = requestedRouteType;
-  if (kind === "BICYCLE" && routeType === "thrilling") routeType = "shortest";
+  if (kind === "BICYCLE") {
+    // TomTom does not expose Valhalla-style bicycle sub-costings. Give the user's bicycle type a
+    // real production effect through the supported route strategy: road/city bikes prioritize
+    // travel time, while hybrid/cross/MTB profiles prioritize a shorter path. Surface permission
+    // is handled separately through the unpaved-roads avoidance below.
+    const bikeType = vehicle.bicycleType ?? "hybrid";
+    routeType = ["road", "city"].includes(bikeType) ? "fastest" : "shortest";
+  }
   if (["CAMPER", "TRUCK", "COACH"].includes(kind) && routeType === "thrilling") routeType = "fastest";
 
   return { kind, travelMode, routeType, vehicle };
+}
+
+/** Pure projection used by tests and by the actual TomTom request builder. */
+export function routeConstraintConfig(preferences = {}, requestedRouteType = "thrilling") {
+  const config = vehicleConfig(preferences, requestedRouteType);
+  const avoid = [];
+  if (preferences.avoidMotorways && config.travelMode !== "bicycle") avoid.push("motorways");
+  if (preferences.avoidTolls && config.travelMode !== "bicycle") avoid.push("tollRoads");
+  if (config.kind === "BICYCLE" && config.vehicle.allowUnpavedBikePaths === false) avoid.push("unpavedRoads");
+
+  return {
+    ...config,
+    avoid,
+    hilliness: config.routeType === "thrilling" && ["car", "motorcycle"].includes(config.travelMode)
+      ? level(preferences.hilliness ?? 50)
+      : null,
+    windingness: config.routeType === "thrilling" && ["car", "motorcycle"].includes(config.travelMode)
+      ? level(preferences.windingness ?? 50)
+      : null,
+  };
 }
 
 export async function tomTomRoute({
@@ -37,7 +64,7 @@ export async function tomTomRoute({
     .map((point) => `${point.lat},${point.lon}`)
     .join(":");
 
-  const config = vehicleConfig(preferences, routeType);
+  const config = routeConstraintConfig(preferences, routeType);
   const params = new URLSearchParams({
     key: apiKey,
     routeType: config.routeType,
@@ -50,17 +77,10 @@ export async function tomTomRoute({
     maxAlternatives: config.routeType === "thrilling" && waypoints.length === 0 ? "2" : "0"
   });
 
-  if (config.routeType === "thrilling" && ["car", "motorcycle"].includes(config.travelMode)) {
-    params.set("hilliness", level(preferences.hilliness ?? 50));
-    params.set("windingness", level(preferences.windingness ?? 50));
-  }
+  if (config.hilliness) params.set("hilliness", config.hilliness);
+  if (config.windingness) params.set("windingness", config.windingness);
+  config.avoid.forEach(value => params.append("avoid", value));
 
-  if (preferences.avoidMotorways && config.travelMode !== "bicycle") params.append("avoid", "motorways");
-  if (preferences.avoidTolls && config.travelMode !== "bicycle") params.append("avoid", "tollRoads");
-
-  // TomTom expects metric dimensions and vehicle/axle weights in kilograms. For tall/wide/heavy
-  // profiles these values allow mapped bridge, tunnel and road restrictions to participate in
-  // route selection instead of treating every vehicle like a passenger car.
   if (["CAMPER", "TRUCK", "COACH"].includes(config.kind)) {
     const v = config.vehicle;
     if (Number.isFinite(v.heightMeters)) params.set("vehicleHeight", String(v.heightMeters));

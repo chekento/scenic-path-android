@@ -36,7 +36,7 @@ enum class StopKind(
     WATER("Water", "💧", ScenePointGroup.VIEWS_NATURE, 25),
     FOOD("Food", "🍽️", ScenePointGroup.FOOD, 45),
     ARCHITECTURE("Architecture", "🏗️", ScenePointGroup.PLACES_SPACES, 18),
-    SCENIC("Scenic highlight", "✨", ScenePointGroup.OTHER, 15, autoDiscoverable = true),
+    SCENIC("Scenic attraction", "✨", ScenePointGroup.OTHER, 15, autoDiscoverable = true),
     CUSTOM("Custom", "📍", ScenePointGroup.OTHER, 30, autoDiscoverable = false),
 }
 
@@ -52,15 +52,12 @@ val allSelectableSceneKinds: Set<StopKind> = linkedSetOf(
     StopKind.WATER,
     StopKind.FOOD,
     StopKind.ARCHITECTURE,
+    StopKind.SCENIC,
 )
 
 /**
  * The committed scene selection is shared by every discovery surface.
- *
- * Previously the planner changed TripPlan.enabledSceneKinds while the map and Smart Stops
- * kept querying the hard-coded prototype set. That made the filters mostly cosmetic. The
- * shared committed state keeps the broad provider families aligned without introducing a
- * second navigation state machine. Draft changes are activated only when the user rebuilds.
+ * Draft changes are activated only when the user rebuilds the route.
  */
 object ScenicSceneSelectionState {
     var activeKinds: Set<StopKind> by mutableStateOf(allSelectableSceneKinds)
@@ -75,10 +72,6 @@ object ScenicSceneSelectionState {
     }
 }
 
-/**
- * Compatibility name used by the current discovery stack. It now means the committed active
- * selection, while allSelectableSceneKinds is the stable planner catalogue.
- */
 val prototypeSelectableSceneKinds: Set<StopKind>
     get() = ScenicSceneSelectionState.activeKinds
 
@@ -86,7 +79,6 @@ enum class SceneSubtype(val rawId: String, val parent: StopKind, val label: Stri
     VIEWPOINT("viewpoint", StopKind.VIEWPOINT, "Viewpoint"),
     OBSERVATION_TOWER("observation_tower", StopKind.VIEWPOINT, "Observation tower"),
     MUSEUM("museum", StopKind.MUSEUM, "Museum"),
-
     PEAK("peak", StopKind.NATURE, "Peak"),
     NATURAL_LANDMARK("natural_landmark", StopKind.NATURE, "Natural landmark"),
     CAPE("cape", StopKind.NATURE, "Cape"),
@@ -95,7 +87,6 @@ enum class SceneSubtype(val rawId: String, val parent: StopKind, val label: Stri
     GEOLOGICAL("geological", StopKind.NATURE, "Geological feature"),
     FOREST("forest", StopKind.NATURE, "Forest"),
     NATURE_RESERVE("nature_reserve", StopKind.PARK, "Nature reserve"),
-
     CASTLE("castle", StopKind.MONUMENT, "Castle"),
     DEFENSIVE_CASTLE("defensive_castle", StopKind.MONUMENT, "Castle / fortress"),
     STATELY_HOME("stately", StopKind.MONUMENT, "Stately home / château"),
@@ -106,48 +97,36 @@ enum class SceneSubtype(val rawId: String, val parent: StopKind, val label: Stri
     BATTLEFIELD("battlefield", StopKind.MONUMENT, "Battlefield"),
     MEMORIAL("memorial", StopKind.MONUMENT, "Memorial"),
     HISTORIC("historic", StopKind.MONUMENT, "Historic site"),
-
     PARK("park", StopKind.PARK, "Park"),
     GARDEN("garden", StopKind.PARK, "Garden"),
-
     ARTWORK("artwork", StopKind.ART, "Artwork"),
     GALLERY("gallery", StopKind.ART, "Gallery"),
-
     CHURCH("church", StopKind.WORSHIP, "Church"),
     CATHEDRAL("cathedral", StopKind.WORSHIP, "Cathedral"),
     MOSQUE("mosque", StopKind.WORSHIP, "Mosque"),
     SYNAGOGUE("synagogue", StopKind.WORSHIP, "Synagogue"),
     TEMPLE("temple", StopKind.WORSHIP, "Temple"),
-
     WATERFALL("waterfall", StopKind.WATER, "Waterfall"),
     BEACH("beach", StopKind.WATER, "Beach"),
     LAKE("lake", StopKind.WATER, "Lake"),
     RIVER("river", StopKind.WATER, "River"),
     SPRING("spring", StopKind.WATER, "Spring"),
-
     RESTAURANT("restaurant", StopKind.FOOD, "Restaurant"),
     CAFE("cafe", StopKind.FOOD, "Cafe"),
-
     TOWER("tower", StopKind.ARCHITECTURE, "Tower"),
     LIGHTHOUSE("lighthouse", StopKind.ARCHITECTURE, "Lighthouse"),
     BRIDGE("bridge", StopKind.ARCHITECTURE, "Bridge"),
     AQUEDUCT("aqueduct", StopKind.ARCHITECTURE, "Aqueduct"),
     WINDMILL("windmill", StopKind.ARCHITECTURE, "Windmill"),
     WATERMILL("watermill", StopKind.ARCHITECTURE, "Watermill"),
-
     ZOO("zoo", StopKind.SCENIC, "Zoo / animal park"),
     THEME_PARK("theme_park", StopKind.SCENIC, "Theme park"),
     ATTRACTION("attraction", StopKind.SCENIC, "Attraction"),
     SCENIC("scenic", StopKind.SCENIC, "Scenic highlight"),
 }
 
-data class ScenicCategoryLane(
-    val id: String,
-    val label: String,
-    val emoji: String,
-)
+data class ScenicCategoryLane(val id: String, val label: String, val emoji: String)
 
-/** Rich user-facing taxonomy shared by Smart Stops and the map. */
 val scenicCategoryLanes: List<ScenicCategoryLane> = listOf(
     ScenicCategoryLane("viewpoints", "Viewpoints & observation points", "👁️"),
     ScenicCategoryLane("museums", "Museums", "🏛️"),
@@ -172,10 +151,11 @@ val scenicCategoryLanes: List<ScenicCategoryLane> = listOf(
     ScenicCategoryLane("zoos-wildlife", "Zoos & animal parks", "🦒"),
     ScenicCategoryLane("theme-parks", "Theme parks", "🎢"),
     ScenicCategoryLane("scenic-highlights", "Scenic attractions", "✨"),
+    ScenicCategoryLane("overnight-options", "Overnight options", "🛏️"),
+    ScenicCategoryLane("ebike-charging", "E-bike charging", "🔌"),
 )
 
-private val scenicCategoryLaneById: Map<String, ScenicCategoryLane> =
-    scenicCategoryLanes.associateBy { it.id }
+private val scenicCategoryLaneById: Map<String, ScenicCategoryLane> = scenicCategoryLanes.associateBy { it.id }
 
 fun scenicCategoryLaneFor(point: ScenePointUi): ScenicCategoryLane {
     val subtype = point.subtype.orEmpty().lowercase()
@@ -188,11 +168,7 @@ fun scenicCategoryLaneFor(point: ScenePointUi): ScenicCategoryLane {
             "forest", "wood" -> "forests-woodland"
             else -> "peaks-landmarks"
         }
-        StopKind.PARK -> if (subtype in setOf("nature_reserve", "protected_area", "national_park")) {
-            "nature-reserves"
-        } else {
-            "parks-gardens"
-        }
+        StopKind.PARK -> if (subtype in setOf("nature_reserve", "protected_area", "national_park")) "nature-reserves" else "parks-gardens"
         StopKind.MONUMENT -> when (subtype) {
             "castle", "defensive_castle", "fort" -> "castles-fortresses"
             "stately", "palace", "manor", "manor_house" -> "palaces-manors"
@@ -212,9 +188,11 @@ fun scenicCategoryLaneFor(point: ScenePointUi): ScenicCategoryLane {
             "windmill", "watermill" -> "mills-industrial"
             else -> "towers-lighthouses"
         }
-        StopKind.SCENIC, StopKind.CUSTOM -> when (subtype) {
-            "zoo" -> "zoos-wildlife"
-            "theme_park" -> "theme-parks"
+        StopKind.SCENIC, StopKind.CUSTOM -> when {
+            subtype in setOf("overnight_hotel", "overnight_camp", "overnight_parking", "overnight_truck", "overnight_option", "overnight_search") -> "overnight-options"
+            subtype in setOf("ebike_charging", "ebike_charge_search") -> "ebike-charging"
+            subtype == "zoo" -> "zoos-wildlife"
+            subtype == "theme_park" -> "theme-parks"
             else -> "scenic-highlights"
         }
     }
@@ -231,11 +209,8 @@ fun sceneKindForRawType(type: String?): StopKind {
         "art" in t || "gallery" in t -> StopKind.ART
         listOf("waterfall", "beach", "water", "lake", "river", "spring").any(t::contains) -> StopKind.WATER
         listOf("peak", "natural", "landmark", "cape", "stone", "rock", "cave", "geological", "forest", "wood").any(t::contains) -> StopKind.NATURE
-        listOf("zoo", "theme_park", "attraction", "scenic").any(t::contains) -> StopKind.SCENIC
-        listOf(
-            "monument", "castle", "defensive_castle", "stately", "palace", "manor",
-            "ruins", "memorial", "historic", "fort", "archaeological_site", "battlefield"
-        ).any(t::contains) -> StopKind.MONUMENT
+        listOf("overnight", "ebike", "charging", "zoo", "theme_park", "attraction", "scenic").any(t::contains) -> StopKind.SCENIC
+        listOf("monument", "castle", "defensive_castle", "stately", "palace", "manor", "ruins", "memorial", "historic", "fort", "archaeological_site", "battlefield").any(t::contains) -> StopKind.MONUMENT
         listOf("church", "worship", "cathedral", "mosque", "synagogue", "temple", "chapel").any(t::contains) -> StopKind.WORSHIP
         listOf("food", "cafe", "restaurant").any(t::contains) -> StopKind.FOOD
         listOf("architecture", "tower", "lighthouse", "bridge", "aqueduct", "windmill", "watermill").any(t::contains) -> StopKind.ARCHITECTURE

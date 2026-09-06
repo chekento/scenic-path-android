@@ -2,7 +2,6 @@ package cloud.kosch.scenicpath
 
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
-import kotlinx.coroutines.withTimeoutOrNull
 import org.json.JSONArray
 import org.json.JSONObject
 import java.net.HttpURLConnection
@@ -18,15 +17,12 @@ import kotlin.math.sin
 import kotlin.math.sqrt
 
 /**
- * v0.6 routing core used on physical/debug builds.
+ * Vehicle-aware development router.
  *
- * Unlike the old long-route adapter this planner never creates artificial straight-line
- * intermediate anchors. It asks Valhalla to route on the real transport network first and,
- * for user waypoints, routes each consecutive leg independently. That removes the large
- * zig-zags caused when interpolated geographic anchors snapped to unrelated roads.
- *
- * Vehicle costing is part of the route request. Bicycle, motorcycle, car, motorhome, truck and
- * coach therefore use different networks/costs instead of sharing an automobile polyline.
+ * Every displayed route is generated on the real Valhalla/OSM transport network. Fixed user
+ * waypoints and automatic Smart Stops are routed as actual breaks, not visual annotations.
+ * Automatic stops are accepted only after the real reroute fits both the global extra-minute
+ * budget (including dwell time) and the percentage detour budget.
  */
 object VehicleAwareJourneyPlanner {
     private const val VALHALLA_URL = "https://valhalla1.openstreetmap.de"
@@ -38,6 +34,11 @@ object VehicleAwareJourneyPlanner {
         val points: List<GeoPoint>,
     )
 
+    private data class RouteAnchor(
+        val id: String,
+        val point: GeoPoint,
+    )
+
     suspend fun plan(
         origin: GeoPoint,
         destination: GeoPoint,
@@ -47,8 +48,6 @@ object VehicleAwareJourneyPlanner {
         val effective = preferences.forCharacter(plan.routeCharacter)
         val vehicle = effective.vehicle
 
-        // A clean A→B route is the only ordering reference. No synthetic air-line anchor may
-        // ever become a mandatory routing point.
         val baseNoStops = requestRoute(listOf(origin, destination), effective, scenic = false)
         val fixedStops = orderedFixedStops(plan, baseNoStops.points)
         val fixedPoints = fixedStops.mapNotNull { it.point }
@@ -59,7 +58,7 @@ object VehicleAwareJourneyPlanner {
             scenic = false,
         )
 
-        val scenic = if (plan.routeCharacter == RouteCharacter.DIRECT) {
+        val scenicBase = if (plan.routeCharacter == RouteCharacter.DIRECT) {
             direct
         } else {
             runCatching {
@@ -71,47 +70,29 @@ object VehicleAwareJourneyPlanner {
             }.getOrElse { direct }
         }
 
-        val discovered = if (plan.autoSuggestStops && plan.enabledSceneKinds.isNotEmpty()) {
-            withTimeoutOrNull(10_000) {
-                runCatching {
-                    FastRoutePoiDiscovery.discover(
-                        route = scenic.points,
-                        enabledKinds = plan.enabledSceneKinds,
-                        maxResults = 96,
-                    )
-                }.getOrElse { emptyList() }
-            }.orEmpty()
+        val discovered = if (
+            plan.routeCharacter != RouteCharacter.DIRECT &&
+            plan.autoSuggestStops &&
+            plan.enabledSceneKinds.isNotEmpty()
+        ) {
+            RoutePoiDiscoveryCoordinator.discover(
+                route = scenicBase.points,
+                enabledKinds = plan.enabledSceneKinds,
+                maxResults = 96,
+                broad = effective.maxExtraMinutes >= 90,
+            )
         } else emptyList()
 
-        if (discovered.isNotEmpty()) ScenicPoiSharedState.publish(scenic.points, discovered)
-
-        val fixedHighlights = fixedStops.mapNotNull { stop ->
-            stop.point?.let { point ->
-                ScenePointUi(
-                    id = stop.id,
-                    name = stop.name,
-                    kind = stop.kind.name,
-                    subtype = stop.subtype,
-                    point = point,
-                    relevance = 1.3,
-                    suggestionScore = 300.0,
-                    distanceFromRouteMeters = 0,
-                    suggestedDwellMinutes = stop.dwellMinutes,
-                    rating = stop.rating,
-                    ratingCount = stop.ratingCount,
-                    includedInRoute = true,
-                    personalMatch = 100.0,
-                    rationale = "fixed waypoint · ${vehicle.labelForRoute()}",
-                    estimatedDetourMinutes = 0.0,
-                )
-            }
-        }
+        val fixedHighlights = fixedStops.mapNotNull(::fixedHighlight)
         val fixedIds = fixedHighlights.mapTo(mutableSetOf()) { it.id }
-        val scenePoints = (fixedHighlights + discovered.filterNot { it.id in fixedIds }).take(96)
+        val filteredDiscoveries = discovered
+            .filterNot { it.id in fixedIds }
+            .filter { NativeAutoStopPolicy.foodMatches(it, effective) }
+            .take(96)
 
-        val dwell = fixedStops.sumOf { it.dwellMinutes }
+        val fixedDwell = fixedStops.sumOf { it.dwellMinutes }
         val directDriveExtra = max(0.0, (direct.durationSeconds - baseNoStops.durationSeconds) / 60.0)
-        val scenicDriveExtra = max(0.0, (scenic.durationSeconds - baseNoStops.durationSeconds) / 60.0)
+        val scenicBaseDriveExtra = max(0.0, (scenicBase.durationSeconds - baseNoStops.durationSeconds) / 60.0)
 
         val directCandidate = RouteCandidateUi(
             id = "vehicle-direct-${vehicle.kind.name.lowercase()}",
@@ -127,53 +108,164 @@ object VehicleAwareJourneyPlanner {
             variantLabel = if (fixedStops.isEmpty()) "Direct" else "Direct via waypoints",
             experienceScore = 0.0,
             driveExtraMinutes = directDriveExtra,
-            dwellMinutes = dwell,
-            totalExtraMinutes = directDriveExtra + dwell,
+            dwellMinutes = fixedDwell,
+            totalExtraMinutes = directDriveExtra + fixedDwell,
             dataConfidence = 1.0,
         )
 
-        val scenicCandidate = RouteCandidateUi(
+        var scenicCandidate = RouteCandidateUi(
             id = "vehicle-scenic-${vehicle.kind.name.lowercase()}",
             character = plan.routeCharacter.name,
-            distanceMeters = scenic.distanceMeters,
-            durationSeconds = scenic.durationSeconds,
-            scenicScore = scenicScore(scenic.points, discovered, vehicle),
-            extraMinutes = scenicDriveExtra,
-            points = scenic.points,
+            distanceMeters = scenicBase.distanceMeters,
+            durationSeconds = scenicBase.durationSeconds,
+            scenicScore = scenicScore(scenicBase.points, filteredDiscoveries, vehicle),
+            extraMinutes = scenicBaseDriveExtra,
+            points = scenicBase.points,
             provider = "Valhalla / OpenStreetMap · ${vehicle.kind.label}",
-            scenePoints = scenePoints,
+            scenePoints = fixedHighlights + filteredDiscoveries,
             strongestSignals = vehicleSignals(vehicle, scenic = true),
             variantLabel = if (vehicle.kind == VehicleKind.BICYCLE) "Scenic cycleways" else if (fixedStops.isEmpty()) "Scenic drive" else "Scenic via waypoints",
-            experienceScore = scenicScore(scenic.points, discovered, vehicle),
+            experienceScore = scenicScore(scenicBase.points, filteredDiscoveries, vehicle),
             autoStopIds = emptyList(),
-            driveExtraMinutes = scenicDriveExtra,
-            dwellMinutes = dwell,
-            totalExtraMinutes = scenicDriveExtra + dwell,
+            driveExtraMinutes = scenicBaseDriveExtra,
+            dwellMinutes = fixedDwell,
+            totalExtraMinutes = scenicBaseDriveExtra + fixedDwell,
             corridorRadiusKm = (4.0 + effective.maxExtraMinutes * 0.15).coerceIn(6.0, 42.0),
-            dataConfidence = if (discovered.isEmpty()) 0.65 else 0.9,
+            dataConfidence = if (filteredDiscoveries.isEmpty()) 0.65 else 0.9,
         )
+
+        if (filteredDiscoveries.isNotEmpty()) {
+            scenicCandidate = includeAutomaticStops(
+                origin = origin,
+                destination = destination,
+                baseNoStops = baseNoStops,
+                scenicBase = scenicBase,
+                fixedStops = fixedStops,
+                discoveries = filteredDiscoveries,
+                candidate = scenicCandidate,
+                preferences = effective,
+                enabledKinds = plan.enabledSceneKinds,
+            )
+        }
+
+        if (scenicCandidate.scenePoints.isNotEmpty()) {
+            ScenicPoiSharedState.publish(scenicCandidate.points, scenicCandidate.scenePoints)
+            RoutePoiDiscoveryCoordinator.seed(
+                route = scenicCandidate.points,
+                enabledKinds = plan.enabledSceneKinds,
+                points = scenicCandidate.scenePoints,
+            )
+        }
 
         RoutePlanUi(
             candidates = if (plan.routeCharacter == RouteCharacter.DIRECT) {
                 listOf(directCandidate)
             } else {
                 listOf(scenicCandidate, directCandidate).distinctBy {
-                    "${(it.distanceMeters / 250).roundToInt()}:${(it.durationSeconds / 60).roundToInt()}"
+                    "${(it.distanceMeters / 250).roundToInt()}:${(it.durationSeconds / 60).roundToInt()}:${it.autoStopIds.sorted()}"
                 }
             },
             baselineDurationSeconds = baseNoStops.durationSeconds,
             baselineDistanceMeters = baseNoStops.distanceMeters,
             note = buildString {
-                append("${vehicle.kind.emoji} ${vehicle.kind.label} routing")
-                append(" · real-network route, no synthetic long-route anchors")
+                append("${vehicle.kind.emoji} ${vehicle.kind.label} routing · real-network route")
                 if (vehicle.hasPhysicalRestrictions) {
                     append(" · ${format1(vehicle.heightMeters)}m H × ${format1(vehicle.widthMeters)}m W × ${format1(vehicle.lengthMeters)}m L · ${format1(vehicle.weightTons)}t")
                 }
-                if (vehicle.kind == VehicleKind.BICYCLE) append(" · cycleways/paths preferred over parallel main roads")
-                if (fixedStops.isNotEmpty()) append(" · ${fixedStops.size} fixed waypoint${if (fixedStops.size == 1) "" else "s"} routed pairwise")
-                if (discovered.isNotEmpty()) append(" · ${discovered.size} potential Smart Stops")
+                if (vehicle.kind == VehicleKind.BICYCLE) append(" · ${vehicle.bicycleType.label}")
+                if (fixedStops.isNotEmpty()) append(" · ${fixedStops.size} fixed waypoint${if (fixedStops.size == 1) "" else "s"}")
+                if (scenicCandidate.autoStopIds.isNotEmpty()) {
+                    append(" · ${scenicCandidate.autoStopIds.size} automatic Smart Stop${if (scenicCandidate.autoStopIds.size == 1) "" else "s"} validated inside budget")
+                } else if (filteredDiscoveries.isNotEmpty()) {
+                    append(" · ${filteredDiscoveries.size} Smart Stop alternatives available")
+                }
             },
         )
+    }
+
+    private fun includeAutomaticStops(
+        origin: GeoPoint,
+        destination: GeoPoint,
+        baseNoStops: RawRoute,
+        scenicBase: RawRoute,
+        fixedStops: List<PlannedStop>,
+        discoveries: List<ScenePointUi>,
+        candidate: RouteCandidateUi,
+        preferences: ScenicPreferences,
+        enabledKinds: Set<StopKind>,
+    ): RouteCandidateUi {
+        var selected = NativeAutoStopPolicy.select(discoveries, preferences, enabledKinds)
+        if (selected.isEmpty()) return candidate
+
+        val fixedDwell = fixedStops.sumOf { it.dwellMinutes }
+        val maxDurationByPercent = baseNoStops.durationSeconds * (1.0 + preferences.maxExtraPercent.coerceAtLeast(0) / 100.0)
+
+        while (selected.isNotEmpty()) {
+            val anchors = buildList {
+                fixedStops.forEach { stop -> stop.point?.let { add(RouteAnchor(stop.id, it)) } }
+                selected.forEach { add(RouteAnchor(it.id, it.point)) }
+            }.distinctBy { it.id }
+                .sortedBy { routeProgressIndex(scenicBase.points, it.point) }
+
+            val routed = runCatching {
+                routeThrough(
+                    nodes = listOf(origin) + anchors.map { it.point } + destination,
+                    preferences = preferences,
+                    scenic = true,
+                )
+            }.getOrNull()
+
+            if (routed != null) {
+                val driveExtra = max(0.0, (routed.durationSeconds - baseNoStops.durationSeconds) / 60.0)
+                val autoDwell = selected.sumOf { it.suggestedDwellMinutes }
+                val totalExtra = driveExtra + fixedDwell + autoDwell
+                val withinMinutes = totalExtra <= preferences.maxExtraMinutes + 1.0
+                val withinPercent = routed.durationSeconds <= maxDurationByPercent + 1.0
+
+                if (withinMinutes && withinPercent) {
+                    val includedIds = selected.mapTo(mutableSetOf()) { it.id }
+                    val scenePoints = buildList {
+                        fixedStops.mapNotNull(::fixedHighlight).forEach(::add)
+                        discoveries.forEach { point ->
+                            val included = point.id in includedIds
+                            add(
+                                point.copy(
+                                    includedInRoute = included,
+                                    personalMatch = NativeAutoStopPolicy.utility(point, preferences).coerceIn(0.0, 100.0),
+                                    rationale = if (included) {
+                                        if (point.kind == StopKind.FOOD.name) "Top Food · real detour validated inside your budget"
+                                        else "Strong Scenic DNA fit · real detour validated inside your budget"
+                                    } else point.rationale,
+                                    estimatedDetourMinutes = point.distanceFromRouteMeters.coerceAtLeast(0) / 500.0,
+                                )
+                            )
+                        }
+                    }.distinctBy { it.id }
+                    val score = scenicScore(routed.points, discoveries, preferences.vehicle)
+                    val experienceBonus = selected.map { NativeAutoStopPolicy.utility(it, preferences) }.averageOrZero() * 0.08
+                    return candidate.copy(
+                        distanceMeters = routed.distanceMeters,
+                        durationSeconds = routed.durationSeconds,
+                        points = routed.points,
+                        scenicScore = score,
+                        extraMinutes = driveExtra,
+                        driveExtraMinutes = driveExtra,
+                        dwellMinutes = fixedDwell + autoDwell,
+                        totalExtraMinutes = totalExtra,
+                        autoStopIds = selected.map { it.id },
+                        scenePoints = scenePoints,
+                        variantLabel = "Best match",
+                        experienceScore = (score + experienceBonus).coerceIn(0.0, 100.0),
+                        strongestSignals = (candidate.strongestSignals + listOf("automaticSmartStops", "budgetValidated")).distinct().take(8),
+                        dataConfidence = 0.92,
+                    )
+                }
+            }
+
+            val weakest = NativeAutoStopPolicy.weakestRemovable(selected, preferences, enabledKinds) ?: break
+            selected = selected.filterNot { it.id == weakest.id }
+        }
+        return candidate
     }
 
     private fun orderedFixedStops(plan: TripPlan, baseline: List<GeoPoint>): List<PlannedStop> {
@@ -182,16 +274,29 @@ object VehicleAwareJourneyPlanner {
         return stops.sortedBy { routeProgressIndex(baseline, requireNotNull(it.point)) }
     }
 
-    private fun routeThrough(
-        nodes: List<GeoPoint>,
-        preferences: ScenicPreferences,
-        scenic: Boolean,
-    ): RawRoute {
+    private fun fixedHighlight(stop: PlannedStop): ScenePointUi? = stop.point?.let { point ->
+        ScenePointUi(
+            id = stop.id,
+            name = stop.name,
+            kind = stop.kind.name,
+            subtype = stop.subtype,
+            point = point,
+            relevance = 1.3,
+            suggestionScore = 300.0,
+            distanceFromRouteMeters = 0,
+            suggestedDwellMinutes = stop.dwellMinutes,
+            rating = stop.rating,
+            ratingCount = stop.ratingCount,
+            includedInRoute = true,
+            personalMatch = 100.0,
+            rationale = "fixed waypoint · ${VehicleSettingsState.profile.kind.label}",
+            estimatedDetourMinutes = 0.0,
+        )
+    }
+
+    private fun routeThrough(nodes: List<GeoPoint>, preferences: ScenicPreferences, scenic: Boolean): RawRoute {
         if (nodes.size <= 2) return requestRoute(nodes, preferences, scenic)
-        val legs = nodes.zipWithNext().map { (from, to) ->
-            requestRoute(listOf(from, to), preferences, scenic)
-        }
-        return stitch(legs)
+        return stitch(nodes.zipWithNext().map { (from, to) -> requestRoute(listOf(from, to), preferences, scenic) })
     }
 
     private fun stitch(legs: List<RawRoute>): RawRoute {
@@ -199,32 +304,21 @@ object VehicleAwareJourneyPlanner {
             legs.forEach { leg ->
                 if (isEmpty()) addAll(leg.points)
                 else if (leg.points.isNotEmpty()) {
-                    if (haversineMeters(last(), leg.points.first()) < 20.0) addAll(leg.points.drop(1))
-                    else addAll(leg.points)
+                    if (haversineMeters(last(), leg.points.first()) < 20.0) addAll(leg.points.drop(1)) else addAll(leg.points)
                 }
             }
         }
         if (points.size < 2) error("Vehicle route returned no usable geometry")
-        return RawRoute(
-            distanceMeters = legs.sumOf { it.distanceMeters },
-            durationSeconds = legs.sumOf { it.durationSeconds },
-            points = points,
-        )
+        return RawRoute(legs.sumOf { it.distanceMeters }, legs.sumOf { it.durationSeconds }, points)
     }
 
-    private fun requestRoute(
-        locations: List<GeoPoint>,
-        preferences: ScenicPreferences,
-        scenic: Boolean,
-    ): RawRoute {
+    private fun requestRoute(locations: List<GeoPoint>, preferences: ScenicPreferences, scenic: Boolean): RawRoute {
         val vehicle = preferences.vehicle
         val costing = costingName(vehicle.kind)
         val options = costingOptions(vehicle, preferences, scenic)
         val body = JSONObject().apply {
             put("locations", JSONArray().apply {
-                locations.forEach { point ->
-                    put(JSONObject().put("lat", point.lat).put("lon", point.lon).put("type", "break"))
-                }
+                locations.forEach { point -> put(JSONObject().put("lat", point.lat).put("lon", point.lon).put("type", "break")) }
             })
             put("costing", costing)
             put("costing_options", JSONObject().put(costing, options))
@@ -247,8 +341,7 @@ object VehicleAwareJourneyPlanner {
             val stream = if (code in 200..299) connection.inputStream else connection.errorStream
             val text = stream?.bufferedReader(Charsets.UTF_8)?.use { it.readText() }.orEmpty()
             if (code !in 200..299) error("Valhalla $costing HTTP $code ${text.take(180)}")
-            val response = JSONObject(text.ifBlank { "{}" })
-            val trip = response.optJSONObject("trip") ?: error("Valhalla returned no trip")
+            val trip = JSONObject(text.ifBlank { "{}" }).optJSONObject("trip") ?: error("Valhalla returned no trip")
             val summary = trip.optJSONObject("summary") ?: error("Valhalla returned no summary")
             val legs = trip.optJSONArray("legs") ?: JSONArray()
             val points = buildList {
@@ -260,9 +353,14 @@ object VehicleAwareJourneyPlanner {
                 }
             }
             if (points.size < 2) error("Valhalla $costing route shape is empty")
+            val distanceMeters = summary.optDouble("length", 0.0) * 1000.0
             RawRoute(
-                distanceMeters = summary.optDouble("length", 0.0) * 1000.0,
-                durationSeconds = summary.optDouble("time", 0.0),
+                distanceMeters = distanceMeters,
+                durationSeconds = RouteTimeSanity.normalizeDurationSeconds(
+                    distanceMeters = distanceMeters,
+                    providerDurationSeconds = summary.optDouble("time", 0.0),
+                    vehicle = vehicle,
+                ),
                 points = points,
             )
         } finally {
@@ -278,61 +376,58 @@ object VehicleAwareJourneyPlanner {
         VehicleKind.BICYCLE -> "bicycle"
     }
 
-    private fun costingOptions(
-        vehicle: VehicleProfile,
-        preferences: ScenicPreferences,
-        scenic: Boolean,
-    ): JSONObject = when (vehicle.kind) {
-        VehicleKind.BICYCLE -> JSONObject().apply {
-            put("bicycle_type", vehicle.bicycleType.apiValue)
-            // Valhalla: 0 means avoid shared motor-vehicle roads and stay on cycleways/paths.
-            put("use_roads", if (scenic) 0.05 else 0.30)
-            put("use_hills", (preferences.hilliness / 100.0).coerceIn(0.05, 0.85))
-            put("avoid_bad_surfaces", if (vehicle.allowUnpavedBikePaths) 0.35 else 0.92)
-            put("use_ferry", 0.35)
+    private fun costingOptions(vehicle: VehicleProfile, preferences: ScenicPreferences, scenic: Boolean): JSONObject {
+        val tuning = NativeRouteConstraintPolicy.tuning(vehicle, preferences, scenic)
+        return when (vehicle.kind) {
+            VehicleKind.BICYCLE -> JSONObject().apply {
+                put("bicycle_type", vehicle.bicycleType.apiValue)
+                tuning.useRoads?.let { put("use_roads", it) }
+                put("avoid_bad_surfaces", if (vehicle.allowUnpavedBikePaths) 0.35 else 0.92)
+                put("use_ferry", 0.35)
+            }
+            VehicleKind.MOTORCYCLE -> JSONObject().apply {
+                putTuning(tuning)
+                put("use_ferry", 0.35)
+                put("top_speed", 140)
+            }
+            VehicleKind.TRUCK -> JSONObject().apply {
+                putHeavyEnvelope(vehicle)
+                putTuning(tuning)
+                put("use_truck_route", 0.85)
+                put("low_class_factor", if (scenic) 1.7 else 2.0)
+                put("low_class_penalty", 45)
+                put("hgv_no_access_penalty", 43200)
+                put("top_speed", 90)
+            }
+            VehicleKind.COACH -> JSONObject().apply {
+                putAutoEnvelope(vehicle)
+                putTuning(tuning)
+                put("use_ferry", 0.25)
+                put("top_speed", 100)
+            }
+            VehicleKind.CAMPER -> JSONObject().apply {
+                putAutoEnvelope(vehicle)
+                putTuning(tuning)
+                put("use_ferry", 0.25)
+                put("exclude_unpaved", true)
+                put("top_speed", 115)
+            }
+            VehicleKind.CAR -> JSONObject().apply {
+                putAutoEnvelope(vehicle)
+                putTuning(tuning)
+                put("use_ferry", 0.35)
+                put("exclude_unpaved", true)
+            }
         }
-        VehicleKind.MOTORCYCLE -> JSONObject().apply {
-            put("use_highways", if (preferences.avoidMotorways) 0.0 else if (scenic) 0.18 else 0.8)
-            put("use_tolls", if (preferences.avoidTolls) 0.0 else 0.5)
-            put("use_trails", if (scenic) (preferences.windingness / 100.0 * 0.55).coerceIn(0.1, 0.55) else 0.0)
-            put("use_ferry", 0.35)
-            put("top_speed", 140)
-        }
-        VehicleKind.TRUCK -> JSONObject().apply {
-            putHeavyEnvelope(vehicle)
-            put("use_highways", if (preferences.avoidMotorways) 0.0 else if (scenic) 0.55 else 0.9)
-            put("use_tolls", if (preferences.avoidTolls) 0.0 else 0.5)
-            put("use_truck_route", 0.85)
-            put("low_class_factor", if (scenic) 1.7 else 2.0)
-            put("low_class_penalty", 45)
-            put("hgv_no_access_penalty", 43200)
-            put("top_speed", 90)
-        }
-        VehicleKind.COACH -> JSONObject().apply {
-            putAutoEnvelope(vehicle)
-            put("use_highways", if (preferences.avoidMotorways) 0.0 else if (scenic) 0.45 else 0.85)
-            put("use_tolls", if (preferences.avoidTolls) 0.0 else 0.5)
-            put("use_ferry", 0.25)
-            put("use_distance", if (scenic) 0.08 else 0.0)
-            put("top_speed", 100)
-        }
-        VehicleKind.CAMPER -> JSONObject().apply {
-            putAutoEnvelope(vehicle)
-            put("use_highways", if (preferences.avoidMotorways) 0.0 else if (scenic) 0.28 else 0.8)
-            put("use_tolls", if (preferences.avoidTolls) 0.0 else 0.5)
-            put("use_ferry", 0.25)
-            put("use_distance", if (scenic) 0.12 else 0.0)
-            put("exclude_unpaved", true)
-            put("top_speed", 115)
-        }
-        VehicleKind.CAR -> JSONObject().apply {
-            putAutoEnvelope(vehicle)
-            put("use_highways", if (preferences.avoidMotorways) 0.0 else if (scenic) 0.15 else 0.9)
-            put("use_tolls", if (preferences.avoidTolls) 0.0 else 0.5)
-            put("use_ferry", 0.35)
-            put("use_distance", if (scenic) 0.15 else 0.0)
-            put("exclude_unpaved", true)
-        }
+    }
+
+    private fun JSONObject.putTuning(tuning: NativeRouteTuning) {
+        tuning.useHighways?.let { put("use_highways", it) }
+        tuning.useTolls?.let { put("use_tolls", it) }
+        tuning.useHills?.let { put("use_hills", it) }
+        tuning.useDistance?.let { put("use_distance", it) }
+        tuning.useTrails?.let { put("use_trails", it) }
+        tuning.useRoads?.let { put("use_roads", it) }
     }
 
     private fun JSONObject.putAutoEnvelope(vehicle: VehicleProfile) {
@@ -355,15 +450,6 @@ object VehicleAwareJourneyPlanner {
         if (vehicle.kind == VehicleKind.TRUCK) add("hgvAccess")
         if (vehicle.kind == VehicleKind.BICYCLE) add(if (scenic) "cyclewayPriority" else "bicycleRouting")
         if (vehicle.kind == VehicleKind.MOTORCYCLE && scenic) add("secondaryRoadAdventure")
-    }
-
-    private fun VehicleProfile.labelForRoute(): String = when (kind) {
-        VehicleKind.BICYCLE -> "cycleway route"
-        VehicleKind.TRUCK -> "HGV-safe route"
-        VehicleKind.COACH -> "coach-safe route"
-        VehicleKind.CAMPER -> "motorhome-safe route"
-        VehicleKind.MOTORCYCLE -> "motorcycle route"
-        VehicleKind.CAR -> "car route"
     }
 
     private fun scenicScore(route: List<GeoPoint>, pois: List<ScenePointUi>, vehicle: VehicleProfile): Double {
@@ -448,5 +534,6 @@ object VehicleAwareJourneyPlanner {
         return 2 * earth * asin(sqrt(h.coerceIn(0.0, 1.0)))
     }
 
+    private fun List<Double>.averageOrZero(): Double = if (isEmpty()) 0.0 else average()
     private fun format1(value: Double): String = String.format(java.util.Locale.US, "%.1f", value)
 }

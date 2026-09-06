@@ -22,10 +22,10 @@ import kotlin.math.sqrt
 /**
  * First-screen POI pass for long routes.
  *
- * One bounded Overpass request is issued per ~65 km route window. All windows run in
- * parallel with a hard per-window timeout, so a 290 km trip does not wait for 15-20 serial
- * corridor queries before museums/restaurants can appear. Results are still filtered back
- * to the real route after download.
+ * The complete route is always covered, but public Overpass instances are treated gently: very
+ * long journeys are grouped into roughly six corridor windows rather than bursting a dozen large
+ * requests at once. Every successful window is published immediately, so one slow/failed window
+ * cannot erase useful POIs from the others.
  */
 object RapidRoutePoiDiscovery {
     private val endpoints = listOf(
@@ -41,16 +41,25 @@ object RapidRoutePoiDiscovery {
     ): List<ScenePointUi> = withContext(Dispatchers.IO) {
         if (route.size < 2 || enabledKinds.isEmpty()) return@withContext emptyList()
 
-        val routeForDistance = sampleRoute(route, 520)
-        val windows = splitRoute(route, 65_000.0).take(7)
+        val routeForDistance = RouteCoveragePolicy.sampleByDistance(route, 520)
+        val totalMeters = RouteCoveragePolicy.totalDistanceMeters(route)
+        val windowMeters = maxOf(85_000.0, totalMeters / 6.0)
+        val windows = splitRoute(route, windowMeters)
         val results = coroutineScope {
             windows.mapIndexed { index, segment ->
                 async(Dispatchers.IO) {
-                    withTimeoutOrNull(5_800) {
+                    val points = withTimeoutOrNull(5_800) {
                         runCatching {
                             queryWindow(index, segment, routeForDistance, enabledKinds)
                         }.getOrElse { emptyList() }
                     }.orEmpty()
+                    if (points.isNotEmpty()) {
+                        val partial = PrecisionRoutePoiDiscovery.mergeForDisplay(points, emptyList(), maxResults)
+                        withContext(Dispatchers.Main.immediate) {
+                            ScenicPoiSharedState.publish(route, partial)
+                        }
+                    }
+                    points
                 }
             }.awaitAll()
         }.flatten()
@@ -86,11 +95,13 @@ object RapidRoutePoiDiscovery {
                 add("nwr($b)[man_made~\"^(tower|lighthouse|water_tower|windmill|watermill)$\"][name];out center 30;")
                 add("nwr($b)[bridge][name];out center 24;")
             }
-            add("nwr($b)[tourism~\"^(attraction|zoo|theme_park|aquarium)$\"][name];out center 28;")
+            if (StopKind.SCENIC in enabledKinds) {
+                add("nwr($b)[tourism~\"^(attraction|zoo|theme_park|aquarium)$\"][name];out center 28;")
+            }
         }
         if (statements.isEmpty()) return emptyList()
 
-        val query = "[out:json][timeout:8];${statements.joinToString("")}" 
+        val query = "[out:json][timeout:8];${statements.joinToString("")}"
         val elements = execute(windowIndex, query)
         val points = mutableListOf<ScenePointUi>()
 
@@ -100,7 +111,7 @@ object RapidRoutePoiDiscovery {
             val point = elementPoint(element) ?: continue
             val subtype = subtype(tags) ?: continue
             val kind = sceneKindForRawType(subtype)
-            if (kind != StopKind.SCENIC && kind !in enabledKinds) continue
+            if (kind !in enabledKinds) continue
             val distance = routeForDistance.minOfOrNull { haversineMeters(point, it) } ?: continue
             if (distance > 13_000) continue
             val name = tags.optString("name:de").ifBlank { tags.optString("name") }.trim()
@@ -270,19 +281,13 @@ object RapidRoutePoiDiscovery {
             meters += haversineMeters(route[i - 1], route[i])
             current += route[i]
             if (meters >= maxMeters && i < route.lastIndex) {
-                result += sampleRoute(current, 16)
+                result += RouteCoveragePolicy.sampleByDistance(current, 16)
                 current = mutableListOf(route[i])
                 meters = 0.0
             }
         }
-        if (current.size >= 2) result += sampleRoute(current, 16)
-        return result.ifEmpty { listOf(sampleRoute(route, 16)) }
-    }
-
-    private fun sampleRoute(route: List<GeoPoint>, maxSamples: Int): List<GeoPoint> {
-        if (route.size <= maxSamples) return route
-        val step = (route.size - 1).toDouble() / (maxSamples - 1).coerceAtLeast(1)
-        return (0 until maxSamples).map { i -> route[(i * step).roundToInt().coerceIn(0, route.lastIndex)] }
+        if (current.size >= 2) result += RouteCoveragePolicy.sampleByDistance(current, 16)
+        return result.ifEmpty { listOf(RouteCoveragePolicy.sampleByDistance(route, 16)) }
     }
 
     private fun haversineMeters(a: GeoPoint, b: GeoPoint): Double {

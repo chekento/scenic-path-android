@@ -59,6 +59,9 @@ data class RouteCandidateUi(
     val totalExtraMinutes: Double = extraMinutes,
     val corridorRadiusKm: Double = 0.0,
     val dataConfidence: Double = 0.0,
+    val budgetUsedMinutes: Double? = null,
+    val budgetMinutes: Int? = null,
+    val isRoundTrip: Boolean = false,
 )
 
 data class RoutePlanUi(
@@ -82,10 +85,8 @@ object ScenicApi {
         if (BuildConfig.DEBUG) {
             val device = searchDeviceGeocoder(context, normalized)
             if (device.isNotEmpty()) return@withContext device
-
             val osm = runCatching { OsmPlaceSearch.search(normalized, bias) }.getOrNull().orEmpty()
             if (osm.isNotEmpty()) return@withContext osm
-
             if (!baseUrl.contains("10.0.2.2") && !baseUrl.contains("127.0.0.1") && !baseUrl.contains("localhost")) {
                 val backend = runCatching { searchBackend(normalized, bias) }.getOrNull().orEmpty()
                 if (backend.isNotEmpty()) return@withContext backend
@@ -96,7 +97,6 @@ object ScenicApi {
         requireProductionServicesConfigured()
         val backend = runCatching { searchBackend(normalized, bias) }.getOrNull().orEmpty()
         if (backend.isNotEmpty()) return@withContext backend
-
         searchDeviceGeocoder(context, normalized)
     }
 
@@ -106,31 +106,53 @@ object ScenicApi {
         plan: TripPlan,
         preferences: ScenicPreferences,
     ): Result<RoutePlanUi> = withContext(Dispatchers.IO) {
-        // Vehicle settings are persistent/global. Copy the latest profile into the committed
-        // planner preferences so a vehicle change is guaranteed to affect the next rebuild.
         val effectivePreferences = preferences
-            .copy(vehicle = VehicleSettingsState.profile)
-            .forCharacter(plan.routeCharacter)
+            .copy(
+                vehicle = VehicleSettingsState.profile,
+                constraintsCommitted = true,
+            )
+            .forPlan(plan)
 
-        if (BuildConfig.DEBUG) {
-            return@withContext runCatching {
-                VehicleAwareJourneyPlanner.plan(origin, destination, plan, effectivePreferences)
-            }.recoverCatching { primaryError ->
-                // Only the ordinary car profile may use the older OSM fallback. Other vehicle
-                // types must never silently degrade to car routing, because that would make
-                // bridge/tunnel/HGV or bicycle access promises false.
-                if (effectivePreferences.vehicle.kind == VehicleKind.CAR) {
-                    OsmScenicRoutingFallback.plan(origin, destination, plan, effectivePreferences)
-                } else {
-                    throw primaryError
+        val rawResult: Result<RoutePlanUi> = if (BuildConfig.DEBUG) {
+            if (RoundTripPolicy.shouldCreateRoundTrip(plan, origin, destination)) {
+                runCatching { NativeRoundTripPlanner.plan(origin, plan, effectivePreferences) }
+            } else {
+                val baseResult = runCatching {
+                    VehicleAwareJourneyPlanner.plan(origin, destination, plan, effectivePreferences)
+                }.recoverCatching { primaryError ->
+                    if (effectivePreferences.vehicle.kind == VehicleKind.CAR) {
+                        OsmScenicRoutingFallback.plan(origin, destination, plan, effectivePreferences)
+                    } else {
+                        throw primaryError
+                    }
                 }
+                if (baseResult.isFailure) {
+                    baseResult
+                } else {
+                    runCatching {
+                        NativeAlternativePlanner.augment(
+                            origin = origin,
+                            destination = destination,
+                            plan = plan,
+                            preferences = effectivePreferences,
+                            base = baseResult.getOrThrow(),
+                        )
+                    }
+                }
+            }
+        } else {
+            runCatching {
+                requireProductionServicesConfigured()
+                planBackend(origin, destination, plan, effectivePreferences)
             }
         }
 
-        runCatching {
-            requireProductionServicesConfigured()
-            planBackend(origin, destination, plan, effectivePreferences)
-        }
+        if (rawResult.isFailure) return@withContext rawResult
+        val rawPlan = rawResult.getOrThrow()
+        val enriched = runCatching {
+            JourneySupportPlanner.enrich(rawPlan, effectivePreferences.vehicle)
+        }.getOrElse { rawPlan }
+        Result.success(enriched)
     }
 
     private fun requireProductionServicesConfigured() {
@@ -212,6 +234,7 @@ object ScenicApi {
             put("destination", destination.toJson())
             put("mode", plan.mode.name)
             put("routeCharacter", plan.routeCharacter.name)
+            put("requestedAlternatives", plan.requestedAlternatives.coerceIn(1, 5))
             put("autoSuggestStops", plan.autoSuggestStops)
             put("preserveScenicIntentOnReroute", plan.preserveScenicIntentOnReroute)
             put("flexibleStopOrder", plan.flexibleStopOrder)
@@ -331,6 +354,9 @@ object ScenicApi {
                         totalExtraMinutes = item.optDouble("totalExtraMinutes", extraMinutes),
                         corridorRadiusKm = item.optDouble("corridorRadiusKm", 0.0),
                         dataConfidence = item.optDouble("dataConfidence", 0.0),
+                        budgetUsedMinutes = item.optDoubleOrNull("budgetUsedMinutes"),
+                        budgetMinutes = item.optIntOrNull("budgetMinutes"),
+                        isRoundTrip = item.optBoolean("isRoundTrip", false),
                     )
                 )
             }
@@ -419,6 +445,12 @@ private fun ScenicPreferences.toJson() = JSONObject().apply {
         put("axleCount", vehicle.axleCount)
         put("bicycleType", vehicle.bicycleType.apiValue)
         put("allowUnpavedBikePaths", vehicle.allowUnpavedBikePaths)
+        put("dailyTravelHours", vehicle.dailyTravelHours)
+        put("driverCount", vehicle.effectiveDriverCount)
+        put("overnightPlanningEnabled", vehicle.overnightPlanningEnabled)
+        put("eBikeEnabled", vehicle.eBikeEnabled)
+        put("eBikeRangeKm", vehicle.eBikeRangeKm)
+        put("eBikeReservePercent", vehicle.eBikeReservePercent)
     })
     put("weights", JSONObject().apply {
         put("beautifulRoads", weights.beautifulRoads.toDouble())

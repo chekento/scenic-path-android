@@ -9,9 +9,30 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  photon-category-filter:
+  photon-provider:
     runs-on: ubuntu-latest
     steps:
+      - name: Verify forward place search resolves a known address area
+        shell: bash
+        run: |
+          set -euo pipefail
+          URL='https://photon.komoot.io/api?q=Hamburger%20Stra%C3%9Fe%2012%20Ahrensburg&limit=8&lang=de&lon=10.24&lat=53.67&zoom=12&location_bias_scale=0.35'
+          curl --fail --silent --show-error --retry 2 --retry-delay 2 "$URL" > /tmp/search.json
+          python3 - <<'PY'
+          import json, math
+          data=json.load(open('/tmp/search.json'))
+          features=data.get('features', [])
+          assert features, 'Photon forward search returned no address/place results'
+          valid=[]
+          for f in features:
+              c=(f.get('geometry') or {}).get('coordinates') or []
+              if len(c)>=2 and all(isinstance(v,(int,float)) and math.isfinite(v) for v in c[:2]):
+                  valid.append(f)
+          assert valid, 'Photon returned no finite coordinates'
+          print('forward search features:', len(valid))
+          print('sample:', valid[0].get('properties',{}).get('name') or valid[0].get('properties',{}).get('street'))
+          PY
+
       - name: Verify category-filtered reverse search returns a restaurant
         shell: bash
         run: |
@@ -45,3 +66,36 @@ jobs:
           print('museum features:', len(features))
           print('sample:', features[0].get('properties',{}).get('name'))
           PY
+
+      - name: Verify Android-style Overpass POI query returns real features
+        shell: bash
+        run: |
+          set -euo pipefail
+          QUERY='[out:json][timeout:8];nwr(53.62,10.12,53.72,10.32)[amenity~"^(restaurant|cafe)$"][name];out center 20;'
+          ok=0
+          for ENDPOINT in \
+            'https://overpass-api.de/api/interpreter' \
+            'https://overpass.kumi.systems/api/interpreter' \
+            'https://overpass.private.coffee/api/interpreter'; do
+            echo "Trying $ENDPOINT"
+            if curl --fail --silent --show-error --max-time 15 \
+              --data-urlencode "data=$QUERY" \
+              -H 'Accept: application/json' \
+              "$ENDPOINT" > /tmp/overpass.json; then
+              if python3 - <<'PY'
+          import json
+          data=json.load(open('/tmp/overpass.json'))
+          elements=data.get('elements', [])
+          assert elements, 'Overpass returned no POIs'
+          named=[e for e in elements if (e.get('tags') or {}).get('name')]
+          assert named, 'Overpass returned no named POIs'
+          print('Overpass named POIs:', len(named))
+          print('sample:', named[0]['tags']['name'])
+          PY
+              then
+                ok=1
+                break
+              fi
+            fi
+          done
+          test "$ok" -eq 1

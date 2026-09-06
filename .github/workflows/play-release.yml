@@ -66,6 +66,9 @@ jobs:
       - name: Verify production release configuration
         run: gradle :app:verifyPlayReleaseConfig
 
+      - name: Android routing unit tests
+        run: gradle :app:testReleaseUnitTest
+
       - name: Release lint
         run: gradle :app:lintRelease
 

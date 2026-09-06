@@ -21,3 +21,28 @@ test("rejects excessive detour", () => {
   const c = { fastestDurationSeconds: 3600, durationSeconds: 7200 };
   assert.equal(withinDetourBudget(c, prefs), false);
 });
+
+test("Scenic DNA can reverse production preference between museum-rich and viewpoint-rich routes", () => {
+  const base = {
+    fastestDurationSeconds: 3600,
+    durationSeconds: 3900,
+    motorwayShare: 0,
+    industrialShare: 0,
+  };
+  const museumRoute = { ...base, id: "museum", factors: { museums: 1, viewpoints: 0.1 } };
+  const viewRoute = { ...base, id: "view", factors: { museums: 0.1, viewpoints: 1 } };
+
+  const museumPrefs = {
+    ...prefs,
+    avoidMotorways: false,
+    weights: { museums: 1, viewpoints: 0 },
+  };
+  const viewPrefs = {
+    ...prefs,
+    avoidMotorways: false,
+    weights: { museums: 0, viewpoints: 1 },
+  };
+
+  assert.equal(rankRoutes([viewRoute, museumRoute], museumPrefs)[0].id, "museum");
+  assert.equal(rankRoutes([museumRoute, viewRoute], viewPrefs)[0].id, "view");
+});

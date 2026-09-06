@@ -32,17 +32,67 @@ data class VehicleProfile(
     val axleCount: Int = 2,
     val bicycleType: ScenicBicycleType = ScenicBicycleType.HYBRID,
     val allowUnpavedBikePaths: Boolean = true,
+    /** Comfort-planning limit per active driver/rider, not a legal driving-time statement. */
+    val dailyTravelHours: Double = 7.0,
+    /** Number of people who can share driving. Bicycles always plan with one rider. */
+    val driverCount: Int = 1,
+    val overnightPlanningEnabled: Boolean = true,
+    val eBikeEnabled: Boolean = false,
+    /** User-estimated practical range under their normal assistance level and terrain. */
+    val eBikeRangeKm: Double = 80.0,
+    /** Keep this percentage of the configured range as a reserve before suggesting charging. */
+    val eBikeReservePercent: Int = 15,
 ) {
     val hasPhysicalRestrictions: Boolean
         get() = kind in setOf(VehicleKind.CAMPER, VehicleKind.TRUCK, VehicleKind.COACH)
 
+    val effectiveDriverCount: Int
+        get() = if (kind == VehicleKind.BICYCLE) 1 else driverCount.coerceIn(1, 3)
+
     companion object {
         fun defaults(kind: VehicleKind): VehicleProfile = when (kind) {
-            VehicleKind.CAR -> VehicleProfile(kind, 1.65, 1.90, 4.60, 1.80, 1.10, 2)
-            VehicleKind.MOTORCYCLE -> VehicleProfile(kind, 1.45, 0.90, 2.20, 0.30, 0.30, 2)
-            VehicleKind.CAMPER -> VehicleProfile(kind, 3.05, 2.35, 7.00, 3.50, 1.90, 2)
-            VehicleKind.TRUCK -> VehicleProfile(kind, 4.00, 2.55, 12.00, 18.00, 9.00, 3)
-            VehicleKind.COACH -> VehicleProfile(kind, 3.80, 2.55, 12.00, 18.00, 7.50, 3)
+            VehicleKind.CAR -> VehicleProfile(
+                kind = kind,
+                dailyTravelHours = 7.0,
+            )
+            VehicleKind.MOTORCYCLE -> VehicleProfile(
+                kind = kind,
+                heightMeters = 1.45,
+                widthMeters = 0.90,
+                lengthMeters = 2.20,
+                weightTons = 0.30,
+                axleLoadTons = 0.30,
+                dailyTravelHours = 6.0,
+            )
+            VehicleKind.CAMPER -> VehicleProfile(
+                kind = kind,
+                heightMeters = 3.05,
+                widthMeters = 2.35,
+                lengthMeters = 7.00,
+                weightTons = 3.50,
+                axleLoadTons = 1.90,
+                dailyTravelHours = 6.0,
+            )
+            VehicleKind.TRUCK -> VehicleProfile(
+                kind = kind,
+                heightMeters = 4.00,
+                widthMeters = 2.55,
+                lengthMeters = 12.00,
+                weightTons = 18.00,
+                axleLoadTons = 9.00,
+                axleCount = 3,
+                dailyTravelHours = 8.0,
+            )
+            VehicleKind.COACH -> VehicleProfile(
+                kind = kind,
+                heightMeters = 3.80,
+                widthMeters = 2.55,
+                lengthMeters = 12.00,
+                weightTons = 18.00,
+                axleLoadTons = 7.50,
+                axleCount = 3,
+                dailyTravelHours = 8.0,
+            )
             VehicleKind.BICYCLE -> VehicleProfile(
                 kind = kind,
                 heightMeters = 1.80,
@@ -53,6 +103,10 @@ data class VehicleProfile(
                 axleCount = 2,
                 bicycleType = ScenicBicycleType.HYBRID,
                 allowUnpavedBikePaths = true,
+                dailyTravelHours = 5.0,
+                driverCount = 1,
+                eBikeRangeKm = 80.0,
+                eBikeReservePercent = 15,
             )
         }
     }
@@ -82,6 +136,12 @@ object VehicleSettingsState {
                 ScenicBicycleType.valueOf(prefs.getString("bikeType", defaults.bicycleType.name) ?: defaults.bicycleType.name)
             }.getOrDefault(defaults.bicycleType),
             allowUnpavedBikePaths = prefs.getBoolean("bikeUnpaved", defaults.allowUnpavedBikePaths),
+            dailyTravelHours = prefs.getString("dailyTravelHours", null)?.toDoubleOrNull() ?: defaults.dailyTravelHours,
+            driverCount = prefs.getInt("driverCount", defaults.driverCount),
+            overnightPlanningEnabled = prefs.getBoolean("overnightPlanning", defaults.overnightPlanningEnabled),
+            eBikeEnabled = prefs.getBoolean("eBikeEnabled", defaults.eBikeEnabled),
+            eBikeRangeKm = prefs.getString("eBikeRangeKm", null)?.toDoubleOrNull() ?: defaults.eBikeRangeKm,
+            eBikeReservePercent = prefs.getInt("eBikeReservePercent", defaults.eBikeReservePercent),
         ).sanitized()
     }
 
@@ -97,6 +157,12 @@ object VehicleSettingsState {
             .putInt("axles", profile.axleCount)
             .putString("bikeType", profile.bicycleType.name)
             .putBoolean("bikeUnpaved", profile.allowUnpavedBikePaths)
+            .putString("dailyTravelHours", profile.dailyTravelHours.toString())
+            .putInt("driverCount", profile.driverCount)
+            .putBoolean("overnightPlanning", profile.overnightPlanningEnabled)
+            .putBoolean("eBikeEnabled", profile.eBikeEnabled)
+            .putString("eBikeRangeKm", profile.eBikeRangeKm.toString())
+            .putInt("eBikeReservePercent", profile.eBikeReservePercent)
             .apply()
     }
 
@@ -107,5 +173,9 @@ object VehicleSettingsState {
         weightTons = weightTons.coerceIn(0.05, 60.0),
         axleLoadTons = axleLoadTons.coerceIn(0.02, 40.0),
         axleCount = axleCount.coerceIn(2, 20),
+        dailyTravelHours = dailyTravelHours.coerceIn(2.0, 12.0),
+        driverCount = if (kind == VehicleKind.BICYCLE) 1 else driverCount.coerceIn(1, 3),
+        eBikeRangeKm = eBikeRangeKm.coerceIn(15.0, 300.0),
+        eBikeReservePercent = eBikeReservePercent.coerceIn(0, 40),
     )
 }
