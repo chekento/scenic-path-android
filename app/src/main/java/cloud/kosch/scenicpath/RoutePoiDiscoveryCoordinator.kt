@@ -8,16 +8,19 @@ import kotlinx.coroutines.withTimeoutOrNull
 
 /**
  * Serializes expensive public POI-provider work and caches it per routed geometry/category set.
- * A map switch must not fan out three large public-provider scans per alternative and accidentally
- * rate-limit the device IP. Fast discovery is tried first; broader fallbacks run only when useful
- * coverage is still missing.
+ * Empty/transient provider results are never treated as authoritative route state: a later broad
+ * map pass may escalate immediately to the next provider stage instead of being blocked by a
+ * stale empty cache entry.
  */
 object RoutePoiDiscoveryCoordinator {
     private data class CacheEntry(
         val points: List<ScenePointUi>,
         val storedAtMs: Long,
         val retryAfterMs: Long = 0L,
-        val complete: Boolean = true,
+        val complete: Boolean = false,
+        val fastAttempted: Boolean = false,
+        val rapidAttempted: Boolean = false,
+        val precisionAttempted: Boolean = false,
     )
 
     private data class Attempt(
@@ -26,8 +29,7 @@ object RoutePoiDiscoveryCoordinator {
     )
 
     private const val CACHE_TTL_MS = 20 * 60 * 1000L
-    private const val EMPTY_SUCCESS_TTL_MS = 3 * 60 * 1000L
-    private const val FAILURE_COOLDOWN_MS = 45 * 1000L
+    private const val FAILURE_COOLDOWN_MS = 8 * 1000L
     private const val MAX_CACHE_ENTRIES = 16
 
     private val mutex = Mutex()
@@ -42,27 +44,36 @@ object RoutePoiDiscoveryCoordinator {
         if (route.size < 2 || enabledKinds.isEmpty() || maxResults <= 0) return@withContext emptyList()
         val key = cacheKey(route, enabledKinds)
         val now = System.currentTimeMillis()
-        readUsableEntry(key, now, maxResults)?.let { return@withContext it }
+        readUsableEntry(key, now, maxResults, broad)?.let { return@withContext it }
 
         mutex.withLock {
             val recheckNow = System.currentTimeMillis()
-            readUsableEntry(key, recheckNow, maxResults)?.let { return@withLock it }
+            readUsableEntry(key, recheckNow, maxResults, broad)?.let { return@withLock it }
 
+            val previous = readEntry(key)
             val minimum = minimumUsefulCount(route)
+            var fastAttempted = previous?.fastAttempted == true
+            var rapidAttempted = previous?.rapidAttempted == true
+            var precisionAttempted = previous?.precisionAttempted == true
             var providerFailed = false
 
-            // Route 3+ can immediately inherit only places that are genuinely close to its own
-            // geometry. They are copied into this route's independent pool, never displayed as a
-            // global Route-1 overlay. This also gives useful continuity during provider throttling.
-            var merged = ScenicPoiSharedState.knownPointsNear(
-                route = route,
-                enabledKinds = enabledKinds,
-                maxDistanceMeters = if (broad) 30_000.0 else 22_000.0,
+            // Preserve every route-local partial result that a provider may have already published.
+            var merged = PrecisionRoutePoiDiscovery.mergeForDisplay(
+                first = ScenicPoiSharedState.pointsForOwnRoute(route),
+                second = ScenicPoiSharedState.knownPointsNear(
+                    route = route,
+                    enabledKinds = enabledKinds,
+                    maxDistanceMeters = if (broad) 30_000.0 else 22_000.0,
+                    maxResults = maxResults,
+                ),
                 maxResults = maxResults,
             )
 
-            if (merged.size < minimum) {
-                val fast = attempt(11_500) {
+            // FastRoutePoiDiscovery has its own staged timeouts. We only allow its first wave here;
+            // if it times out, salvage partial results it already published and move on immediately.
+            if (merged.size < minimum && !fastAttempted) {
+                fastAttempted = true
+                val fast = attempt(8_500) {
                     FastRoutePoiDiscovery.discover(
                         route = route,
                         enabledKinds = enabledKinds,
@@ -71,10 +82,18 @@ object RoutePoiDiscoveryCoordinator {
                 }
                 providerFailed = providerFailed || fast.failed
                 merged = PrecisionRoutePoiDiscovery.mergeForDisplay(merged, fast.points, maxResults)
+                merged = PrecisionRoutePoiDiscovery.mergeForDisplay(
+                    merged,
+                    ScenicPoiSharedState.pointsForOwnRoute(route),
+                    maxResults,
+                )
             }
 
-            if (merged.size < minimum) {
-                val rapid = attempt(9_500) {
+            // If the first wave is empty, use the independent Overpass corridor pass right away.
+            // A broad map pass is also allowed to run this stage after a thin earlier planner pass.
+            if (merged.size < minimum && !rapidAttempted) {
+                rapidAttempted = true
+                val rapid = attempt(7_500) {
                     RapidRoutePoiDiscovery.discover(
                         route = route,
                         enabledKinds = enabledKinds,
@@ -83,25 +102,34 @@ object RoutePoiDiscoveryCoordinator {
                 }
                 providerFailed = providerFailed || rapid.failed
                 merged = PrecisionRoutePoiDiscovery.mergeForDisplay(merged, rapid.points, maxResults)
+                merged = PrecisionRoutePoiDiscovery.mergeForDisplay(
+                    merged,
+                    ScenicPoiSharedState.pointsForOwnRoute(route),
+                    maxResults,
+                )
             }
 
-            if (broad && merged.size < minimum) {
-                val precision = attempt(10_500) {
+            // Precision is deliberately reserved for the visible map/deep pass. It is the strongest
+            // fallback, but should not make every route calculation wait for a large targeted scan.
+            if (broad && merged.size < minimum && !precisionAttempted) {
+                precisionAttempted = true
+                val precision = attempt(11_500) {
                     PrecisionRoutePoiDiscovery.discover(
                         route = route,
                         enabledKinds = enabledKinds,
                         maxResults = maxOf(80, minOf(maxResults, 160)),
                         radiusMeters = 22_000,
-                        maxSamples = 6,
+                        maxSamples = 8,
                     )
                 }
                 providerFailed = providerFailed || precision.failed
                 merged = PrecisionRoutePoiDiscovery.mergeForDisplay(merged, precision.points, maxResults)
             }
 
-            val existing = readEntry(key)?.points.orEmpty()
+            val existing = previous?.points.orEmpty()
             val finalPoints = PrecisionRoutePoiDiscovery.mergeForDisplay(merged, existing, maxResults)
-            val complete = !providerFailed && (finalPoints.size >= minimum || merged.isEmpty())
+            val complete = finalPoints.size >= minimum
+            val allRelevantStagesTried = fastAttempted && rapidAttempted && (!broad || precisionAttempted)
             writeEntry(
                 key,
                 CacheEntry(
@@ -109,9 +137,16 @@ object RoutePoiDiscoveryCoordinator {
                     storedAtMs = recheckNow,
                     retryAfterMs = if (complete) 0L else recheckNow + FAILURE_COOLDOWN_MS,
                     complete = complete,
+                    fastAttempted = fastAttempted,
+                    rapidAttempted = rapidAttempted,
+                    precisionAttempted = precisionAttempted,
                 )
             )
-            if (finalPoints.isNotEmpty()) ScenicPoiSharedState.publish(route, finalPoints)
+            if (finalPoints.isNotEmpty()) {
+                ScenicPoiSharedState.publish(route, finalPoints)
+            } else if (!providerFailed && !allRelevantStagesTried) {
+                // Intentionally do nothing: a stronger subsequent pass must be allowed immediately.
+            }
             finalPoints
         }
     }
@@ -122,17 +157,18 @@ object RoutePoiDiscoveryCoordinator {
         val filtered = points.filter { point -> isTravelSupportPoint(point) || point.kind in allowedNames }
         if (filtered.isEmpty()) return
         val key = cacheKey(route, enabledKinds)
-        val current = readEntry(key)?.points.orEmpty()
-        val merged = PrecisionRoutePoiDiscovery.mergeForDisplay(filtered, current, 420)
+        val current = readEntry(key)
+        val merged = PrecisionRoutePoiDiscovery.mergeForDisplay(filtered, current?.points.orEmpty(), 420)
         writeEntry(
             key,
             CacheEntry(
                 points = merged,
                 storedAtMs = System.currentTimeMillis(),
-                // Candidate-provided POIs are valid immediately, but a later map visit may still
-                // enrich them when coverage is thin.
                 complete = merged.size >= minimumUsefulCount(route),
                 retryAfterMs = 0L,
+                fastAttempted = current?.fastAttempted == true,
+                rapidAttempted = current?.rapidAttempted == true,
+                precisionAttempted = current?.precisionAttempted == true,
             )
         )
         ScenicPoiSharedState.publish(route, merged)
@@ -157,6 +193,20 @@ object RoutePoiDiscoveryCoordinator {
         }
     }
 
+    /** Pure retry policy kept internal so JVM tests can protect empty-cache escalation. */
+    internal fun shouldRetryEmpty(
+        broad: Boolean,
+        retryAfterMs: Long,
+        nowMs: Long,
+        fastAttempted: Boolean,
+        rapidAttempted: Boolean,
+        precisionAttempted: Boolean,
+    ): Boolean {
+        if (broad && !precisionAttempted) return true
+        if (!fastAttempted || !rapidAttempted) return true
+        return retryAfterMs <= nowMs
+    }
+
     private suspend fun attempt(timeoutMs: Long, block: suspend () -> List<ScenePointUi>): Attempt {
         var failed = false
         val points = withTimeoutOrNull(timeoutMs) {
@@ -168,15 +218,32 @@ object RoutePoiDiscoveryCoordinator {
         return Attempt(points, failed)
     }
 
-    private fun readUsableEntry(key: String, now: Long, maxResults: Int): List<ScenePointUi>? {
+    private fun readUsableEntry(
+        key: String,
+        now: Long,
+        maxResults: Int,
+        broad: Boolean,
+    ): List<ScenePointUi>? {
         val entry = readEntry(key) ?: return null
         val age = now - entry.storedAtMs
-        return when {
-            entry.complete && entry.points.isNotEmpty() && age <= CACHE_TTL_MS -> entry.points.take(maxResults)
-            entry.complete && entry.points.isEmpty() && age <= EMPTY_SUCCESS_TTL_MS -> emptyList()
-            !entry.complete && entry.retryAfterMs > now -> entry.points.take(maxResults)
-            else -> null
+        if (entry.complete && entry.points.isNotEmpty() && age <= CACHE_TTL_MS) {
+            return entry.points.take(maxResults)
         }
+        if (entry.points.isNotEmpty()) {
+            // Partial POIs are always better than a blank map. Return them immediately and avoid
+            // hammering public providers just because the count is below the ideal coverage target.
+            return entry.points.take(maxResults)
+        }
+        return if (
+            shouldRetryEmpty(
+                broad = broad,
+                retryAfterMs = entry.retryAfterMs,
+                nowMs = now,
+                fastAttempted = entry.fastAttempted,
+                rapidAttempted = entry.rapidAttempted,
+                precisionAttempted = entry.precisionAttempted,
+            )
+        ) null else emptyList()
     }
 
     private fun cacheKey(route: List<GeoPoint>, enabledKinds: Set<StopKind>): String =
