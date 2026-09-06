@@ -22,9 +22,10 @@ import kotlin.math.sqrt
 /**
  * First-screen POI pass for long routes.
  *
- * The complete route is always covered. Short/medium journeys use ~65 km windows; very long
- * journeys enlarge the windows so the fast parallel pass remains bounded to roughly twelve
- * network requests instead of silently truncating the destination end.
+ * The complete route is always covered, but public Overpass instances are treated gently: very
+ * long journeys are grouped into roughly six corridor windows rather than bursting a dozen large
+ * requests at once. Every successful window is published immediately, so one slow/failed window
+ * cannot erase useful POIs from the others.
  */
 object RapidRoutePoiDiscovery {
     private val endpoints = listOf(
@@ -42,16 +43,23 @@ object RapidRoutePoiDiscovery {
 
         val routeForDistance = RouteCoveragePolicy.sampleByDistance(route, 520)
         val totalMeters = RouteCoveragePolicy.totalDistanceMeters(route)
-        val windowMeters = maxOf(65_000.0, totalMeters / 12.0)
+        val windowMeters = maxOf(85_000.0, totalMeters / 6.0)
         val windows = splitRoute(route, windowMeters)
         val results = coroutineScope {
             windows.mapIndexed { index, segment ->
                 async(Dispatchers.IO) {
-                    withTimeoutOrNull(5_800) {
+                    val points = withTimeoutOrNull(5_800) {
                         runCatching {
                             queryWindow(index, segment, routeForDistance, enabledKinds)
                         }.getOrElse { emptyList() }
                     }.orEmpty()
+                    if (points.isNotEmpty()) {
+                        val partial = PrecisionRoutePoiDiscovery.mergeForDisplay(points, emptyList(), maxResults)
+                        withContext(Dispatchers.Main.immediate) {
+                            ScenicPoiSharedState.publish(route, partial)
+                        }
+                    }
+                    points
                 }
             }.awaitAll()
         }.flatten()
