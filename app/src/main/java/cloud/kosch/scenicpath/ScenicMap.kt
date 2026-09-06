@@ -26,8 +26,6 @@ import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.withContext
 import org.maplibre.android.camera.CameraPosition
 import org.maplibre.android.camera.CameraUpdateFactory
 import org.maplibre.android.geometry.LatLng
@@ -67,6 +65,7 @@ fun ScenicMap(
     highlights: List<ScenePointUi> = emptyList(),
     routeDirty: Boolean = false,
     recenterToken: Int = 0,
+    routeOverviewToken: Int = 0,
     onToggleRouteStop: (ScenePointUi) -> Unit = {},
     onRecalculateRoute: () -> Unit = {},
     onRerouteFromLocation: (GeoPoint) -> Unit = { onRecalculateRoute() },
@@ -82,6 +81,7 @@ fun ScenicMap(
     var styleLoaded by remember { mutableStateOf(false) }
     var mapError by remember { mutableStateOf<String?>(null) }
     var lastHandledRecenterToken by remember { mutableIntStateOf(0) }
+    var lastHandledRouteOverviewToken by remember { mutableIntStateOf(0) }
     var initialLocationFocused by remember { mutableStateOf(false) }
     var cameraRevision by remember { mutableIntStateOf(0) }
 
@@ -208,14 +208,13 @@ fun ScenicMap(
         onNavigationActiveChange(navigationActive || selectedHighlight != null)
     }
 
-    LaunchedEffect(routePoints, activeKinds) {
+    LaunchedEffect(routeKey, activeKinds) {
         selectedHighlight = null
         if (routePoints.size < 2) {
             navigationActive = false
             onNavigationActiveChange(false)
             localHighlights = emptyList()
             retainedHighlights = emptyList()
-            ScenicPoiSharedState.clear()
             return@LaunchedEffect
         }
 
@@ -224,8 +223,6 @@ fun ScenicMap(
             retainedHighlights = highlights.filter(::isTravelSupportPoint)
             if (retainedHighlights.isNotEmpty()) {
                 ScenicPoiSharedState.publish(routePoints, retainedHighlights)
-            } else {
-                ScenicPoiSharedState.clearRoute(routePoints)
             }
             return@LaunchedEffect
         }
@@ -243,29 +240,28 @@ fun ScenicMap(
             RoutePoiDiscoveryCoordinator.seed(routePoints, activeKinds, routeHighlights)
         }
 
-        suspend fun commit(points: List<ScenePointUi>) {
-            if (points.isEmpty()) return
-            withContext(Dispatchers.Main.immediate) {
-                val filtered = points.filter { point ->
-                    isTravelSupportPoint(point) || StopKind.entries.firstOrNull { it.name == point.kind } in activeKinds
-                }
-                if (filtered.isEmpty()) return@withContext
-                localHighlights = PrecisionRoutePoiDiscovery.mergeForDisplay(filtered, localHighlights, MAX_SCENIC_MARKERS)
-                retainedHighlights = PrecisionRoutePoiDiscovery.mergeForDisplay(filtered, retainedHighlights, MAX_SCENIC_MARKERS)
-                ScenicPoiSharedState.publish(routePoints, retainedHighlights)
-            }
-        }
-
-        // One coordinated discovery per route/category fingerprint. Switching Route 1/2/3 no
-        // longer launches Fast + Rapid + Precision simultaneously on every map visit.
-        val minimum = RoutePoiDiscoveryCoordinator.minimumUsefulCount(routePoints)
         val discovered = RoutePoiDiscoveryCoordinator.discover(
             route = routePoints,
             enabledKinds = activeKinds,
             maxResults = MAX_SCENIC_MARKERS,
-            broad = routeHighlights.size < minimum,
+            broad = true,
         )
-        commit(discovered)
+        if (discovered.isNotEmpty()) {
+            val filtered = discovered.filter { point ->
+                isTravelSupportPoint(point) || StopKind.entries.firstOrNull { it.name == point.kind } in activeKinds
+            }
+            localHighlights = PrecisionRoutePoiDiscovery.mergeForDisplay(
+                first = filtered,
+                second = localHighlights,
+                maxResults = MAX_SCENIC_MARKERS,
+            )
+            retainedHighlights = PrecisionRoutePoiDiscovery.mergeForDisplay(
+                first = filtered,
+                second = retainedHighlights,
+                maxResults = MAX_SCENIC_MARKERS,
+            )
+            ScenicPoiSharedState.publish(routePoints, retainedHighlights)
+        }
     }
 
     val mapView = remember(context) {
@@ -472,11 +468,17 @@ fun ScenicMap(
             }
         }
     }
-    LaunchedEffect(routePoints, styleLoaded, navigationActive) {
-        if (styleLoaded && routePoints.size >= 2 && !navigationActive) {
+    LaunchedEffect(routeOverviewToken, styleLoaded, navigationActive) {
+        if (
+            styleLoaded &&
+            routePoints.size >= 2 &&
+            !navigationActive &&
+            routeOverviewToken > lastHandledRouteOverviewToken
+        ) {
             runCatching {
                 val bounds = LatLngBounds.Builder().apply { routePoints.forEach { include(LatLng(it.lat, it.lon)) } }.build()
                 mapRef?.animateCamera(CameraUpdateFactory.newLatLngBounds(bounds, 96), 650)
+                lastHandledRouteOverviewToken = routeOverviewToken
             }.onFailure { onMapError(it.message ?: "Route overview failed") }
         }
     }
