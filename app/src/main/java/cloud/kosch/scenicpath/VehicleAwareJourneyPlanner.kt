@@ -2,7 +2,6 @@ package cloud.kosch.scenicpath
 
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
-import kotlinx.coroutines.withTimeoutOrNull
 import org.json.JSONArray
 import org.json.JSONObject
 import java.net.HttpURLConnection
@@ -76,15 +75,12 @@ object VehicleAwareJourneyPlanner {
             plan.autoSuggestStops &&
             plan.enabledSceneKinds.isNotEmpty()
         ) {
-            withTimeoutOrNull(10_000) {
-                runCatching {
-                    FastRoutePoiDiscovery.discover(
-                        route = scenicBase.points,
-                        enabledKinds = plan.enabledSceneKinds,
-                        maxResults = 96,
-                    )
-                }.getOrElse { emptyList() }
-            }.orEmpty()
+            RoutePoiDiscoveryCoordinator.discover(
+                route = scenicBase.points,
+                enabledKinds = plan.enabledSceneKinds,
+                maxResults = 96,
+                broad = effective.maxExtraMinutes >= 90,
+            )
         } else emptyList()
 
         val fixedHighlights = fixedStops.mapNotNull(::fixedHighlight)
@@ -154,6 +150,11 @@ object VehicleAwareJourneyPlanner {
 
         if (scenicCandidate.scenePoints.isNotEmpty()) {
             ScenicPoiSharedState.publish(scenicCandidate.points, scenicCandidate.scenePoints)
+            RoutePoiDiscoveryCoordinator.seed(
+                route = scenicCandidate.points,
+                enabledKinds = plan.enabledSceneKinds,
+                points = scenicCandidate.scenePoints,
+            )
         }
 
         RoutePlanUi(
