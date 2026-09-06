@@ -66,3 +66,36 @@ jobs:
           print('museum features:', len(features))
           print('sample:', features[0].get('properties',{}).get('name'))
           PY
+
+      - name: Verify Android-style Overpass POI query returns real features
+        shell: bash
+        run: |
+          set -euo pipefail
+          QUERY='[out:json][timeout:8];nwr(53.62,10.12,53.72,10.32)[amenity~"^(restaurant|cafe)$"][name];out center 20;'
+          ok=0
+          for ENDPOINT in \
+            'https://overpass-api.de/api/interpreter' \
+            'https://overpass.kumi.systems/api/interpreter' \
+            'https://overpass.private.coffee/api/interpreter'; do
+            echo "Trying $ENDPOINT"
+            if curl --fail --silent --show-error --max-time 15 \
+              --data-urlencode "data=$QUERY" \
+              -H 'Accept: application/json' \
+              "$ENDPOINT" > /tmp/overpass.json; then
+              if python3 - <<'PY'
+          import json
+          data=json.load(open('/tmp/overpass.json'))
+          elements=data.get('elements', [])
+          assert elements, 'Overpass returned no POIs'
+          named=[e for e in elements if (e.get('tags') or {}).get('name')]
+          assert named, 'Overpass returned no named POIs'
+          print('Overpass named POIs:', len(named))
+          print('sample:', named[0]['tags']['name'])
+          PY
+              then
+                ok=1
+                break
+              fi
+            fi
+          done
+          test "$ok" -eq 1
