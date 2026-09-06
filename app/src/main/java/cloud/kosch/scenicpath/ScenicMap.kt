@@ -65,7 +65,6 @@ fun ScenicMap(
     highlights: List<ScenePointUi> = emptyList(),
     routeDirty: Boolean = false,
     recenterToken: Int = 0,
-    routeOverviewToken: Int = 0,
     onToggleRouteStop: (ScenePointUi) -> Unit = {},
     onRecalculateRoute: () -> Unit = {},
     onRerouteFromLocation: (GeoPoint) -> Unit = { onRecalculateRoute() },
@@ -81,7 +80,7 @@ fun ScenicMap(
     var styleLoaded by remember { mutableStateOf(false) }
     var mapError by remember { mutableStateOf<String?>(null) }
     var lastHandledRecenterToken by remember { mutableIntStateOf(0) }
-    var lastHandledRouteOverviewToken by remember { mutableIntStateOf(0) }
+    var lastRouteEndpoints by remember { mutableStateOf<Pair<GeoPoint, GeoPoint>?>(null) }
     var initialLocationFocused by remember { mutableStateOf(false) }
     var cameraRevision by remember { mutableIntStateOf(0) }
 
@@ -468,18 +467,16 @@ fun ScenicMap(
             }
         }
     }
-    LaunchedEffect(routeOverviewToken, styleLoaded, navigationActive) {
-        if (
-            styleLoaded &&
-            routePoints.size >= 2 &&
-            !navigationActive &&
-            routeOverviewToken > lastHandledRouteOverviewToken
-        ) {
-            runCatching {
-                val bounds = LatLngBounds.Builder().apply { routePoints.forEach { include(LatLng(it.lat, it.lon)) } }.build()
-                mapRef?.animateCamera(CameraUpdateFactory.newLatLngBounds(bounds, 96), 650)
-                lastHandledRouteOverviewToken = routeOverviewToken
-            }.onFailure { onMapError(it.message ?: "Route overview failed") }
+    LaunchedEffect(routeKey, styleLoaded, navigationActive) {
+        if (styleLoaded && routePoints.size >= 2 && !navigationActive) {
+            val shouldFit = RouteCameraPolicy.shouldFitRoute(lastRouteEndpoints, routePoints)
+            if (shouldFit) {
+                runCatching {
+                    val bounds = LatLngBounds.Builder().apply { routePoints.forEach { include(LatLng(it.lat, it.lon)) } }.build()
+                    mapRef?.animateCamera(CameraUpdateFactory.newLatLngBounds(bounds, 96), 650)
+                }.onFailure { onMapError(it.message ?: "Route overview failed") }
+            }
+            lastRouteEndpoints = RouteCameraPolicy.endpoints(routePoints)
         }
     }
     LaunchedEffect(recenterToken, styleLoaded, userLocation) {
