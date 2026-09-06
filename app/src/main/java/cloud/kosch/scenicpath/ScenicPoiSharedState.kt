@@ -56,6 +56,57 @@ object ScenicPoiSharedState {
         )
     }
 
+    /**
+     * Reuses only already-known places that are also spatially relevant to another route.
+     * This is deliberately not a shared display pool: the caller seeds the result into the new
+     * route's own memory. It gives Route 3+ useful fallback POIs when a public provider is
+     * temporarily throttled, without leaking unrelated markers from Route 1/2.
+     */
+    fun knownPointsNear(
+        route: List<GeoPoint>,
+        enabledKinds: Set<StopKind>,
+        maxDistanceMeters: Double = 22_000.0,
+        maxResults: Int = 180,
+    ): List<ScenePointUi> {
+        if (route.size < 2 || maxResults <= 0) return emptyList()
+        val currentKey = routeKey(route)
+        val samples = RouteCoveragePolicy.sampleByDistance(route, 72)
+        if (samples.isEmpty()) return emptyList()
+        val allowedNames = enabledKinds.mapTo(mutableSetOf()) { it.name }
+
+        val nearby = publishedByRoute
+            .asSequence()
+            .filter { (key, _) -> key != currentKey }
+            .flatMap { (_, points) -> points.asSequence() }
+            .filter { point -> isTravelSupportPoint(point) || point.kind in allowedNames }
+            .mapNotNull { point ->
+                val distance = samples.minOfOrNull { sample ->
+                    RoundTripPolicy.haversineMeters(sample, point.point)
+                } ?: return@mapNotNull null
+                if (distance > maxDistanceMeters) return@mapNotNull null
+                point.copy(
+                    distanceFromRouteMeters = distance.toInt().coerceAtLeast(0),
+                    rationale = listOfNotNull(
+                        "Known highlight near this alternative",
+                        point.rationale,
+                    ).distinct().joinToString(" · "),
+                    includedInRoute = false,
+                ) to distance
+            }
+            .sortedWith(
+                compareByDescending<Pair<ScenePointUi, Double>> { it.first.suggestionScore }
+                    .thenBy { it.second }
+            )
+            .map { it.first }
+            .toList()
+
+        return PrecisionRoutePoiDiscovery.mergeForDisplay(
+            first = nearby,
+            second = emptyList(),
+            maxResults = maxResults,
+        )
+    }
+
     fun clearRoute(route: List<GeoPoint>) {
         if (route.size < 2) return
         val key = routeKey(route)
