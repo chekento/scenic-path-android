@@ -17,6 +17,11 @@ class ScenicPoiSharedStateTest {
         GeoPoint(49.60, 13.30),
         GeoPoint(53.67, 10.24),
     )
+    private val nearbyAlternative = listOf(
+        GeoPoint(47.87, 12.65),
+        GeoPoint(50.00, 11.30),
+        GeoPoint(53.67, 10.24),
+    )
 
     private fun poi(id: String, point: GeoPoint) = ScenePointUi(
         id = id,
@@ -43,6 +48,24 @@ class ScenicPoiSharedStateTest {
         assertEquals(setOf("route-one-poi"), firstIds)
         assertEquals(setOf("new-route-poi"), addedIds)
         assertFalse("newly added route must not inherit route 1 POIs", "route-one-poi" in addedIds)
+    }
+
+    @Test
+    fun nearbyKnownPoiCanSeedNewRouteWithoutMergingItsStorage() {
+        ScenicPoiSharedState.publish(routeOne, listOf(poi("known-nearby", routeOne[1])))
+
+        val fallback = ScenicPoiSharedState.knownPointsNear(
+            route = nearbyAlternative,
+            enabledKinds = setOf(StopKind.SCENIC),
+            maxDistanceMeters = 20_000.0,
+        )
+
+        assertTrue("a spatially relevant known POI should be reusable during provider throttling", fallback.any { it.id == "known-nearby" })
+        assertTrue("new route storage must still be empty until the caller explicitly seeds it", ScenicPoiSharedState.pointsFor(nearbyAlternative).isEmpty())
+
+        ScenicPoiSharedState.publish(nearbyAlternative, fallback)
+        assertTrue(ScenicPoiSharedState.pointsFor(nearbyAlternative).any { it.id == "known-nearby" })
+        assertEquals(setOf("known-nearby"), ScenicPoiSharedState.pointsFor(routeOne).map { it.id }.toSet())
     }
 
     @Test
