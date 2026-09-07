@@ -56,6 +56,7 @@ export function roundTripWaypointSets({
   autoSuggestStops = true,
   fixedDwellMinutes = 0,
   count = 3,
+  alternativeGeneration = 0,
 }) {
   const targetKm = speedKmh(preferences) * targetDriveMinutes(preferences, autoSuggestStops, fixedDwellMinutes) / 60;
   const radius = Math.max(2_500, Math.min(70_000, targetKm * 1000 / 5.46));
@@ -63,7 +64,7 @@ export function roundTripWaypointSets({
   const desired = Math.max(2, Math.min(6, count));
   // Server callers request +2 shaping candidates. As + Route grows the requested count from
   // 2 -> 3 -> 4 -> 5, this generation changes as well and intentionally explores new bearings.
-  const generation = Math.max(0, count - 4);
+  const generation = Math.max(0, count - 4, Math.min(10_000, Math.floor(Number(alternativeGeneration) || 0)));
   return Array.from({ length: desired }, (_, variant) => {
     const seededIndex = variant + generation * 3;
     const orientation = (seededIndex * 57 + (seededIndex % 2 === 0 ? 12 : 31) + generation * 19) % 120;

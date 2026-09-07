@@ -1,48 +1,33 @@
 package cloud.kosch.scenicpath
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.semantics.LiveRegionMode
+import androidx.compose.ui.semantics.liveRegion
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import kotlinx.coroutines.launch
+import androidx.lifecycle.viewmodel.compose.viewModel
 import java.util.Locale
 import kotlin.math.roundToInt
 
-private enum class ExperiencePanelV2 {
-    START,
-    DESTINATION,
-    PLANNER,
-    STOPS,
-    STOP_KIND,
-    STOP_PLACE,
-}
+private enum class ExperiencePanelV2 { START, DESTINATION, PLANNER, STOPS, STOP_KIND, STOP_PLACE }
 
-private enum class QuickModeV2(val label: String, val description: String) {
-    DIRECT("Direct", "Minimal detour. Best when arrival time matters most."),
-    BALANCED("Balanced", "A sensible compromise between travel time, scenery and useful stops."),
-    SCENIC("Scenic", "Beautiful roads and worthwhile scenery get clear priority."),
-    DISCOVER("Discover", "A wider corridor, more time and more Smart Stops for an experience-led trip."),
-}
-
-private enum class RouteIssueV2 {
-    NONE,
-    START,
-    DESTINATION,
-    BOTH,
-    RETRY,
-}
-
-/** Coordinated map-first shell. */
+/** One session, one modal, and measured screen regions instead of competing fixed overlays. */
 @Composable
 fun ScenicExperienceRootV2(
     locationPermissionGranted: Boolean,
@@ -50,50 +35,50 @@ fun ScenicExperienceRootV2(
     vehicleProfile: VehicleProfile = VehicleSettingsState.profile,
     onVehicleSettings: () -> Unit = {},
     externalOverlayVisible: Boolean = false,
+    onGpsEnabledChange: (Boolean) -> Unit = {},
+    session: JourneySessionViewModel = viewModel(),
 ) {
-    val scope = rememberCoroutineScope()
     val location = rememberLocationUiState(locationPermissionGranted)
-
-    var startSelection by remember { mutableStateOf<PlaceSuggestion?>(null) }
-    var destinationSelection by remember { mutableStateOf<PlaceSuggestion?>(null) }
-    var activePanel by remember { mutableStateOf<ExperiencePanelV2?>(null) }
-    var minimizedPanel by remember { mutableStateOf<ExperiencePanelV2?>(null) }
-    var pendingStopKind by remember { mutableStateOf(StopKind.CUSTOM) }
-
-    var preferences by remember { mutableStateOf(ScenicPreferences(maxStops = 6, vehicle = vehicleProfile)) }
-    var plan by remember { mutableStateOf(TripPlan()) }
-    var routePlan by remember { mutableStateOf<RoutePlanUi?>(null) }
-    var selectedCandidateIndex by remember { mutableIntStateOf(0) }
-    var routeLoading by remember { mutableStateOf(false) }
-    var routeDirty by remember { mutableStateOf(false) }
-    var navigationActive by remember { mutableStateOf(false) }
-
-    var topExpanded by remember { mutableStateOf(true) }
-    var routeBarExpanded by remember { mutableStateOf(false) }
+    val state = session.state
+    val plan = state.plan
+    val preferences = state.preferences
+    val origin = state.start?.point ?: location.point
+    val destination = state.destination?.point
+    val activeRoute = state.activeRoute
+    var activePanel by rememberSaveable { mutableStateOf<ExperiencePanelV2?>(null) }
+    var minimizedPanel by rememberSaveable { mutableStateOf<ExperiencePanelV2?>(null) }
+    var pendingStopKind by rememberSaveable { mutableStateOf(StopKind.CUSTOM) }
+    var topExpanded by rememberSaveable { mutableStateOf(true) }
+    var routeBarExpanded by rememberSaveable { mutableStateOf(false) }
+    var mapOverlayActive by remember { mutableStateOf(false) }
     var recenterToken by remember { mutableIntStateOf(0) }
-
-    var routeError by remember { mutableStateOf<String?>(null) }
-    var routeIssue by remember { mutableStateOf(RouteIssueV2.NONE) }
-
-    val origin = startSelection?.point ?: location.point
-    val destination = destinationSelection?.point
-    val activeRoute = routePlan?.candidates?.getOrNull(selectedCandidateIndex)
-    val rootOsdVisible = activePanel == null && !externalOverlayVisible && !navigationActive
+    var mapRetryToken by remember { mutableIntStateOf(0) }
+    var mapError by remember { mutableStateOf<String?>(null) }
+    val rootOsdVisible = activePanel == null && !externalOverlayVisible && !mapOverlayActive
     val isRoundTripSelection = origin != null && destination != null &&
         plan.mode == PlanningMode.DAY_TRIP && RoundTripPolicy.haversineMeters(origin, destination) <= 350.0
-
-    val startLabel = startSelection?.title ?: when {
+    val startLabel = state.start?.title ?: when {
         location.point != null -> "Current location"
         locationPermissionGranted -> "Waiting for GPS"
         else -> "Choose start or enable GPS"
     }
-    val destinationLabel = destinationSelection?.title.orEmpty()
+    val destinationLabel = state.destination?.title.orEmpty()
 
     LaunchedEffect(vehicleProfile) {
-        if (preferences.vehicle != vehicleProfile) {
-            preferences = preferences.copy(vehicle = vehicleProfile)
-            if (routePlan != null) routeDirty = true
+        session.edit(preferences = session.state.preferences.copy(vehicle = vehicleProfile))
+    }
+    LaunchedEffect(state.routes) {
+        if (state.routes != null) { topExpanded = false; routeBarExpanded = false }
+    }
+    LaunchedEffect(state.error) {
+        if (state.error != null) {
+            activePanel = null
+            topExpanded = false
+            routeBarExpanded = false
         }
+    }
+    BackHandler(enabled = activePanel == null && minimizedPanel != null && !mapOverlayActive) {
+        minimizedPanel = null
     }
 
     fun openPanel(panel: ExperiencePanelV2) {
@@ -102,473 +87,204 @@ fun ScenicExperienceRootV2(
         topExpanded = false
         routeBarExpanded = false
     }
-
-    fun minimizePanel(panel: ExperiencePanelV2) {
+    fun minimizePanel(panel: ExperiencePanelV2) { activePanel = null; minimizedPanel = panel }
+    fun buildRoute() {
         activePanel = null
-        minimizedPanel = panel
-    }
-
-    fun clearEndpointRoute() {
-        navigationActive = false
-        routePlan = null
-        selectedCandidateIndex = 0
-        routeDirty = false
+        minimizedPanel = null
+        topExpanded = false
         routeBarExpanded = false
-        routeError = null
-        routeIssue = RouteIssueV2.NONE
+        session.build(location.point)
+    }
+    fun toggleMapStop(stop: ScenePointUi) {
+        val current = session.state.plan
+        val nextStops = if (current.stops.any { it.id == stop.id }) current.stops.filterNot { it.id == stop.id }
+        else current.stops + PlannedStop(
+            id = stop.id, name = stop.name,
+            kind = StopKind.entries.firstOrNull { it.name == stop.kind } ?: StopKind.SCENIC,
+            dwellMinutes = stop.suggestedDwellMinutes, locked = true, mustVisit = true,
+            point = stop.point, rating = stop.rating, ratingCount = stop.ratingCount, subtype = stop.subtype,
+        )
+        session.edit(plan = current.copy(stops = nextStops))
+    }
+    fun makeRoundTrip() {
+        if (origin == null) { session.build(location.point); return }
+        val (roundPlan, roundPreferences) = RoutePresetPolicy.apply(QuickModeV2.DISCOVER, plan, preferences)
+        session.edit(roundPlan, roundPreferences)
+        // Pin both ends: subsequent GPS movement must not move the start of the chosen loop.
+        val start = state.start ?: PlaceSuggestion("round-trip-start", startLabel, "Round trip starting point", origin)
+        session.selectStart(start)
+        session.selectDestination(start.copy(id = "round-trip-return", subtitle = "Return to starting point"))
         topExpanded = true
     }
 
-    fun applyQuickMode(mode: QuickModeV2) {
-        val hadRoute = routePlan != null
-        when (mode) {
-            QuickModeV2.DIRECT -> {
-                plan = plan.copy(
-                    mode = PlanningMode.QUICK,
-                    routeCharacter = RouteCharacter.DIRECT,
-                    autoSuggestStops = false,
-                    requestedAlternatives = 1,
-                )
-                preferences = preferences.copy(
-                    maxExtraMinutes = 10,
-                    maxExtraPercent = 10,
-                    maxStops = 3,
-                    avoidMotorways = false,
-                    windingness = 20,
-                    hilliness = 20,
-                    vehicle = vehicleProfile,
-                )
-            }
-            QuickModeV2.BALANCED -> {
-                plan = plan.copy(
-                    mode = PlanningMode.QUICK,
-                    routeCharacter = RouteCharacter.BALANCED,
-                    autoSuggestStops = true,
-                    requestedAlternatives = maxOf(2, plan.requestedAlternatives),
-                )
-                preferences = preferences.copy(
-                    maxExtraMinutes = 30,
-                    maxExtraPercent = 25,
-                    maxStops = 5,
-                    avoidMotorways = false,
-                    windingness = 50,
-                    hilliness = 40,
-                    vehicle = vehicleProfile,
-                )
-            }
-            QuickModeV2.SCENIC -> {
-                plan = plan.copy(
-                    mode = PlanningMode.QUICK,
-                    routeCharacter = RouteCharacter.BEAUTIFUL,
-                    autoSuggestStops = true,
-                    requestedAlternatives = maxOf(2, plan.requestedAlternatives),
-                )
-                preferences = preferences.copy(
-                    maxExtraMinutes = 60,
-                    maxExtraPercent = 40,
-                    maxStops = 6,
-                    avoidMotorways = true,
-                    windingness = 75,
-                    hilliness = 60,
-                    vehicle = vehicleProfile,
-                )
-            }
-            QuickModeV2.DISCOVER -> {
-                plan = plan.copy(
-                    mode = PlanningMode.DAY_TRIP,
-                    routeCharacter = RouteCharacter.BEAUTIFUL,
-                    autoSuggestStops = true,
-                    requestedAlternatives = maxOf(2, plan.requestedAlternatives),
-                )
-                preferences = preferences.copy(
-                    maxExtraMinutes = 120,
-                    maxExtraPercent = 70,
-                    maxStops = 8,
-                    avoidMotorways = true,
-                    windingness = 80,
-                    hilliness = 65,
-                    vehicle = vehicleProfile,
-                )
-            }
-        }
-        if (hadRoute) routeDirty = true
-    }
-
-    fun executeBuildRoute(
-        fromOverride: GeoPoint? = null,
-        planOverride: TripPlan? = null,
-        preserveSelection: Boolean = false,
-        appendExistingAlternatives: Boolean = false,
-    ) {
-        val from = fromOverride ?: origin
-        val to = destination
-        val buildPlan = planOverride ?: plan
-
-        if (from == null || to == null) {
-            activePanel = null
-            minimizedPanel = null
-            topExpanded = true
-            routeBarExpanded = false
-            routeIssue = when {
-                from == null && to == null -> RouteIssueV2.BOTH
-                from == null -> RouteIssueV2.START
-                else -> RouteIssueV2.DESTINATION
-            }
-            routeError = when (routeIssue) {
-                RouteIssueV2.BOTH -> "Start and destination are missing. Choose both before planning a route."
-                RouteIssueV2.START -> "Start is missing. Choose a start place or enable live GPS."
-                RouteIssueV2.DESTINATION -> "Destination is missing. Choose where you want to go."
-                else -> "Start or destination is missing."
-            }
-            return
-        }
-
-        routeLoading = true
-        routeError = null
-        routeIssue = RouteIssueV2.NONE
-        activePanel = null
-        minimizedPanel = null
-        routeBarExpanded = false
-        val previousIndex = selectedCandidateIndex
-        val previousRoutePlan = routePlan
-        val previousCount = previousRoutePlan?.candidates?.size ?: 0
-
-        val effectivePreferences = preferences.copy(vehicle = vehicleProfile)
-        scope.launch {
-            ScenicApi.planRoute(from, to, buildPlan, effectivePreferences)
-                .onSuccess { result ->
-                    routeLoading = false
-                    if (result.candidates.isNotEmpty()) {
-                        val appliedResult = if (appendExistingAlternatives && previousRoutePlan != null) {
-                            RouteAlternativeMergePolicy.merge(
-                                existing = previousRoutePlan,
-                                refreshed = result,
-                                requestedCount = buildPlan.requestedAlternatives,
-                            )
-                        } else result
-                        routePlan = appliedResult
-                        selectedCandidateIndex = if (preserveSelection) {
-                            previousIndex.coerceIn(0, appliedResult.candidates.lastIndex)
-                        } else 0
-                        routeDirty = false
-                        preferences = effectivePreferences
-                        plan = buildPlan
-                        if (fromOverride != null) startSelection = null
-                        topExpanded = false
-                        routeBarExpanded = false
-                        if (appendExistingAlternatives && appliedResult.candidates.size <= previousCount) {
-                            routeIssue = RouteIssueV2.NONE
-                            routeError = null
-                        }
-                    } else {
-                        routeIssue = RouteIssueV2.RETRY
-                        routeError = if (routePlan != null) {
-                            "No replacement route matched this time budget. The previous route stays visible."
-                        } else {
-                            "No route matched this time budget. Try Balanced, Scenic or a larger budget."
-                        }
-                    }
-                }
-                .onFailure { error ->
-                    routeLoading = false
-                    routeIssue = RouteIssueV2.RETRY
-                    routeError = if (routePlan != null) {
-                        "${error.message ?: "Route planning failed"}. The previous route stays visible."
-                    } else {
-                        error.message ?: "Route planning failed"
-                    }
-                }
-        }
-    }
-
-    fun buildRoute() = executeBuildRoute()
-    fun rerouteFromCurrentLocation(point: GeoPoint) = executeBuildRoute(point)
-
-    fun requestMoreRoutes() {
-        if (routeLoading || plan.requestedAlternatives >= 5) return
-        val next = plan.copy(requestedAlternatives = (plan.requestedAlternatives + 1).coerceAtMost(5))
-        plan = next
-        executeBuildRoute(
-            planOverride = next,
-            preserveSelection = true,
-            appendExistingAlternatives = true,
-        )
-    }
-
-    fun makeRoundTripFromStart() {
-        val start = origin
-        if (start == null) {
-            routeIssue = RouteIssueV2.START
-            routeError = "Choose a start place or enable live GPS before creating a round trip."
-            topExpanded = true
-            return
-        }
-        val nextPlan = plan.copy(
-            mode = PlanningMode.DAY_TRIP,
-            routeCharacter = RouteCharacter.BEAUTIFUL,
-            autoSuggestStops = true,
-            requestedAlternatives = maxOf(2, plan.requestedAlternatives),
-        )
-        plan = nextPlan
-        preferences = preferences.copy(
-            maxExtraMinutes = maxOf(120, preferences.maxExtraMinutes),
-            maxExtraPercent = maxOf(70, preferences.maxExtraPercent),
-            maxStops = maxOf(6, preferences.maxStops),
-            avoidMotorways = true,
-            vehicle = vehicleProfile,
-        )
-        destinationSelection = PlaceSuggestion(
-            id = "round-trip-start-${System.nanoTime()}",
-            title = startLabel,
-            subtitle = "Round trip · return to starting point",
-            point = start,
-        )
-        clearEndpointRoute()
-    }
-
-    fun addAlternative(stop: ScenePointUi) {
-        if (plan.stops.any { it.id == stop.id }) return
-        val kind = StopKind.entries.firstOrNull { it.name == stop.kind } ?: StopKind.SCENIC
-        plan = plan.copy(
-            stops = plan.stops + PlannedStop(
-                id = stop.id,
-                name = stop.name,
-                kind = kind,
-                dwellMinutes = stop.suggestedDwellMinutes,
-                locked = true,
-                mustVisit = true,
-                point = stop.point,
-                rating = stop.rating,
-                ratingCount = stop.ratingCount,
-                subtype = stop.subtype,
-            )
-        )
-        if (routePlan != null) routeDirty = true
-        openPanel(ExperiencePanelV2.PLANNER)
-    }
-
-    fun toggleMapStop(stop: ScenePointUi) {
-        val exists = plan.stops.any { it.id == stop.id }
-        plan = if (exists) {
-            plan.copy(stops = plan.stops.filterNot { it.id == stop.id })
-        } else {
-            val kind = StopKind.entries.firstOrNull { it.name == stop.kind } ?: StopKind.SCENIC
-            plan.copy(
-                stops = plan.stops + PlannedStop(
-                    id = stop.id,
-                    name = stop.name,
-                    kind = kind,
-                    dwellMinutes = stop.suggestedDwellMinutes,
-                    locked = true,
-                    mustVisit = true,
-                    point = stop.point,
-                    rating = stop.rating,
-                    ratingCount = stop.ratingCount,
-                    subtype = stop.subtype,
-                )
-            )
-        }
-        if (routePlan != null) routeDirty = true
-    }
-
-    Box(Modifier.fillMaxSize()) {
+    val mapContent: @Composable () -> Unit = {
         ScenicMap(
             modifier = Modifier.fillMaxSize(),
             userLocation = location.point,
+            locationState = location,
             routePoints = activeRoute?.points.orEmpty(),
             stops = plan.stops,
+            navigationStops = state.committedPlan?.stops.orEmpty(),
             highlights = activeRoute?.scenePoints.orEmpty(),
-            routeDirty = routeDirty,
+            routeDirty = state.dirty,
+            routeLoading = state.loading,
+            controlsVisible = activePanel == null && !externalOverlayVisible,
             recenterToken = recenterToken,
             onToggleRouteStop = ::toggleMapStop,
             onRecalculateRoute = ::buildRoute,
-            onRerouteFromLocation = ::rerouteFromCurrentLocation,
-            onNavigationActiveChange = { navigationActive = it },
-            onMapError = {},
+            onRerouteFromLocation = { session.build(location.point, rerouteFrom = it) },
+            onNavigationActiveChange = { mapOverlayActive = it },
+            onMapError = { mapError = it.takeIf(String::isNotBlank) },
+            mapRetryToken = mapRetryToken,
         )
-
-        if (rootOsdVisible) {
-            Column(
-                modifier = Modifier.align(Alignment.TopCenter).fillMaxWidth().statusBarsPadding(),
-                verticalArrangement = Arrangement.spacedBy(6.dp),
-            ) {
-                routeError?.let { message ->
-                    RouteErrorBannerV2(
-                        message = message,
-                        issue = routeIssue,
-                        onStart = { openPanel(ExperiencePanelV2.START) },
-                        onDestination = { openPanel(ExperiencePanelV2.DESTINATION) },
-                        onRetry = ::buildRoute,
-                        onDismiss = { routeError = null; routeIssue = RouteIssueV2.NONE },
-                    )
-                }
-
-                TopRoutePanelV2(
-                    expanded = topExpanded,
-                    onToggle = {
-                        val next = !topExpanded
-                        topExpanded = next
-                        if (next) routeBarExpanded = false
-                    },
-                    startLabel = startLabel,
-                    destinationLabel = destinationLabel,
-                    startSupporting = when {
-                        startSelection != null -> startSelection?.subtitle
-                        location.accuracyMeters != null -> "GPS ±${location.accuracyMeters.toInt()} m"
-                        !locationPermissionGranted -> "Live GPS is off"
-                        location.error != null -> location.error
-                        else -> "Using live GPS"
-                    },
-                    destinationSupporting = destinationSelection?.subtitle,
-                    plan = plan,
-                    preferences = preferences,
-                    routeLoading = routeLoading,
-                    hasRoute = routePlan != null,
-                    routeDirty = routeDirty,
-                    vehicleProfile = vehicleProfile,
-                    roundTripActive = isRoundTripSelection,
-                    canRoundTrip = origin != null,
-                    onRoundTrip = ::makeRoundTripFromStart,
-                    onStart = { openPanel(ExperiencePanelV2.START) },
-                    onDestination = { openPanel(ExperiencePanelV2.DESTINATION) },
-                    onPlanner = { openPanel(ExperiencePanelV2.PLANNER) },
-                    onStops = { openPanel(ExperiencePanelV2.STOPS) },
-                    onVehicleSettings = onVehicleSettings,
-                    onBuildRoute = ::buildRoute,
-                    onQuickMode = ::applyQuickMode,
-                    onEnableGps = requestLocationPermission,
-                    locationPermissionGranted = locationPermissionGranted,
-                )
+    }
+    val retainedMap = remember { movableContentOf<@Composable () -> Unit> { content -> content() } }
+    val topControls: @Composable () -> Unit = {
+        TopRoutePanelV2(
+            expanded = topExpanded,
+            onToggle = { topExpanded = !topExpanded; if (topExpanded) routeBarExpanded = false },
+            startLabel = startLabel, destinationLabel = destinationLabel,
+            startSupporting = when {
+                state.start != null -> state.start.subtitle
+                location.error != null -> location.error
+                location.accuracyMeters != null -> "GPS ±${location.accuracyMeters.toInt()} m"
+                else -> "Current position is optional"
+            },
+            destinationSupporting = state.destination?.subtitle,
+            plan = plan, preferences = preferences, routeLoading = state.loading,
+            hasRoute = state.routes != null, routeDirty = state.dirty, vehicleProfile = vehicleProfile,
+            roundTripActive = isRoundTripSelection, canRoundTrip = origin != null,
+            onRoundTrip = ::makeRoundTrip,
+            onStart = { openPanel(ExperiencePanelV2.START) },
+            onDestination = { openPanel(ExperiencePanelV2.DESTINATION) },
+            onPlanner = { openPanel(ExperiencePanelV2.PLANNER) },
+            onStops = { openPanel(ExperiencePanelV2.STOPS) },
+            onVehicleSettings = onVehicleSettings, onBuildRoute = ::buildRoute,
+            onQuickMode = { mode ->
+                val (nextPlan, nextPreferences) = RoutePresetPolicy.apply(mode, plan, preferences)
+                session.edit(nextPlan, nextPreferences)
+            },
+            onEnableGps = requestLocationPermission, locationPermissionGranted = locationPermissionGranted,
+        )
+    }
+    val bottomControls: @Composable () -> Unit = {
+        Column(Modifier.fillMaxWidth().padding(horizontal = 12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            minimizedPanel?.let { panel ->
+                MinimizedPanelDockV2(panel, { openPanel(panel) }, { minimizedPanel = null }, Modifier.fillMaxWidth())
             }
-
             activeRoute?.let { route ->
                 RouteSummaryBarV2(
-                    route = route,
-                    expanded = routeBarExpanded,
-                    candidateIndex = selectedCandidateIndex,
-                    candidateCount = routePlan?.candidates?.size ?: 1,
-                    onToggle = {
-                        val next = !routeBarExpanded
-                        routeBarExpanded = next
-                        if (next) topExpanded = false
-                    },
-                    onPrevious = {
-                        val count = routePlan?.candidates?.size ?: 0
-                        if (count > 0) selectedCandidateIndex = (selectedCandidateIndex - 1 + count) % count
-                    },
-                    onNext = {
-                        val count = routePlan?.candidates?.size ?: 0
-                        if (count > 0) selectedCandidateIndex = (selectedCandidateIndex + 1) % count
-                    },
-                    onAddRoute = ::requestMoreRoutes,
-                    canAddRoute = plan.requestedAlternatives < 5,
-                    addingRoute = routeLoading,
-                    onStops = { openPanel(ExperiencePanelV2.STOPS) },
-                    onPlanner = { openPanel(ExperiencePanelV2.PLANNER) },
-                    modifier = Modifier
-                        .align(Alignment.BottomCenter)
-                        .navigationBarsPadding()
-                        .padding(start = 12.dp, end = 78.dp, bottom = 78.dp),
+                    route = route, expanded = routeBarExpanded, candidateIndex = state.selectedIndex,
+                    candidateCount = state.routes?.candidates?.size ?: 1,
+                    onToggle = { routeBarExpanded = !routeBarExpanded; if (routeBarExpanded) topExpanded = false },
+                    onPrevious = { session.selectAlternative(-1) }, onNext = { session.selectAlternative(1) },
+                    onAddRoute = { session.build(location.point, appendAlternative = true) },
+                    canAddRoute = !state.dirty && (state.routes?.candidates?.size ?: 0) < 5,
+                    addingRoute = state.loading,
+                    onStops = { openPanel(ExperiencePanelV2.STOPS) }, onPlanner = { openPanel(ExperiencePanelV2.PLANNER) },
                 )
             }
-
-            Column(
-                modifier = Modifier.align(Alignment.BottomEnd).navigationBarsPadding().padding(16.dp),
-                verticalArrangement = Arrangement.spacedBy(10.dp),
-                horizontalAlignment = Alignment.End,
+            Row(
+                Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                horizontalArrangement = Arrangement.SpaceEvenly,
+                verticalAlignment = Alignment.CenterVertically,
             ) {
-                if (locationPermissionGranted) {
-                    SmallFloatingActionButton(onClick = { recenterToken++ }) {
-                        Icon(Icons.Default.MyLocation, "Center map")
+                FilledTonalIconToggleButton(checked = locationPermissionGranted, onCheckedChange = onGpsEnabledChange) {
+                    Icon(if (locationPermissionGranted) Icons.Default.GpsFixed else Icons.Default.GpsOff, if (locationPermissionGranted) "Turn GPS off" else "Enable GPS")
+                }
+                IconButton(onClick = { if (state.start != null) session.selectStart(null); requestLocationPermission(); recenterToken++ }) {
+                    Icon(Icons.Default.MyLocation, "Use current location as start")
+                }
+                IconButton(onClick = { recenterToken++ }, enabled = location.point != null) { Icon(Icons.Default.CenterFocusStrong, "Center map") }
+                IconButton(onClick = { openPanel(ExperiencePanelV2.PLANNER) }) { Icon(Icons.Default.Tune, "Open planner") }
+                IconButton(onClick = onVehicleSettings) { Icon(Icons.Default.DirectionsCar, "Vehicle settings: ${vehicleProfile.kind.label}") }
+            }
+        }
+    }
+
+    Column(Modifier.fillMaxSize().safeDrawingPadding()) {
+        // Feedback remains above navigation, POI details and collapsed panels.
+        if (!externalOverlayVisible) {
+            state.error?.let { message ->
+                RouteErrorBannerV2(message, state.issue,
+                    { openPanel(ExperiencePanelV2.START) }, { openPanel(ExperiencePanelV2.DESTINATION) },
+                    ::buildRoute, session::dismissFeedback)
+            }
+            if (state.loading) {
+                Surface(color = MaterialTheme.colorScheme.secondaryContainer) {
+                    Row(Modifier.fillMaxWidth().padding(start = 16.dp, end = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                        CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
+                        Text("Planning your route…", Modifier.weight(1f).padding(horizontal = 10.dp), style = MaterialTheme.typography.bodyMedium)
+                        TextButton(onClick = { session.cancelBuild() }) { Text("Cancel") }
                     }
                 }
-                SmallFloatingActionButton(onClick = { openPanel(ExperiencePanelV2.PLANNER) }) {
-                    Icon(Icons.Default.Tune, "Open planner")
-                }
-                SmallFloatingActionButton(onClick = onVehicleSettings) { Text(vehicleProfile.kind.emoji) }
             }
-
-            minimizedPanel?.let { panel ->
-                MinimizedPanelDockV2(
-                    panel = panel,
-                    onRestore = { openPanel(panel) },
-                    onClose = { minimizedPanel = null },
-                    modifier = Modifier.align(Alignment.CenterStart).padding(start = 12.dp),
-                )
+            (state.notice ?: mapError)?.let { message ->
+                Surface(color = MaterialTheme.colorScheme.surfaceContainerHigh) {
+                    Row(Modifier.fillMaxWidth().padding(start = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Text(message, Modifier.weight(1f).semantics { liveRegion = LiveRegionMode.Polite }, style = MaterialTheme.typography.bodySmall)
+                        if (mapError != null) TextButton(onClick = { mapRetryToken++; mapError = null }) { Text("Retry map") }
+                        IconButton(onClick = { session.dismissFeedback(); mapError = null }) { Icon(Icons.Default.Close, "Dismiss message") }
+                    }
+                }
+            }
+        }
+        BoxWithConstraints(Modifier.weight(1f).fillMaxWidth()) {
+            val wide = maxWidth >= 840.dp || maxWidth > maxHeight * 1.25f
+            if (wide) {
+                Row(Modifier.fillMaxSize()) {
+                    if (rootOsdVisible) Column(Modifier.width(360.dp).fillMaxHeight().verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        topControls()
+                        bottomControls()
+                    }
+                    Box(Modifier.weight(1f).fillMaxHeight()) { retainedMap(mapContent) }
+                }
+            } else {
+                Column(Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    if (rootOsdVisible) Box(Modifier.heightIn(max = maxHeight * 0.43f).verticalScroll(rememberScrollState())) { topControls() }
+                    Box(Modifier.weight(1f).fillMaxWidth()) { retainedMap(mapContent) }
+                    if (rootOsdVisible) Column(Modifier.heightIn(max = maxHeight * 0.34f).verticalScroll(rememberScrollState())) { bottomControls() }
+                }
             }
         }
     }
 
     when (activePanel) {
         ExperiencePanelV2.START -> PlacePickerSheet(
-            title = "Choose start",
-            initialQuery = startSelection?.title.orEmpty(),
-            bias = location.point,
+            title = "Choose start", bias = location.point,
+            searchState = session.searchState("start", state.start?.title.orEmpty()),
             onDismiss = { minimizePanel(ExperiencePanelV2.START) },
-            onPick = {
-                startSelection = it
-                activePanel = null
-                clearEndpointRoute()
-                if (destinationSelection == null) openPanel(ExperiencePanelV2.DESTINATION)
-            },
+            onPick = { session.selectStart(it); activePanel = null; topExpanded = true; if (state.destination == null) openPanel(ExperiencePanelV2.DESTINATION) },
         )
         ExperiencePanelV2.DESTINATION -> PlacePickerSheet(
-            title = "Choose destination",
-            initialQuery = destinationSelection?.title.orEmpty(),
-            bias = origin,
+            title = "Choose destination", bias = origin,
+            searchState = session.searchState("destination", destinationLabel),
             onDismiss = { minimizePanel(ExperiencePanelV2.DESTINATION) },
-            onPick = {
-                destinationSelection = it
-                activePanel = null
-                clearEndpointRoute()
-            },
+            onPick = { session.selectDestination(it); activePanel = null; topExpanded = true },
         )
         ExperiencePanelV2.PLANNER -> JourneyPlannerSheet(
-            start = startLabel,
-            destination = destinationLabel,
-            plan = plan,
-            preferences = preferences,
-            hasRoute = routePlan != null,
-            onPlanChange = {
-                plan = it
-                if (routePlan != null) routeDirty = true
-            },
-            onPreferencesChange = {
-                preferences = it.copy(vehicle = vehicleProfile)
-                if (routePlan != null) routeDirty = true
-            },
-            onRequestSuggestions = { openPanel(ExperiencePanelV2.STOPS) },
-            onBuildRoute = ::buildRoute,
+            start = startLabel, destination = destinationLabel, plan = plan, preferences = preferences,
+            hasRoute = state.routes != null,
+            onPlanChange = { session.edit(plan = it) },
+            onPreferencesChange = { session.edit(preferences = it.copy(vehicle = vehicleProfile)) },
+            onRequestSuggestions = { openPanel(ExperiencePanelV2.STOPS) }, onBuildRoute = ::buildRoute,
             onDismiss = { minimizePanel(ExperiencePanelV2.PLANNER) },
         )
         ExperiencePanelV2.STOPS -> JourneyStopsSheet(
-            route = activeRoute,
-            manuallyAddedIds = plan.stops.mapTo(mutableSetOf()) { it.id },
-            onAddAlternative = ::addAlternative,
-            onManualSearch = { openPanel(ExperiencePanelV2.STOP_KIND) },
-            onDismiss = { minimizePanel(ExperiencePanelV2.STOPS) },
+            route = activeRoute, manuallyAddedIds = plan.stops.mapTo(mutableSetOf()) { it.id },
+            onAddAlternative = { if (plan.stops.none { stop -> stop.id == it.id }) toggleMapStop(it); openPanel(ExperiencePanelV2.PLANNER) },
+            onManualSearch = { openPanel(ExperiencePanelV2.STOP_KIND) }, onDismiss = { minimizePanel(ExperiencePanelV2.STOPS) },
         )
-        ExperiencePanelV2.STOP_KIND -> StopKindDialogV2(
-            selected = pendingStopKind,
-            onDismiss = { openPanel(ExperiencePanelV2.STOPS) },
-            onSelect = { pendingStopKind = it; openPanel(ExperiencePanelV2.STOP_PLACE) },
-        )
+        ExperiencePanelV2.STOP_KIND -> StopKindDialogV2(pendingStopKind,
+            { openPanel(ExperiencePanelV2.STOPS) }, { pendingStopKind = it; openPanel(ExperiencePanelV2.STOP_PLACE) })
         ExperiencePanelV2.STOP_PLACE -> PlacePickerSheet(
-            title = "Add ${pendingStopKind.label.lowercase()}",
-            bias = origin,
-            onDismiss = { openPanel(ExperiencePanelV2.STOPS) },
+            title = "Add ${pendingStopKind.label.lowercase()}", bias = origin,
+            searchState = session.searchState("stop-${pendingStopKind.name}"),
+            onDismiss = { minimizePanel(ExperiencePanelV2.STOP_PLACE) },
             onPick = { place ->
-                plan = plan.copy(
-                    stops = plan.stops + PlannedStop(
-                        id = "manual-${System.nanoTime()}",
-                        name = place.title,
-                        kind = pendingStopKind,
-                        point = place.point,
-                        subtitle = place.subtitle,
-                        locked = true,
-                    )
-                )
-                if (routePlan != null) routeDirty = true
+                session.edit(plan = plan.copy(stops = plan.stops + PlannedStop(
+                    id = "manual-${System.nanoTime()}", name = place.title, kind = pendingStopKind,
+                    point = place.point, subtitle = place.subtitle, locked = true)))
                 openPanel(ExperiencePanelV2.PLANNER)
             },
         )
@@ -586,7 +302,7 @@ private fun RouteErrorBannerV2(
     onDismiss: () -> Unit,
 ) {
     Card(
-        modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp),
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp).semantics { liveRegion = LiveRegionMode.Assertive },
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer),
         elevation = CardDefaults.cardElevation(defaultElevation = 10.dp),
     ) {
@@ -661,13 +377,13 @@ private fun TopRoutePanelV2(
                     Text(
                         if (roundTripActive) "Round trip · $startLabel" else "${startLabel.take(18)} → ${destinationLabel.ifBlank { "Destination" }.take(18)}",
                         fontWeight = FontWeight.SemiBold,
-                        maxLines = 1,
+                        maxLines = 1, overflow = TextOverflow.Ellipsis,
                     )
                     Text(
                         "${activeQuickMode?.label ?: plan.routeCharacter.label} · ${vehicleProfile.kind.emoji} ${vehicleProfile.kind.label} · ${if (plan.mode == PlanningMode.DAY_TRIP) "${preferences.maxExtraMinutes} min budget" else "+${preferences.maxExtraMinutes} min"}${if (routeDirty) " · changes pending" else ""}",
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        maxLines = 1,
+                        maxLines = 1, overflow = TextOverflow.Ellipsis,
                     )
                 }
             }
@@ -687,7 +403,7 @@ private fun TopRoutePanelV2(
                 onDestination,
             )
 
-            Text("Route mode", style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.SemiBold)
+            Text("${plan.mode.label} · route priority", style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.SemiBold)
             Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(7.dp)) {
                 QuickModeV2.entries.forEach { mode ->
                     FilterChip(selected = activeQuickMode == mode, onClick = { onQuickMode(mode) }, label = { Text(mode.label) })
@@ -722,7 +438,7 @@ private fun TopRoutePanelV2(
                 )
             }
 
-            Button(onClick = onBuildRoute, enabled = !routeLoading, modifier = Modifier.fillMaxWidth().height(50.dp)) {
+            Button(onClick = onBuildRoute, enabled = !routeLoading, modifier = Modifier.fillMaxWidth().heightIn(min = 50.dp)) {
                 Icon(if (roundTripActive) Icons.Default.Loop else Icons.Default.Route, null)
                 Spacer(Modifier.width(8.dp))
                 Text(
@@ -805,21 +521,16 @@ private fun RouteSummaryBarV2(
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
-                if (candidateCount > 1) {
-                    IconButton(onClick = onPrevious, modifier = Modifier.size(34.dp)) { Icon(Icons.Default.ChevronLeft, "Previous route") }
-                    Text("${candidateIndex + 1}/$candidateCount", style = MaterialTheme.typography.labelSmall)
-                    IconButton(onClick = onNext, modifier = Modifier.size(34.dp)) { Icon(Icons.Default.ChevronRight, "Next route") }
-                }
-                IconButton(
-                    onClick = onAddRoute,
-                    enabled = canAddRoute && !addingRoute,
-                    modifier = Modifier.size(38.dp),
-                ) {
-                    if (addingRoute) CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
-                    else Icon(Icons.Default.AddCircleOutline, "Add another alternative route")
-                }
-                IconButton(onClick = onToggle, modifier = Modifier.size(38.dp)) {
+                IconButton(onClick = onToggle, modifier = Modifier.size(48.dp)) {
                     Icon(if (expanded) Icons.Default.ExpandMore else Icons.Default.ExpandLess, if (expanded) "Minimize route details" else "Show route details")
+                }
+            }
+            Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                IconButton(onClick = onPrevious, enabled = candidateCount > 1 && !addingRoute) { Icon(Icons.Default.ChevronLeft, "Previous route") }
+                Text("Route ${candidateIndex + 1} of $candidateCount", Modifier.weight(1f), style = MaterialTheme.typography.labelLarge)
+                IconButton(onClick = onNext, enabled = candidateCount > 1 && !addingRoute) { Icon(Icons.Default.ChevronRight, "Next route") }
+                IconButton(onClick = onAddRoute, enabled = canAddRoute && !addingRoute) {
+                    Icon(Icons.Default.AddCircleOutline, "Find another alternative route")
                 }
             }
             if (expanded) {
@@ -899,8 +610,8 @@ private fun MinimizedPanelDockV2(panel: ExperiencePanelV2, onRestore: () -> Unit
     Surface(modifier = modifier, shape = MaterialTheme.shapes.extraLarge, tonalElevation = 6.dp, shadowElevation = 8.dp) {
         Row(Modifier.padding(start = 10.dp, end = 2.dp, top = 3.dp, bottom = 3.dp), verticalAlignment = Alignment.CenterVertically) {
             Icon(icon, null, tint = MaterialTheme.colorScheme.primary)
-            TextButton(onClick = onRestore) { Text(label) }
-            IconButton(onClick = onClose, modifier = Modifier.size(34.dp)) { Icon(Icons.Default.Close, "Close minimized $label") }
+            TextButton(onClick = onRestore, modifier = Modifier.weight(1f)) { Text("Resume $label") }
+            IconButton(onClick = onClose, modifier = Modifier.size(48.dp)) { Icon(Icons.Default.Close, "Close minimized $label") }
         }
     }
 }
@@ -912,7 +623,7 @@ private fun StopKindDialogV2(selected: StopKind, onDismiss: () -> Unit, onSelect
         onDismissRequest = onDismiss,
         title = { Text("Manual stop type") },
         text = {
-            Column(verticalArrangement = Arrangement.spacedBy(5.dp)) {
+            Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(5.dp)) {
                 kinds.forEach { kind ->
                     Surface(
                         shape = MaterialTheme.shapes.medium,
@@ -929,12 +640,11 @@ private fun StopKindDialogV2(selected: StopKind, onDismiss: () -> Unit, onSelect
     )
 }
 
-private fun quickModeForV2(plan: TripPlan, preferences: ScenicPreferences): QuickModeV2? = when {
-    plan.routeCharacter == RouteCharacter.DIRECT && !plan.autoSuggestStops && preferences.maxExtraMinutes <= 15 -> QuickModeV2.DIRECT
-    plan.routeCharacter == RouteCharacter.BALANCED && plan.mode == PlanningMode.QUICK && preferences.maxExtraMinutes in 20..45 -> QuickModeV2.BALANCED
-    plan.routeCharacter == RouteCharacter.BEAUTIFUL && plan.mode == PlanningMode.DAY_TRIP && preferences.maxExtraMinutes >= 90 -> QuickModeV2.DISCOVER
-    plan.routeCharacter == RouteCharacter.BEAUTIFUL && plan.mode == PlanningMode.QUICK && preferences.maxExtraMinutes in 45..89 -> QuickModeV2.SCENIC
-    else -> null
+private fun quickModeForV2(plan: TripPlan, preferences: ScenicPreferences): QuickModeV2? = when (plan.routeCharacter) {
+    RouteCharacter.DIRECT -> QuickModeV2.DIRECT
+    RouteCharacter.BALANCED -> QuickModeV2.BALANCED
+    RouteCharacter.BEAUTIFUL -> if (plan.mode == PlanningMode.DAY_TRIP && preferences.maxExtraMinutes >= 120) QuickModeV2.DISCOVER else QuickModeV2.SCENIC
+    RouteCharacter.CUSTOM -> null
 }
 
 private fun formatDistanceV2(meters: Double): String = if (meters >= 1000) {

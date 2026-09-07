@@ -210,7 +210,7 @@ object RoutePoiDiscoveryCoordinator {
     private suspend fun attempt(timeoutMs: Long, block: suspend () -> List<ScenePointUi>): Attempt {
         var failed = false
         val points = withTimeoutOrNull(timeoutMs) {
-            runCatching { block() }
+            runCatchingCancellable { block() }
                 .onFailure { failed = true }
                 .getOrElse { emptyList() }
         }

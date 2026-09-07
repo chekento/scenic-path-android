@@ -3,16 +3,20 @@ package cloud.kosch.scenicpath
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Map
 import androidx.compose.material.icons.filled.Navigation
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.shadow
@@ -70,6 +74,11 @@ fun ScenicMap(
     onRerouteFromLocation: (GeoPoint) -> Unit = { onRecalculateRoute() },
     onNavigationActiveChange: (Boolean) -> Unit = {},
     onMapError: (String) -> Unit = {},
+    locationState: LocationUiState? = null,
+    navigationStops: List<PlannedStop> = stops,
+    routeLoading: Boolean = false,
+    controlsVisible: Boolean = true,
+    mapRetryToken: Int = 0,
 ) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
@@ -90,17 +99,18 @@ fun ScenicMap(
     var selectedDetails by remember(routeKey) { mutableStateOf<ScenicPoiDetails?>(null) }
     var detailsLoading by remember(routeKey) { mutableStateOf(false) }
 
-    var navigationActive by remember { mutableStateOf(false) }
-    var navigationFollow by remember { mutableStateOf(true) }
-    var voiceEnabled by remember { mutableStateOf(true) }
-    val liveNavigationLocation = rememberLocationUiState(userLocation != null)
+    var navigationActive by rememberSaveable { mutableStateOf(false) }
+    var navigationFollow by rememberSaveable { mutableStateOf(true) }
+    var voiceEnabled by rememberSaveable { mutableStateOf(true) }
+    // The root owns the only GPS subscription; map and guidance consume the same fix.
+    val liveNavigationLocation = locationState ?: LocationUiState(point = userLocation)
     val navigationPoint = liveNavigationLocation.point ?: userLocation
     val navigationSnapshot = remember(
         routePoints,
         navigationPoint,
         liveNavigationLocation.speedMetersPerSecond,
         liveNavigationLocation.bearingDegrees,
-        stops,
+        navigationStops,
     ) {
         navigationPoint?.takeIf { routePoints.size >= 2 }?.let { point ->
             LiveNavigationEngine.snapshot(
@@ -108,11 +118,17 @@ fun ScenicMap(
                 location = point,
                 speedMetersPerSecond = liveNavigationLocation.speedMetersPerSecond,
                 gpsBearingDegrees = liveNavigationLocation.bearingDegrees,
-                stops = stops,
+                stops = navigationStops,
             )
         }
     }
 
+    BackHandler(enabled = controlsVisible && (selectedHighlight != null || navigationActive)) {
+        if (selectedHighlight != null) selectedHighlight = null else navigationActive = false
+    }
+    LaunchedEffect(userLocation) {
+        if (userLocation == null) navigationActive = false
+    }
     val latestUserLocation by rememberUpdatedState(userLocation)
     val plannedStopIds = remember(stops) { stops.mapTo(mutableSetOf()) { it.id } }
     val activeKinds = prototypeSelectableSceneKinds
@@ -320,7 +336,7 @@ fun ScenicMap(
         }
     }
 
-    Box(modifier) {
+    BoxWithConstraints(modifier) {
         AndroidView(
             modifier = Modifier.fillMaxSize(),
             factory = {
@@ -333,15 +349,8 @@ fun ScenicMap(
                         map.addOnCameraMoveListener { cameraRevision++ }
                         map.addOnCameraIdleListener { cameraRevision++ }
                         map.addOnMapClickListener { selectedHighlight = null; false }
-                        runCatching {
-                            map.setStyle(BuildConfig.MAP_STYLE_URL) { style ->
-                                ensureBaseLayers(style)
-                                styleLoaded = true
-                                updateBaseMapData(map, userLocation, routePoints)
-                                cameraRevision++
-                            }
-                        }.onFailure { error ->
-                            mapError = error.message ?: "Map style failed"
+                        view.addOnDidFailLoadingMapListener {
+                            mapError = "Map could not load. Check your connection and retry."
                             onMapError(mapError!!)
                         }
                     }
@@ -350,7 +359,7 @@ fun ScenicMap(
         )
 
         if (!styleLoaded && mapError == null) CircularProgressIndicator(Modifier.align(Alignment.Center))
-        mapError?.let { MapStatusBadge(it, Modifier.align(Alignment.BottomStart).padding(12.dp)) }
+
 
         val revision = cameraRevision
         val map = mapRef
@@ -373,7 +382,7 @@ fun ScenicMap(
                         ScenicPoiOverlayMarker(
                             symbol = scenicCategoryLaneFor(highlight).emoji,
                             emphasized = emphasized,
-                            onClick = { if (!navigationActive) selectedHighlight = highlight },
+                            onClick = { if (controlsVisible && !navigationActive) selectedHighlight = highlight },
                             modifier = Modifier.offset {
                                 IntOffset(screen.x.roundToInt() - half, screen.y.roundToInt() - half)
                             },
@@ -384,20 +393,21 @@ fun ScenicMap(
             @Suppress("UNUSED_VARIABLE") val keepProjectionReactive = revision
         }
 
-        if (!navigationActive && selectedHighlight == null && routePoints.size >= 2 && userLocation != null) {
+        if (controlsVisible && !navigationActive && selectedHighlight == null && routePoints.size >= 2 && userLocation != null && !routeLoading) {
             ExtendedFloatingActionButton(
                 onClick = {
+                    if (routeDirty) { onRecalculateRoute(); return@ExtendedFloatingActionButton }
                     navigationActive = true
                     navigationFollow = true
                     selectedHighlight = null
                     onNavigationActiveChange(true)
                 },
                 icon = { Icon(Icons.Default.Navigation, null) },
-                text = { Text("Navigate") },
+                text = { Text(if (routeDirty) "Rebuild to navigate" else "Navigate") },
                 modifier = Modifier.align(Alignment.CenterEnd).padding(end = 14.dp),
             )
         }
-        if (navigationActive && navigationSnapshot != null) {
+        if (controlsVisible && navigationActive && navigationSnapshot != null) {
             NavigationVoiceGuide(navigationSnapshot, voiceEnabled)
             LiveNavigationHud(
                 snapshot = navigationSnapshot,
@@ -413,6 +423,7 @@ fun ScenicMap(
                     }
                 },
                 onFollow = { navigationFollow = true },
+                rerouting = routeLoading,
                 onReroute = {
                     navigationPoint?.let(onRerouteFromLocation) ?: onRecalculateRoute()
                 },
@@ -423,14 +434,15 @@ fun ScenicMap(
                 },
                 modifier = Modifier
                     .align(Alignment.TopCenter)
-                    .statusBarsPadding()
-                    .padding(start = 12.dp, end = 12.dp, top = 12.dp)
+                    .padding(12.dp)
+                    .widthIn(max = 520.dp)
                     .fillMaxWidth()
-                    .widthIn(max = 520.dp),
+                    .heightIn(max = maxHeight * 0.8f)
+                    .verticalScroll(rememberScrollState()),
             )
         }
 
-        if (!navigationActive) selectedHighlight?.let { highlight ->
+        if (controlsVisible && !navigationActive) selectedHighlight?.let { highlight ->
             ScenicLocationDetailsCard(
                 highlight = highlight,
                 details = selectedDetails ?: ScenicPoiDetails(
@@ -450,9 +462,32 @@ fun ScenicMap(
                     openExternal(context, "https://www.openstreetmap.org/?mlat=${highlight.point.lat}&mlon=${highlight.point.lon}#map=17/${highlight.point.lat}/${highlight.point.lon}")
                 },
                 onTogglePlannedStop = { onToggleRouteStop(highlight) },
-                onRecalculateRoute = onRecalculateRoute,
-                modifier = Modifier.align(Alignment.Center).padding(horizontal = 18.dp).fillMaxWidth().widthIn(max = 430.dp),
+                onRecalculateRoute = { selectedHighlight = null; onRecalculateRoute() },
+                modifier = Modifier.align(Alignment.Center).padding(12.dp).widthIn(max = 430.dp).fillMaxWidth().heightIn(max = (maxHeight - 24.dp).coerceAtLeast(0.dp)),
             )
+        }
+    }
+
+    LaunchedEffect(mapRef, mapRetryToken) {
+        val map = mapRef ?: return@LaunchedEffect
+        styleLoaded = false
+        mapError = null
+        runCatching {
+            map.setStyle(BuildConfig.MAP_STYLE_URL) { style ->
+                runCatching {
+                    ensureBaseLayers(style)
+                    styleLoaded = true
+                    updateBaseMapData(map, userLocation, routePoints)
+                    cameraRevision++
+                    onMapError("")
+                }.onFailure {
+                    mapError = "Map could not load. Check your connection and retry."
+                    onMapError(mapError!!)
+                }
+            }
+        }.onFailure {
+            mapError = "Map could not load. Check your connection and retry."
+            onMapError(mapError!!)
         }
     }
 

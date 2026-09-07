@@ -46,3 +46,10 @@ test("budget utilization strongly prefers using most of the selected day", () =>
   assert.ok(utilizationScore(220, 240) > utilizationScore(120, 240));
   assert.ok(utilizationScore(220, 240) > utilizationScore(260, 240));
 });
+
+test("retrying a full duplicate result explores a new loop without increasing the route count", () => {
+  const first = roundTripWaypointSets({ origin, preferences, count: 4, alternativeGeneration: 0 });
+  const retry = roundTripWaypointSets({ origin, preferences, count: 4, alternativeGeneration: 1 });
+  assert.equal(first.length, retry.length);
+  assert.notDeepEqual(first, retry);
+});

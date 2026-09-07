@@ -2,6 +2,11 @@ package cloud.kosch.scenicpath
 
 import android.content.Context
 import android.location.Geocoder
+import android.location.Address
+import android.os.Build
+import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.withTimeoutOrNull
+import kotlin.coroutines.resume
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
@@ -78,6 +83,7 @@ object ScenicApi {
         context: Context,
         query: String,
         bias: GeoPoint? = null,
+        includePhotonFallback: Boolean = true,
     ): List<PlaceSuggestion> = withContext(Dispatchers.IO) {
         val normalized = query.trim()
         if (normalized.length < 2) return@withContext emptyList()
@@ -85,17 +91,17 @@ object ScenicApi {
         if (BuildConfig.DEBUG) {
             val device = searchDeviceGeocoder(context, normalized)
             if (device.isNotEmpty()) return@withContext device
-            val osm = runCatching { OsmPlaceSearch.search(normalized, bias) }.getOrNull().orEmpty()
+            val osm = if (includePhotonFallback) runCatchingCancellable { OsmPlaceSearch.search(normalized, bias) }.getOrNull().orEmpty() else emptyList()
             if (osm.isNotEmpty()) return@withContext osm
             if (!baseUrl.contains("10.0.2.2") && !baseUrl.contains("127.0.0.1") && !baseUrl.contains("localhost")) {
-                val backend = runCatching { searchBackend(normalized, bias) }.getOrNull().orEmpty()
+                val backend = runCatchingCancellable { searchBackend(normalized, bias) }.getOrNull().orEmpty()
                 if (backend.isNotEmpty()) return@withContext backend
             }
             return@withContext emptyList()
         }
 
         requireProductionServicesConfigured()
-        val backend = runCatching { searchBackend(normalized, bias) }.getOrNull().orEmpty()
+        val backend = runCatchingCancellable { searchBackend(normalized, bias) }.getOrNull().orEmpty()
         if (backend.isNotEmpty()) return@withContext backend
         searchDeviceGeocoder(context, normalized)
     }
@@ -108,16 +114,15 @@ object ScenicApi {
     ): Result<RoutePlanUi> = withContext(Dispatchers.IO) {
         val effectivePreferences = preferences
             .copy(
-                vehicle = VehicleSettingsState.profile,
                 constraintsCommitted = true,
             )
             .forPlan(plan)
 
         val rawResult: Result<RoutePlanUi> = if (BuildConfig.DEBUG) {
             if (RoundTripPolicy.shouldCreateRoundTrip(plan, origin, destination)) {
-                runCatching { NativeRoundTripPlanner.plan(origin, plan, effectivePreferences) }
+                runCatchingCancellable { NativeRoundTripPlanner.plan(origin, plan, effectivePreferences) }
             } else {
-                val baseResult = runCatching {
+                val baseResult = runCatchingCancellable {
                     VehicleAwareJourneyPlanner.plan(origin, destination, plan, effectivePreferences)
                 }.recoverCatching { primaryError ->
                     if (effectivePreferences.vehicle.kind == VehicleKind.CAR) {
@@ -129,7 +134,7 @@ object ScenicApi {
                 if (baseResult.isFailure) {
                     baseResult
                 } else {
-                    runCatching {
+                    runCatchingCancellable {
                         NativeAlternativePlanner.augment(
                             origin = origin,
                             destination = destination,
@@ -141,7 +146,7 @@ object ScenicApi {
                 }
             }
         } else {
-            runCatching {
+            runCatchingCancellable {
                 requireProductionServicesConfigured()
                 planBackend(origin, destination, plan, effectivePreferences)
             }
@@ -149,7 +154,7 @@ object ScenicApi {
 
         if (rawResult.isFailure) return@withContext rawResult
         val rawPlan = rawResult.getOrThrow()
-        val enriched = runCatching {
+        val enriched = runCatchingCancellable {
             JourneySupportPlanner.enrich(rawPlan, effectivePreferences.vehicle)
         }.getOrElse { rawPlan }
         Result.success(enriched)
@@ -198,13 +203,25 @@ object ScenicApi {
     }
 
     @Suppress("DEPRECATION")
-    private fun searchDeviceGeocoder(context: Context, query: String): List<PlaceSuggestion> {
+    private suspend fun searchDeviceGeocoder(context: Context, query: String): List<PlaceSuggestion> {
         if (!Geocoder.isPresent()) return emptyList()
-        return runCatching {
-            Geocoder(context, Locale.getDefault())
-                .getFromLocationName(query, 8)
-                .orEmpty()
-                .mapIndexed { index, address ->
+        return runCatchingCancellable {
+            val geocoder = Geocoder(context, Locale.getDefault())
+            val addresses = if (Build.VERSION.SDK_INT >= 33) {
+                withTimeoutOrNull(4_000L) {
+                    suspendCancellableCoroutine<List<Address>> { continuation ->
+                        geocoder.getFromLocationName(query, 8, object : Geocoder.GeocodeListener {
+                            override fun onGeocode(addresses: MutableList<Address>) {
+                                if (continuation.isActive) continuation.resume(addresses)
+                            }
+                            override fun onError(errorMessage: String?) {
+                                if (continuation.isActive) continuation.resume(emptyList())
+                            }
+                        })
+                    }
+                }.orEmpty()
+            } else geocoder.getFromLocationName(query, 8).orEmpty()
+            addresses.mapIndexed { index, address ->
                     val title = listOfNotNull(address.featureName, address.locality)
                         .distinct()
                         .joinToString(", ")
@@ -235,6 +252,7 @@ object ScenicApi {
             put("mode", plan.mode.name)
             put("routeCharacter", plan.routeCharacter.name)
             put("requestedAlternatives", plan.requestedAlternatives.coerceIn(1, 5))
+            put("alternativeGeneration", plan.alternativeGeneration.coerceAtLeast(0))
             put("autoSuggestStops", plan.autoSuggestStops)
             put("preserveScenicIntentOnReroute", plan.preserveScenicIntentOnReroute)
             put("flexibleStopOrder", plan.flexibleStopOrder)
@@ -403,7 +421,7 @@ object ScenicApi {
             val stream = if (code in 200..299) inputStream else errorStream
             val text = stream?.bufferedReader(Charsets.UTF_8)?.use { it.readText() }.orEmpty()
             if (code !in 200..299) {
-                val message = runCatching { JSONObject(text).optString("error") }.getOrNull()
+                val message = runCatchingCancellable { JSONObject(text).optString("error") }.getOrNull()
                 error(message?.takeIf { it.isNotBlank() } ?: "HTTP $code")
             }
             return block(JSONObject(text.ifBlank { "{}" }))

@@ -18,10 +18,21 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
-import kotlinx.coroutines.async
-import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.supervisorScope
+import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.delay
 import java.util.Locale
+
+/** Retained by the journey session when a search is minimised or the device rotates. */
+class PlaceSearchState(initialQuery: String = "") {
+    var query by mutableStateOf(initialQuery)
+    var results by mutableStateOf<List<PlaceSuggestion>>(emptyList())
+    var searching by mutableStateOf(false)
+    var error by mutableStateOf<String?>(null)
+    var generation = 0L
+}
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -31,70 +42,68 @@ fun PlacePickerSheet(
     bias: GeoPoint? = null,
     onDismiss: () -> Unit,
     onPick: (PlaceSuggestion) -> Unit,
+    searchState: PlaceSearchState? = null,
 ) {
     val context = LocalContext.current
-    var query by remember(initialQuery) { mutableStateOf(initialQuery) }
-    var results by remember { mutableStateOf<List<PlaceSuggestion>>(emptyList()) }
-    var searching by remember { mutableStateOf(false) }
-    var error by remember { mutableStateOf<String?>(null) }
+    val retained = searchState ?: remember(initialQuery) { PlaceSearchState(initialQuery) }
+    var query by retained::query
+    var results by retained::results
+    var searching by retained::searching
+    var error by retained::error
+    // Freeze the bias for this sheet visit. GPS ticks must not restart a typed search.
+    val searchBias = remember { bias }
     var submitNonce by remember { mutableIntStateOf(0) }
     var handledSubmitNonce by remember { mutableIntStateOf(0) }
     var submittedQuery by remember { mutableStateOf("") }
+    fun submitSearch() { submittedQuery = query.trim(); submitNonce++ }
 
-    fun submitSearch() {
-        submittedQuery = query.trim()
-        submitNonce++
-    }
-
-    LaunchedEffect(query, bias, submitNonce) {
+    LaunchedEffect(query, submitNonce) {
+        val token = ++retained.generation
         val normalized = query.trim()
-        if (normalized.length < 2) {
-            results = emptyList()
-            searching = false
-            error = null
-            return@LaunchedEffect
-        }
-
-        val explicit = submitNonce > handledSubmitNonce && submittedQuery == normalized
-        delay(if (explicit) 20 else 340)
-        searching = true
+        results = emptyList()
         error = null
-
-        val found = coroutineScope {
-            // Keep the ordinary device/backend route search and Photon type-ahead independent.
-            // The direct Photon lane is important for street names because Android Geocoder can
-            // otherwise return only the containing town and short-circuit richer suggestions.
-            val standardJob = async {
-                runCatching { ScenicApi.searchPlaces(context, normalized, bias) }.getOrNull().orEmpty()
-            }
-            val photonJob = async {
-                runCatching { OsmPlaceSearch.search(normalized, bias) }.getOrNull().orEmpty()
-            }
-            val exactJob = async {
-                if (explicit) {
-                    runCatching { OsmAddressSearch.search(normalized, bias) }.getOrNull().orEmpty()
-                } else emptyList()
-            }
-
-            mergePlaceSuggestions(
-                exact = exactJob.await(),
-                photon = photonJob.await(),
-                standard = standardJob.await(),
-            )
-        }
-
+        searching = normalized.length >= 2
+        if (!searching) return@LaunchedEffect
+        val explicit = submitNonce > handledSubmitNonce && submittedQuery == normalized
         if (explicit) handledSubmitNonce = submitNonce
-        results = found
-        error = if (found.isEmpty()) {
-            "No matching address found. Try street + house number + town/postcode, or a landmark."
-        } else null
-        searching = false
+        var exact = emptyList<PlaceSuggestion>()
+        var photon = emptyList<PlaceSuggestion>()
+        var standard = emptyList<PlaceSuggestion>()
+        var failed = 0
+        try {
+            delay(if (explicit) 20 else 340)
+            supervisorScope {
+                suspend fun lane(load: suspend () -> List<PlaceSuggestion>, accept: (List<PlaceSuggestion>) -> Unit) {
+                    try {
+                        val found = withTimeout(12_000L) { load() }
+                        if (token == retained.generation) {
+                            accept(found)
+                            results = mergePlaceSuggestions(exact, photon, standard)
+                        }
+                    } catch (timeout: kotlinx.coroutines.TimeoutCancellationException) {
+                        failed++
+                    } catch (cancelled: CancellationException) {
+                        throw cancelled
+                    } catch (_: Exception) { failed++ }
+                }
+                launch { lane({ ScenicApi.searchPlaces(context, normalized, searchBias, includePhotonFallback = false) }) { standard = it } }
+                launch { lane({ OsmPlaceSearch.search(normalized, searchBias) }) { photon = it } }
+                if (explicit) launch { lane({ OsmAddressSearch.search(normalized, searchBias) }) { exact = it } }
+            }
+            if (token == retained.generation && results.isEmpty()) {
+                error = if (failed > 0) "Address search is temporarily unavailable. Check your connection and press Search to retry."
+                else "No matching address found. Try a street, house number and town, or a landmark."
+            }
+        } finally {
+            if (token == retained.generation) searching = false
+        }
     }
 
-    ModalBottomSheet(onDismissRequest = onDismiss) {
+    ModalBottomSheet(onDismissRequest = onDismiss, sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)) {
         Column(
             modifier = Modifier
                 .fillMaxWidth()
+                .imePadding()
                 .padding(horizontal = 18.dp)
                 .padding(bottom = 28.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
@@ -112,7 +121,7 @@ fun PlacePickerSheet(
 
             OutlinedTextField(
                 value = query,
-                onValueChange = { query = it },
+                onValueChange = { retained.generation++; query = it; results = emptyList(); error = null },
                 modifier = Modifier.fillMaxWidth(),
                 singleLine = true,
                 label = { Text("Street, house number, place or landmark") },
@@ -142,7 +151,7 @@ fun PlacePickerSheet(
             }
 
             LazyColumn(
-                modifier = Modifier.fillMaxWidth().heightIn(max = 460.dp),
+                modifier = Modifier.fillMaxWidth().weight(1f, fill = false),
                 verticalArrangement = Arrangement.spacedBy(6.dp),
             ) {
                 items(results, key = { it.id }) { suggestion ->
@@ -183,18 +192,23 @@ fun PlacePickerSheet(
     }
 }
 
-private fun mergePlaceSuggestions(
+internal fun mergePlaceSuggestions(
     exact: List<PlaceSuggestion>,
     photon: List<PlaceSuggestion>,
     standard: List<PlaceSuggestion>,
 ): List<PlaceSuggestion> {
     val seen = mutableSetOf<String>()
+    val seenIds = mutableSetOf<String>()
     return buildList {
         (exact + photon + standard).forEach { suggestion ->
             val coordinateKey = "%.5f,%.5f".format(Locale.US, suggestion.point.lat, suggestion.point.lon)
             val titleKey = suggestion.title.trim().lowercase(Locale.ROOT)
             val key = "$coordinateKey:$titleKey"
-            if (seen.add(key)) add(suggestion)
+            if (key !in seen && suggestion.id !in seenIds) {
+                seen.add(key)
+                seenIds.add(suggestion.id)
+                add(suggestion)
+            }
         }
     }.take(16)
 }

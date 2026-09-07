@@ -10,11 +10,17 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Image
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.GpsFixed
 import androidx.compose.material.icons.filled.GpsOff
 import androidx.compose.material3.*
+import androidx.compose.runtime.DisposableEffect
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -80,6 +86,14 @@ class MainActivity : ComponentActivity() {
                     }
                 }
 
+                val lifecycleOwner = LocalLifecycleOwner.current
+                DisposableEffect(lifecycleOwner) {
+                    val observer = LifecycleEventObserver { _, event ->
+                        if (event == Lifecycle.Event.ON_RESUME) locationPermissionGranted = hasForegroundLocationPermission()
+                    }
+                    lifecycleOwner.lifecycle.addObserver(observer)
+                    onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+                }
                 val gpsActive = locationPermissionGranted && gpsEnabledInApp
 
                 Box(Modifier.fillMaxSize()) {
@@ -90,40 +104,10 @@ class MainActivity : ComponentActivity() {
                             vehicleProfile = VehicleSettingsState.profile,
                             onVehicleSettings = { showVehicleSettings = true },
                             externalOverlayVisible = showVehicleSettings || showWelcome,
+                            onGpsEnabledChange = ::setGpsEnabled,
                         )
                     }
 
-                    if (!showWelcome && !showVehicleSettings) {
-                        Surface(
-                            modifier = Modifier
-                                .align(Alignment.BottomStart)
-                                .navigationBarsPadding()
-                                .padding(start = 108.dp, bottom = 10.dp),
-                            shape = MaterialTheme.shapes.extraLarge,
-                            tonalElevation = 5.dp,
-                            shadowElevation = 5.dp,
-                            color = MaterialTheme.colorScheme.surface.copy(alpha = 0.96f),
-                        ) {
-                            Row(
-                                Modifier.padding(start = 10.dp, end = 5.dp, top = 4.dp, bottom = 4.dp),
-                                verticalAlignment = Alignment.CenterVertically,
-                            ) {
-                                Icon(
-                                    if (gpsActive) Icons.Default.GpsFixed else Icons.Default.GpsOff,
-                                    contentDescription = null,
-                                    tint = if (gpsActive) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
-                                )
-                                Spacer(Modifier.width(6.dp))
-                                Text("GPS", style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.SemiBold)
-                                Spacer(Modifier.width(6.dp))
-                                Switch(
-                                    checked = gpsActive,
-                                    onCheckedChange = ::setGpsEnabled,
-                                    modifier = Modifier.height(32.dp),
-                                )
-                            }
-                        }
-                    }
                 }
 
                 if (showVehicleSettings) {
@@ -152,7 +136,7 @@ class MainActivity : ComponentActivity() {
                             }
                         },
                         text = {
-                            Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
+                            Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(14.dp)) {
                                 Text(
                                     "Plan scenic routes, discover worthwhile stops, build round trips and turn long journeys into manageable travel days.",
                                     style = MaterialTheme.typography.bodyMedium,

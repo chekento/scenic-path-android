@@ -51,8 +51,8 @@ android {
         applicationId = "cloud.kosch.scenicpath"
         minSdk = 26
         targetSdk = 36
-        versionCode = 39
-        versionName = "0.6.2-rc1"
+        versionCode = 40
+        versionName = "0.6.3-rc1"
         manifestPlaceholders["usesCleartextTraffic"] = "false"
     }
 
@@ -161,6 +161,7 @@ dependencies {
 
     implementation("androidx.activity:activity-compose:1.11.0")
     implementation("androidx.lifecycle:lifecycle-runtime-compose:2.9.2")
+    implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.9.2")
     implementation("androidx.compose.ui:ui")
     implementation("androidx.compose.ui:ui-tooling-preview")
     implementation("androidx.compose.foundation:foundation")
@@ -172,5 +173,6 @@ dependencies {
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.10.2")
 
     testImplementation("junit:junit:4.13.2")
+    testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.10.2")
     debugImplementation("androidx.compose.ui:ui-tooling")
 }
