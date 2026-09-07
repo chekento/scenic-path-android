@@ -15,6 +15,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.semantics
@@ -38,6 +39,7 @@ fun ScenicExperienceRootV2(
     onGpsEnabledChange: (Boolean) -> Unit = {},
     session: JourneySessionViewModel = viewModel(),
 ) {
+    val configuration = LocalConfiguration.current
     val location = rememberLocationUiState(locationPermissionGranted)
     val state = session.state
     val plan = state.plan
@@ -204,7 +206,7 @@ fun ScenicExperienceRootV2(
 
     Column(Modifier.fillMaxSize().safeDrawingPadding()) {
         // Feedback remains above navigation, POI details and collapsed panels.
-        if (!externalOverlayVisible) {
+        if (!externalOverlayVisible) Column(Modifier.fillMaxWidth().heightIn(max = configuration.screenHeightDp.dp * 0.28f).verticalScroll(rememberScrollState())) {
             state.error?.let { message ->
                 RouteErrorBannerV2(message, state.issue,
                     { openPanel(ExperiencePanelV2.START) }, { openPanel(ExperiencePanelV2.DESTINATION) },
@@ -230,6 +232,7 @@ fun ScenicExperienceRootV2(
             }
         }
         BoxWithConstraints(Modifier.weight(1f).fillMaxWidth()) {
+            val contentHeight = maxHeight
             val wide = maxWidth >= 840.dp || maxWidth > maxHeight * 1.25f
             if (wide) {
                 Row(Modifier.fillMaxSize()) {
@@ -241,9 +244,9 @@ fun ScenicExperienceRootV2(
                 }
             } else {
                 Column(Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                    if (rootOsdVisible) Box(Modifier.heightIn(max = maxHeight * 0.43f).verticalScroll(rememberScrollState())) { topControls() }
+                    if (rootOsdVisible) Box(Modifier.heightIn(max = contentHeight * 0.43f)) { topControls() }
                     Box(Modifier.weight(1f).fillMaxWidth()) { retainedMap(mapContent) }
-                    if (rootOsdVisible) Column(Modifier.heightIn(max = maxHeight * 0.34f).verticalScroll(rememberScrollState())) { bottomControls() }
+                    if (rootOsdVisible) Column(Modifier.heightIn(max = contentHeight * 0.34f).verticalScroll(rememberScrollState())) { bottomControls() }
                 }
             }
         }
@@ -359,7 +362,7 @@ private fun TopRoutePanelV2(
     val activeQuickMode = quickModeForV2(plan, preferences)
     Column(
         modifier = Modifier
-            .fillMaxWidth()
+            .fillMaxWidth().heightIn(max = 560.dp)
             .padding(horizontal = 12.dp)
             .clip(MaterialTheme.shapes.extraLarge)
             .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.96f))
@@ -394,6 +397,7 @@ private fun TopRoutePanelV2(
         }
 
         if (expanded) {
+            Column(Modifier.weight(1f, fill = false).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             PlaceFieldV2("Start", startLabel, Icons.Default.MyLocation, startSupporting, onStart)
             PlaceFieldV2(
                 if (roundTripActive) "Return point" else "Destination",
@@ -436,6 +440,8 @@ private fun TopRoutePanelV2(
                     label = { Text(if (plan.mode == PlanningMode.DAY_TRIP) "${preferences.maxExtraMinutes} min budget" else "+${preferences.maxExtraMinutes} min") },
                     leadingIcon = { Icon(Icons.Default.MoreTime, null, Modifier.size(18.dp)) },
                 )
+            }
+
             }
 
             Button(onClick = onBuildRoute, enabled = !routeLoading, modifier = Modifier.fillMaxWidth().heightIn(min = 50.dp)) {

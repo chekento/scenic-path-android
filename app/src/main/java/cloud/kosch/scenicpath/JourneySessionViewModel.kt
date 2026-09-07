@@ -149,7 +149,7 @@ class JourneySessionViewModel(
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (error: Exception) {
-                if (token == requestId) fail(error.message ?: "Route planning failed. Please try again.")
+                if (token == requestId) fail(error.message?.take(260) ?: "Route planning failed. Please try again.")
             } finally {
                 if (token == requestId) {
                     state = state.copy(loading = false)

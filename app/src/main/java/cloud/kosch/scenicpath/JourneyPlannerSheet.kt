@@ -491,11 +491,11 @@ fun JourneyPlannerSheet(
 
             Button(
                 onClick = {
-                            onPlanChange(draftPlan)
+                    onPlanChange(draftPlan)
                     onPreferencesChange(draftPreferences)
                     rebuildRequested = true
                 },
-                modifier = Modifier.fillMaxWidth().height(56.dp),
+                modifier = Modifier.fillMaxWidth().heightIn(min = 56.dp),
                 enabled = (!draftPlan.autoSuggestStops || draftPlan.enabledSceneKinds.isNotEmpty()) && !rebuildRequested,
             ) {
                 if (rebuildRequested) CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp) else Icon(Icons.Default.Route, null)
