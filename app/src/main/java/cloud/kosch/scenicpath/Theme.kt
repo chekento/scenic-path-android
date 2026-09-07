@@ -2,6 +2,8 @@ package cloud.kosch.scenicpath
 
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.lightColorScheme
+import androidx.compose.material3.darkColorScheme
+import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.graphics.Color
 
@@ -15,7 +17,22 @@ private val ScenicColors = lightColorScheme(
     surface = Color(0xFFFFFFFF),
 )
 
+private val ScenicNightColors = darkColorScheme(
+    primary = Color(0xFF8ED8AF),
+    onPrimary = Color(0xFF003821),
+    primaryContainer = Color(0xFF075236),
+    onPrimaryContainer = Color(0xFFAAF2CB),
+    secondary = Color(0xFF99D1E7),
+    secondaryContainer = Color(0xFF164C5F),
+    onSecondaryContainer = Color(0xFFC3EBFC),
+    background = Color(0xFF101714),
+    surface = Color(0xFF101714),
+    onSurface = Color(0xFFE0E8E1),
+    surfaceContainerLow = Color(0xFF17201B),
+    surfaceContainerHigh = Color(0xFF27322C),
+)
+
 @Composable
 fun ScenicPathTheme(content: @Composable () -> Unit) {
-    MaterialTheme(colorScheme = ScenicColors, content = content)
+    MaterialTheme(colorScheme = if (isSystemInDarkTheme()) ScenicNightColors else ScenicColors, content = content)
 }

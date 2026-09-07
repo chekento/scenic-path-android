@@ -8,6 +8,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
@@ -28,7 +29,7 @@ fun JourneyPlannerSheet(
     onBuildRoute: () -> Unit,
     onDismiss: () -> Unit,
 ) {
-    var advanced by remember { mutableStateOf(false) }
+    var advanced by rememberSaveable { mutableStateOf(false) }
     var draftPlan by remember(plan) { mutableStateOf(plan) }
     var draftPreferences by remember(preferences) { mutableStateOf(preferences) }
     var rebuildRequested by remember { mutableStateOf(false) }
@@ -46,12 +47,17 @@ fun JourneyPlannerSheet(
     LaunchedEffect(rebuildRequested, plan, preferences) {
         if (rebuildRequested && plan == draftPlan && preferences == draftPreferences) {
             rebuildRequested = false
-            ScenicSceneSelectionState.activate(draftPlan.enabledSceneKinds)
             onBuildRoute()
         }
     }
 
-    ModalBottomSheet(onDismissRequest = onDismiss) {
+    fun keepDraft() {
+        onPlanChange(draftPlan)
+        onPreferencesChange(draftPreferences)
+    }
+    fun minimize() { keepDraft(); onDismiss() }
+
+    ModalBottomSheet(onDismissRequest = ::minimize) {
         Column(
             Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(horizontal = 18.dp).padding(bottom = 36.dp),
             verticalArrangement = Arrangement.spacedBy(16.dp),
@@ -61,7 +67,7 @@ fun JourneyPlannerSheet(
                     Text("Build an experience", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
                     Text("Simple presets first; every active routing constraint stays adjustable below.", color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
-                IconButton(onClick = onDismiss) { Icon(Icons.Default.Close, "Minimize planner") }
+                IconButton(onClick = ::minimize) { Icon(Icons.Default.ExpandMore, "Minimize planner") }
             }
 
             if (hasRoute && dirty) {
@@ -142,7 +148,7 @@ fun JourneyPlannerSheet(
                                 requestedAlternatives = if (character == RouteCharacter.DIRECT && draftPlan.mode == PlanningMode.QUICK) 1
                                 else maxOf(2, draftPlan.requestedAlternatives),
                             )
-                            draftPreferences = draftPreferences.forCharacter(character)
+                            draftPreferences = draftPreferences.copy(constraintsCommitted = false).forCharacter(character)
                         },
                         leadingIcon = if (character == RouteCharacter.BEAUTIFUL) {
                             { Icon(Icons.Default.AutoAwesome, null, Modifier.size(18.dp)) }
@@ -231,7 +237,7 @@ fun JourneyPlannerSheet(
                         valueRange = 0f..12f,
                         steps = 11,
                     )
-                    OutlinedButton(onClick = onRequestSuggestions, modifier = Modifier.fillMaxWidth()) {
+                    OutlinedButton(onClick = { keepDraft(); onRequestSuggestions() }, modifier = Modifier.fillMaxWidth()) {
                         Icon(Icons.Default.AddLocationAlt, null)
                         Spacer(Modifier.width(8.dp))
                         Text(if (hasRoute) "Open Smart Stops browser" else "Preview Smart Stops")
@@ -485,13 +491,12 @@ fun JourneyPlannerSheet(
 
             Button(
                 onClick = {
-                    ScenicSceneSelectionState.activate(draftPlan.enabledSceneKinds)
                     onPlanChange(draftPlan)
                     onPreferencesChange(draftPreferences)
                     rebuildRequested = true
                 },
-                modifier = Modifier.fillMaxWidth().height(56.dp),
-                enabled = destination.isNotBlank() && (!draftPlan.autoSuggestStops || draftPlan.enabledSceneKinds.isNotEmpty()) && !rebuildRequested,
+                modifier = Modifier.fillMaxWidth().heightIn(min = 56.dp),
+                enabled = (!draftPlan.autoSuggestStops || draftPlan.enabledSceneKinds.isNotEmpty()) && !rebuildRequested,
             ) {
                 if (rebuildRequested) CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp) else Icon(Icons.Default.Route, null)
                 Spacer(Modifier.width(8.dp))

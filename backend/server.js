@@ -287,6 +287,7 @@ async function planRoundTrip(body, fixedStops, enabledSceneKinds, requestedChara
   const preferences = executionPreferences(body.preferences, "DAY_TRIP");
   const fixedDwellMinutes = fixedStops.reduce((sum, stop) => sum + Math.max(0, Number(stop.dwellMinutes) || 0), 0);
   const sets = roundTripWaypointSets({
+    alternativeGeneration: body.alternativeGeneration,
     origin: body.origin,
     preferences,
     autoSuggestStops: body.autoSuggestStops !== false,

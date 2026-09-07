@@ -1,5 +1,10 @@
 package cloud.kosch.scenicpath
 
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.saveable.rememberSaveable
+
 import android.content.res.Resources
 import android.speech.tts.TextToSpeech
 import android.speech.tts.Voice
@@ -308,7 +313,9 @@ fun LiveNavigationHud(
     onReroute: () -> Unit,
     onStop: () -> Unit,
     modifier: Modifier = Modifier,
+    rerouting: Boolean = false,
 ) {
+    var expanded by rememberSaveable { mutableStateOf(true) }
     val nextStop = snapshot.nextStop
     val nextDistance = snapshot.nextStopDistanceMeters
     val maneuver = snapshot.nextManeuver
@@ -350,7 +357,7 @@ fun LiveNavigationHud(
                         },
                         style = MaterialTheme.typography.titleLarge,
                         fontWeight = FontWeight.Bold,
-                        maxLines = 1,
+                        maxLines = 2,
                     )
                     Text(
                         when {
@@ -369,7 +376,10 @@ fun LiveNavigationHud(
                         )
                     }
                 }
-                Surface(shape = MaterialTheme.shapes.large, color = MaterialTheme.colorScheme.surface.copy(alpha = 0.72f)) {
+                IconButton(onClick = { expanded = !expanded }) {
+                    Icon(if (expanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore, if (expanded) "Minimize navigation" else "Expand navigation")
+                }
+                if (expanded) Surface(shape = MaterialTheme.shapes.large, color = MaterialTheme.colorScheme.surface.copy(alpha = 0.72f)) {
                     Column(Modifier.padding(horizontal = 10.dp, vertical = 7.dp), horizontalAlignment = Alignment.CenterHorizontally) {
                         Text(snapshot.speedKmh.toString(), fontWeight = FontWeight.Black, style = MaterialTheme.typography.titleLarge)
                         Text("km/h", style = MaterialTheme.typography.labelSmall)
@@ -378,7 +388,7 @@ fun LiveNavigationHud(
             }
         }
 
-        Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.96f))) {
+        if (expanded) Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.96f))) {
             Column(Modifier.fillMaxWidth().padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     NavigationMetric("Remaining", formatDistance(snapshot.remainingMeters), Modifier.weight(1f))
@@ -393,7 +403,7 @@ fun LiveNavigationHud(
                     FilledTonalIconButton(onClick = onOverview) { Icon(Icons.Default.Route, "Route overview") }
                     FilledTonalIconButton(onClick = onFollow) { Icon(Icons.Default.MyLocation, "Follow location") }
                     if (snapshot.offRoute) {
-                        Button(onClick = onReroute, modifier = Modifier.weight(1f)) {
+                        Button(onClick = onReroute, enabled = !rerouting, modifier = Modifier.weight(1f)) {
                             Icon(Icons.Default.Sync, null)
                             Spacer(Modifier.width(5.dp))
                             Text("Reroute")
