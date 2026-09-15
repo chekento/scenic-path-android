@@ -1,0 +1,47 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1500" height="500" viewBox="0 0 1500 500" role="img" aria-labelledby="title desc">
+<title id="title">Scenic Path — Download APK</title><desc id="desc">Scenic Path hero with mountains, lake, route and Android APK download call to action.</desc>
+<defs>
+  <linearGradient id="sky" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#eaf8ff"/><stop offset=".46" stop-color="#87d9ee"/><stop offset="1" stop-color="#ffd783"/></linearGradient>
+  <linearGradient id="lake" x1="0" y1="0" x2="0" y2="1"><stop stop-color="#48c9d8"/><stop offset="1" stop-color="#0b6688"/></linearGradient>
+  <linearGradient id="hill" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#16946f"/><stop offset="1" stop-color="#064a44"/></linearGradient>
+  <linearGradient id="cta" x1="0" y1="0" x2="1" y2="0"><stop stop-color="#12a879"/><stop offset="1" stop-color="#08745f"/></linearGradient>
+  <filter id="shadow"><feDropShadow dx="0" dy="8" stdDeviation="12" flood-opacity=".24"/></filter>
+  <filter id="soft"><feGaussianBlur stdDeviation="18"/></filter>
+</defs>
+<rect width="1500" height="500" rx="34" fill="url(#sky)"/>
+<circle cx="1328" cy="92" r="56" fill="#ffd35b" opacity=".95"/><circle cx="1328" cy="92" r="82" fill="#ffe69b" opacity=".3" filter="url(#soft)"/>
+<path d="M520 257 700 92l95 94 105-126 178 197Z" fill="#2c7fa5" opacity=".96"/><path d="m700 92 32 66 63 28-27-68Zm200-32 45 87 53 36-28-81Z" fill="#e7f7fb"/>
+<path d="M430 310c165-88 338-63 491-4 139 54 258 49 579 19v175H410Z" fill="url(#lake)"/>
+<path d="M0 350c130-86 280-116 448-67 105 31 160 108 244 117 123 13 202-83 327-70 141 14 220 92 481 79v91H0Z" fill="url(#hill)"/>
+<path d="M0 405c145-75 288-85 410-30 94 42 135 82 245 88 119 7 209-39 324-39 154 0 266 70 521 34v42H0Z" fill="#073b3d"/>
+<path d="M724 500c-58-78-29-130 31-159 65-31 131-30 160-63 27-30 17-73-24-109" fill="none" stroke="#f9f7ea" stroke-width="34" stroke-linecap="round"/>
+<path d="M724 500c-58-78-29-130 31-159 65-31 131-30 160-63 27-30 17-73-24-109" fill="none" stroke="#f4bd3d" stroke-width="5" stroke-linecap="round"/>
+<rect x="58" y="54" width="590" height="342" rx="34" fill="#ffffff" opacity=".86" filter="url(#shadow)"/>
+<circle cx="132" cy="124" r="47" fill="#dff7f5"/><path d="M93 143 124 103l18 21 20-35 39 54Z" fill="#136a83"/><path d="M96 148c29-25 52-17 76-45" fill="none" stroke="#ffffff" stroke-width="10" stroke-linecap="round"/><circle cx="172" cy="91" r="13" fill="#f4bd3d"/>
+<text x="205" y="117" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="56" font-weight="800" fill="#073b5b">Scenic <tspan fill="#0b8a6b">Path</tspan></text>
+<text x="207" y="148" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="15" letter-spacing="5" font-weight="600" fill="#35647d">THE BEAUTIFUL WAY FINDER</text>
+<text x="85" y="206" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="27" font-weight="650" fill="#153e52">Choose the <tspan fill="#0a8b69">most beautiful route</tspan>,</text>
+<text x="85" y="239" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="27" font-weight="650" fill="#153e52">not just the fastest.</text>
+<rect x="84" y="271" width="485" height="82" rx="41" fill="url(#cta)" filter="url(#shadow)"/>
+<path d="M124 297v27m-13-13 13 13 13-13M108 334h32" fill="none" stroke="#fff" stroke-width="6" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="164" y="324" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="36" font-weight="800" fill="#fff">DOWNLOAD APK</text>
+<path d="M520 312h25m-10-10 10 10-10 10" fill="none" stroke="#fff" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="86" y="379" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="14" letter-spacing="2.4" font-weight="700" fill="#477386">ANDROID 16 · SCENIC SCORE · SMART STOPS · LIVE GUIDANCE</text>
+<g transform="translate(1035 58) rotate(4 165 190)" filter="url(#shadow)">
+<rect width="326" height="390" rx="42" fill="#0b1720"/><rect x="10" y="10" width="306" height="370" rx="34" fill="#f8fbfb"/>
+<rect x="126" y="19" width="76" height="19" rx="9" fill="#0b1720"/>
+<text x="31" y="66" font-family="Inter,Arial" font-size="18" font-weight="800" fill="#073b5b">Scenic Path</text>
+<rect x="25" y="82" width="276" height="214" rx="24" fill="#dff4f5"/>
+<path d="M25 214c64-65 110-80 166-54 48 22 69 9 110-30v166H25Z" fill="#49bd93"/>
+<path d="M26 173 100 97l42 45 44-62 89 93Z" fill="#347d9e"/><path d="M102 98l15 34 25 10-13-32Zm84-18 18 39 23 19-13-40Z" fill="#edfafa"/>
+<path d="M63 286c9-50 56-58 84-91 22-26 24-59 59-77 22-11 46-10 70-4" fill="none" stroke="#fff" stroke-width="15" stroke-linecap="round"/>
+<path d="M63 286c9-50 56-58 84-91 22-26 24-59 59-77 22-11 46-10 70-4" fill="none" stroke="#0fe7a4" stroke-width="5" stroke-linecap="round"/>
+<circle cx="65" cy="284" r="11" fill="#1878ff" stroke="#fff" stroke-width="4"/>
+<circle cx="202" cy="123" r="10" fill="#f3bd3d" stroke="#fff" stroke-width="4"/>
+<rect x="25" y="307" width="276" height="53" rx="18" fill="#0a8268"/><text x="75" y="340" font-family="Inter,Arial" font-size="18" font-weight="800" fill="#fff">START SCENIC ROUTE</text>
+</g>
+<g font-family="Inter,Segoe UI,Arial,sans-serif" font-size="14" font-weight="750">
+<rect x="702" y="399" width="146" height="44" rx="22" fill="#ffffff" opacity=".88"/><text x="733" y="427" fill="#075a50">SCENIC ROUTES</text>
+<rect x="862" y="399" width="155" height="44" rx="22" fill="#ffffff" opacity=".88"/><text x="891" y="427" fill="#075a50">NATURE + CULTURE</text>
+</g>
+</svg>
