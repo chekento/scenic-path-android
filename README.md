@@ -1,50 +1,104 @@
-# Scenic Path Android
+# Scenic Path — The Beautiful Way Finder
 
-Native Android implementation of **Scenic Path** — a map-first journey planner for intentionally beautiful routes, scenic categories, Smart Stops and live guidance.
+<div align="center">
+  <a href="https://github.com/chekento/scenic-path-android/releases/download/v0.6.2-rc1/Scenic-Path-v0.6.2-rc1-debug.apk">
+    <img src="assets/frontpage/scenic-path-hero-download-apk.svg" alt="Scenic Path — Download APK" width="100%" />
+  </a>
+</div>
 
-## Current development build: v0.5.9
+<div align="center">
 
-### Forward-flow waypoint routing
+### **⬇️ [DOWNLOAD SCENIC PATH APK](https://github.com/chekento/scenic-path-android/releases/download/v0.6.2-rc1/Scenic-Path-v0.6.2-rc1-debug.apk)**
 
-v0.5.9 fixes the multi-hour backtracking/loop regression that could appear after adding a Scenic POI as a fixed waypoint.
+[Release page](https://github.com/chekento/scenic-path-android/releases/tag/v0.6.2-rc1) · Package `cloud.kosch.scenicpath` · Android 16 / API 36 · RC test build
 
-The waypoint planner now establishes a clean roads-only A→B baseline first. When flexible stop order is enabled, fixed POIs are ordered by their natural progress along that corridor rather than by the order in which the user happened to tap them. The actual travel detour required to visit those POIs is measured against the original A→B baseline and charged to the same global exploration-time budget as dwell time and optional scenic-road upgrades.
+</div>
 
-Scenic route variants are no longer chosen independently for every leg. The direct route through all mandatory POIs is the guaranteed base journey; individual scenic leg upgrades compete by experience gain per extra minute and are accepted only while the remaining global budget fits. A final guard prevents a looping provider candidate from being published as Best match when it exceeds that budget.
+**Scenic Path** is a map-first Android journey planner that optimizes for the **quality of the journey**, not only time or distance.
 
-A user-selected `mustVisit` POI remains a hard routing break and is validated against the resulting route geometry. If a fixed POI itself requires more time than the selected budget, Scenic Path keeps the POI mandatory but does not add further scenic loops and reports the budget conflict.
+> **Choose the most beautiful route, not just the fastest.**
 
-### Live Navigation — first native driver mode
+<div align="center">
+  <img src="assets/frontpage/scenic-path-features.svg" alt="Choose what beautiful means in Scenic Path" width="100%" />
+</div>
 
-The route map now has a **Navigate** action and a driver-focused live navigation HUD powered by the phone's GPS updates.
+## What Scenic Path optimizes
 
-Current navigation features include live route progress, remaining distance, ETA, current speed, route/GPS heading, a tilted follow camera, route overview, off-route detection, reroute action, next fixed Scenic POI, arrival detection and Android TTS alerts for approaching POIs/off-route/arrival. The complete clickable Scenic POI overlay remains visible during navigation.
+Scenic Path lets the user define what *beautiful* means for a trip:
 
-The current route data model does not yet contain provider maneuver instructions, so v0.5.9 deliberately does not invent street-name/turn commands. Valhalla maneuver decoding, lane/roundabout instructions, maneuver arrows, automatic rerouting thresholds, background navigation/service behavior and navigation-specific POI arrival handling are the next navigation layer.
+- quiet, winding and scenic roads
+- forests and protected landscapes
+- lakes, rivers and coastline
+- mountains, relief and viewpoints
+- historic sights, monuments, architecture and culture
+- parks and gardens
+- carefully selected food stops
 
-### Reliable Scenic POI rendering
+The user also defines a **detour budget**. Candidate journeys are ranked with a **ScenicScore**, and the route planner keeps scenic upgrades within the configured extra-time budget.
 
-The v0.5.8 Compose POI overlay remains in place. The base map, current-position indicator and route are native MapLibre layers, while Scenic POIs are projected as a durable Compose overlay through the live MapLibre camera. Route replacement, Smart Stop changes and waypoint recalculation therefore do not depend on the legacy annotation lifecycle.
+## Current Android build — v0.6.2-rc1
 
-The map continues to combine Rapid Overpass, Photon/category-first and Precision Overpass discovery. Museums, restaurants, castles, viewpoints, art, worship, architecture, nature, parks, water and the other enabled Scenic categories share the same marker taxonomy as Smart Stops. Fixed waypoints keep their category symbol and receive a luminous emphasis frame.
+- `versionCode 39`
+- package `cloud.kosch.scenicpath`
+- Kotlin + Jetpack Compose
+- MapLibre Native map
+- start/destination search including addresses and landmarks
+- ScenicScore-based route candidates
+- Smart Stops and fixed Scenic POIs
+- route-corridor POI discovery
+- configurable scenic categories and detour budget
+- live GPS navigation HUD
+- route progress, speed, ETA and follow camera
+- off-route detection and reroute action
+- next Scenic POI and arrival detection
+- Android TTS alerts
+- privacy/security boundary that keeps reusable provider credentials out of the APK
 
-### Search and POI details
+## APK download
 
-Start and destination search supports towns, landmarks, streets and exact house numbers. POI popups can expose official links, contact information, opening hours and provider-backed ratings where available, and locations can be added to or removed from the route directly from their popup.
+The large **Download APK** graphic at the top of this README is itself the download link.
 
-### Validation
+**Direct APK:**  
+https://github.com/chekento/scenic-path-android/releases/download/v0.6.2-rc1/Scenic-Path-v0.6.2-rc1-debug.apk
 
-Validated v0.5.9 APK source head: `35afcbe234697011a28660afff75f9ffa96b8f77`.
+**SHA-256 file:**  
+https://github.com/chekento/scenic-path-android/releases/download/v0.6.2-rc1/Scenic-Path-v0.6.2-rc1-debug.apk.sha256
 
-- versionCode: `29`
-- Android CI #226: passed
-- Backend tests #226: passed
-- POI provider smoke #52: passed
-- workflow artifact ZIP SHA-256: `bdf04d75aed913a486188c502699e4552ee1aa36208974ebb96b59884192397a`
-- direct APK SHA-256: `205b8e359f47131ad0e4670fd642b98fc30269b00c52f59fb76f141241642d18`
+The repository workflow `.github/workflows/github-release-apk.yml` builds the installable test APK on `main` and publishes it to the GitHub Release so the frontpage link stays useful instead of pointing at a transient Actions artifact.
 
-Documentation-only commits after that source head do not alter the validated APK.
+> This is an **RC/debug test APK**, not the final Play Store production-signed package.
 
-## Development infrastructure
+## How routing differs
 
-Public OpenStreetMap, Photon, Nominatim, Overpass and Valhalla services are used only as development/test infrastructure. Production deployment should use controlled/self-hosted or contracted providers and comply with each provider's usage, attribution and branding requirements.
+A conventional navigation app primarily optimizes time or distance. Scenic Path treats the **route corridor itself** as the experience. POIs are optional experience anchors, while road character, surrounding landscape, route geometry and the selected scenic categories contribute to the journey score.
+
+Mandatory user-selected POIs stay hard routing breaks. Flexible scenic upgrades compete for the remaining global detour budget rather than adding independent loops to every leg.
+
+## Development
+
+### Android
+
+1. Copy `local.properties.example` to `local.properties`.
+2. Start the backend if you are testing the configured backend path.
+3. Open the project in Android Studio and run the `app` configuration.
+
+### Backend
+
+```bash
+cd backend
+cp .env.example .env
+TOMTOM_API_KEY=... npm start
+```
+
+- Health check: `GET /health`
+- Route endpoint: `POST /v1/plan`
+
+Public OpenStreetMap, Photon, Nominatim, Overpass and Valhalla endpoints are development/test infrastructure. Production deployment should use controlled/self-hosted or contracted providers and comply with provider attribution and usage requirements.
+
+## Security
+
+Do not commit reusable TomTom, Google Places or other server credentials to the Android app. Scenic Path keeps the provider boundary server-side for production configurations.
+
+## License
+
+No open-source license has been selected yet. Until the owner chooses one, normal copyright rules apply.
