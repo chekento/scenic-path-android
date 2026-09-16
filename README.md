@@ -1,21 +1,21 @@
 # Scenic Path — The Beautiful Way Finder
 
 <div align="center">
-  <a href="https://github.com/chekento/scenic-path-android/releases/download/v0.6.2-rc1/Scenic-Path-v0.6.2-rc1-debug.apk">
+  <a href="https://github.com/chekento/scenic-path-android/releases/download/v0.7.0-rc2/Scenic-Path-v0.7.0-rc2-debug.apk">
     <img src="assets/frontpage/scenic-path-hero-photo.webp" alt="Scenic Path — Download the current Android APK" width="100%" />
   </a>
 </div>
 
 <div align="center">
 
-## ⬇️ [DOWNLOAD SCENIC PATH v0.6.2-rc1 APK](https://github.com/chekento/scenic-path-android/releases/download/v0.6.2-rc1/Scenic-Path-v0.6.2-rc1-debug.apk)
+## ⬇️ [DOWNLOAD SCENIC PATH v0.7.0-rc2 APK](https://github.com/chekento/scenic-path-android/releases/download/v0.7.0-rc2/Scenic-Path-v0.7.0-rc2-debug.apk)
 
-**Tap the large hero image above or the button text here — both download the current APK directly.**
+**Tap the large hero image above or the download text here — both point directly to the current APK.**
 
-[Release notes](https://github.com/chekento/scenic-path-android/releases/tag/v0.6.2-rc1) ·
-[SHA-256](https://github.com/chekento/scenic-path-android/releases/download/v0.6.2-rc1/Scenic-Path-v0.6.2-rc1-debug.apk.sha256)
+[Release notes](https://github.com/chekento/scenic-path-android/releases/tag/v0.7.0-rc2) ·
+[SHA-256](https://github.com/chekento/scenic-path-android/releases/download/v0.7.0-rc2/Scenic-Path-v0.7.0-rc2-debug.apk.sha256)
 
-`cloud.kosch.scenicpath` · Android 16 / API 36 · `versionCode 39` · RC test build
+`cloud.kosch.scenicpath` · Android 16 / API 36 · `versionCode 41` · full-search RC
 
 </div>
 
@@ -32,8 +32,10 @@
 Instead of treating scenery as an afterthought, Scenic Path scores the **journey corridor itself** and lets the user decide how much extra time a more rewarding route is worth.
 
 <div align="center">
-  <img src="assets/frontpage/scenic-path-app-icon.webp" alt="Scenic Path app icon" width="150" />
+  <img src="assets/frontpage/scenic-path-app-icon.webp" alt="Scenic Path app icon" width="170" />
 </div>
+
+The emblem shown above is the **same canonical brand asset used by the Android launcher/APK icon**. CI verifies that the repository preview and Android foreground resource stay byte-identical.
 
 ## Choose what beautiful means
 
@@ -59,24 +61,46 @@ The user defines a **detour budget** in extra time. Candidate journeys are ranke
   <img src="assets/frontpage/scenic-path-journey-beautifully.webp" alt="Scenic Path — Journey beautifully with ScenicScore, viewpoints and quiet roads" width="100%" />
 </div>
 
-The experience is designed around three connected layers:
-
 | Layer | What it does |
 |---|---|
 | **ScenicScore** | Ranks route quality instead of optimizing only time or distance |
 | **Experience anchors** | Adds viewpoints, culture, nature, Smart Stops and optional food destinations |
 | **Detour control** | Keeps the complete journey within the user-selected extra-time budget |
 
-## Current Android build — v0.6.2-rc1
+## Original Scenic Path search stack
+
+v0.7 keeps the original multi-lane search/discovery model instead of replacing it with a single provider shortcut.
+
+### Start & destination search
+
+- **Photon / OpenStreetMap type-ahead** for fast suggestions, typo tolerance and location bias.
+- **Nominatim exact-address lookup** only when the user explicitly presses Search, including street + house number queries.
+- **Android/device + backend lane** remains available for broad place coverage and configured production services.
+- `OriginalSearchStack` runs the independent lanes concurrently, isolates provider failures, ranks the combined results and removes duplicates after ranking.
+
+### Scenic route discovery
+
+The route corridor continues to use the original discovery layers in parallel:
+
+- `RapidRoutePoiDiscovery`
+- `FastRoutePoiDiscovery`
+- `PrecisionRoutePoiDiscovery`
+- `RoutePoiCoverageDiscovery`
+- Photon/OSM fallback and corridor discovery where applicable
+
+CI checks the presence and call-sites of these algorithms before an APK can be published. Unit tests cover exact-address priority, cross-provider de-duplication and result limits.
+
+## Current Android build — v0.7.0-rc2
 
 The current installable GitHub APK includes:
 
 - Kotlin + Jetpack Compose UI
 - MapLibre Native map
-- start and destination search for towns, landmarks, streets and addresses
+- original multi-provider address/place search
+- exact street + house-number lookup
 - ScenicScore-based route candidates
 - Smart Stops and fixed Scenic POIs
-- route-corridor POI discovery
+- original Fast/Rapid/Precision route-corridor POI discovery
 - configurable scenic categories and detour budget
 - live GPS navigation HUD
 - route progress, remaining distance, ETA and current speed
@@ -85,15 +109,16 @@ The current installable GitHub APK includes:
 - next fixed Scenic POI and arrival detection
 - Android TTS alerts
 - provider boundary that keeps reusable production credentials out of the APK
-- Scenic Path adaptive launcher icon and product branding
+- corrected Scenic Path wordmark
+- canonical Scenic Path emblem shared by GitHub and the Android launcher icon
 
 ### APK
 
 **Direct download:**  
-[Scenic-Path-v0.6.2-rc1-debug.apk](https://github.com/chekento/scenic-path-android/releases/download/v0.6.2-rc1/Scenic-Path-v0.6.2-rc1-debug.apk)
+[Scenic-Path-v0.7.0-rc2-debug.apk](https://github.com/chekento/scenic-path-android/releases/download/v0.7.0-rc2/Scenic-Path-v0.7.0-rc2-debug.apk)
 
 **Integrity:**  
-[Scenic-Path-v0.6.2-rc1-debug.apk.sha256](https://github.com/chekento/scenic-path-android/releases/download/v0.6.2-rc1/Scenic-Path-v0.6.2-rc1-debug.apk.sha256)
+[Scenic-Path-v0.7.0-rc2-debug.apk.sha256](https://github.com/chekento/scenic-path-android/releases/download/v0.7.0-rc2/Scenic-Path-v0.7.0-rc2-debug.apk.sha256)
 
 > This is an **installable RC/debug test APK**. It is not the final Play Store production-signed package.
 
@@ -105,17 +130,15 @@ A clean A→B route is the baseline. User-selected mandatory POIs remain hard ro
 
 That architecture is intended to make scenic routing both **expressive and controllable**.
 
-## Repository & build channel
-
-The repository keeps the Android app, routing/backend boundary and CI together.
+## Repository & CI/CD
 
 - Package: `cloud.kosch.scenicpath`
 - Target SDK: `36`
-- Current version: `0.6.2-rc1`
-- GitHub APK release: [`v0.6.2-rc1`](https://github.com/chekento/scenic-path-android/releases/tag/v0.6.2-rc1)
+- Current version: `0.7.0-rc2`
+- GitHub APK release: [`v0.7.0-rc2`](https://github.com/chekento/scenic-path-android/releases/tag/v0.7.0-rc2)
 - APK publishing workflow: `.github/workflows/github-release-apk.yml`
 
-The release workflow builds an installable debug APK and publishes it to the GitHub Release. This keeps the frontpage download stable instead of pointing at an expiring Actions artifact.
+Before publishing, CI validates the brand contract, original search-algorithm contract, unit tests, Android build and lint. The publishing workflow derives the APK/release name from `versionName` so future releases do not require hard-coded download filenames in the build logic.
 
 ## Development
 
