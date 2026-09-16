@@ -18,10 +18,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
-import kotlinx.coroutines.async
-import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
-import java.util.Locale
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -60,28 +57,15 @@ fun PlacePickerSheet(
         searching = true
         error = null
 
-        val found = coroutineScope {
-            // Keep the ordinary device/backend route search and Photon type-ahead independent.
-            // The direct Photon lane is important for street names because Android Geocoder can
-            // otherwise return only the containing town and short-circuit richer suggestions.
-            val standardJob = async {
-                runCatching { ScenicApi.searchPlaces(context, normalized, bias) }.getOrNull().orEmpty()
-            }
-            val photonJob = async {
-                runCatching { OsmPlaceSearch.search(normalized, bias) }.getOrNull().orEmpty()
-            }
-            val exactJob = async {
-                if (explicit) {
-                    runCatching { OsmAddressSearch.search(normalized, bias) }.getOrNull().orEmpty()
-                } else emptyList()
-            }
-
-            mergePlaceSuggestions(
-                exact = exactJob.await(),
-                photon = photonJob.await(),
-                standard = standardJob.await(),
+        val found = runCatching {
+            OriginalSearchStack.search(
+                context = context,
+                query = normalized,
+                bias = bias,
+                exactAddressRequested = explicit,
+                maxResults = 16,
             )
-        }
+        }.getOrElse { emptyList() }
 
         if (explicit) handledSubmitNonce = submitNonce
         results = found
@@ -132,7 +116,7 @@ fun PlacePickerSheet(
             )
 
             Text(
-                "Tip: press Search for exact street + house-number lookup.",
+                "Tip: type-ahead keeps the original Photon + device/backend lanes. Press Search for exact Nominatim street + house-number lookup.",
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -174,27 +158,11 @@ fun PlacePickerSheet(
 
             if (BuildConfig.DEBUG) {
                 Text(
-                    "Type-ahead: device geocoder + Photon/OpenStreetMap · explicit exact-address search: OpenStreetMap Nominatim.",
+                    "Original search stack active: Android/device + backend + Photon type-ahead · Nominatim exact address on explicit Search.",
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
         }
     }
-}
-
-private fun mergePlaceSuggestions(
-    exact: List<PlaceSuggestion>,
-    photon: List<PlaceSuggestion>,
-    standard: List<PlaceSuggestion>,
-): List<PlaceSuggestion> {
-    val seen = mutableSetOf<String>()
-    return buildList {
-        (exact + photon + standard).forEach { suggestion ->
-            val coordinateKey = "%.5f,%.5f".format(Locale.US, suggestion.point.lat, suggestion.point.lon)
-            val titleKey = suggestion.title.trim().lowercase(Locale.ROOT)
-            val key = "$coordinateKey:$titleKey"
-            if (seen.add(key)) add(suggestion)
-        }
-    }.take(16)
 }
