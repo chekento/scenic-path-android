@@ -2,84 +2,127 @@
 
 <div align="center">
   <a href="https://github.com/chekento/scenic-path-android/releases/download/v0.6.2-rc1/Scenic-Path-v0.6.2-rc1-debug.apk">
-    <img src="assets/frontpage/scenic-path-hero-download-apk.svg" alt="Scenic Path — Download APK" width="100%" />
+    <img src="assets/frontpage/scenic-path-hero-photo.webp" alt="Scenic Path — Download the current Android APK" width="100%" />
   </a>
 </div>
 
 <div align="center">
 
-### **⬇️ [DOWNLOAD SCENIC PATH APK](https://github.com/chekento/scenic-path-android/releases/download/v0.6.2-rc1/Scenic-Path-v0.6.2-rc1-debug.apk)**
+## ⬇️ [DOWNLOAD SCENIC PATH v0.6.2-rc1 APK](https://github.com/chekento/scenic-path-android/releases/download/v0.6.2-rc1/Scenic-Path-v0.6.2-rc1-debug.apk)
 
-[Release page](https://github.com/chekento/scenic-path-android/releases/tag/v0.6.2-rc1) · Package `cloud.kosch.scenicpath` · Android 16 / API 36 · RC test build
+**Tap the large hero image above or the button text here — both download the current APK directly.**
+
+[Release notes](https://github.com/chekento/scenic-path-android/releases/tag/v0.6.2-rc1) ·
+[SHA-256](https://github.com/chekento/scenic-path-android/releases/download/v0.6.2-rc1/Scenic-Path-v0.6.2-rc1-debug.apk.sha256)
+
+`cloud.kosch.scenicpath` · Android 16 / API 36 · `versionCode 39` · RC test build
 
 </div>
 
-**Scenic Path** is a map-first Android journey planner that optimizes for the **quality of the journey**, not only time or distance.
+---
+
+<div align="center">
+  <img src="assets/frontpage/scenic-path-logo.webp" alt="Scenic Path — The Beautiful Way Finder" width="520" />
+</div>
+
+**Scenic Path** is a map-first Android journey planner built around one simple idea:
 
 > **Choose the most beautiful route, not just the fastest.**
 
+Instead of treating scenery as an afterthought, Scenic Path scores the **journey corridor itself** and lets the user decide how much extra time a more rewarding route is worth.
+
 <div align="center">
-  <img src="assets/frontpage/scenic-path-features.svg" alt="Choose what beautiful means in Scenic Path" width="100%" />
+  <img src="assets/frontpage/scenic-path-app-icon.webp" alt="Scenic Path app icon" width="150" />
 </div>
 
-## What Scenic Path optimizes
+## Choose what beautiful means
 
-Scenic Path lets the user define what *beautiful* means for a trip:
+<div align="center">
+  <img src="assets/frontpage/scenic-path-beautiful-means.webp" alt="Scenic Path — Choose what beautiful means" width="100%" />
+</div>
 
-- quiet, winding and scenic roads
-- forests and protected landscapes
-- lakes, rivers and coastline
-- mountains, relief and viewpoints
-- historic sights, monuments, architecture and culture
-- parks and gardens
-- carefully selected food stops
+Scenic Path can shape a journey around:
 
-The user also defines a **detour budget**. Candidate journeys are ranked with a **ScenicScore**, and the route planner keeps scenic upgrades within the configured extra-time budget.
+- 🌲 **Forests & protected landscapes**
+- 🌊 **Lakes, rivers & coastline**
+- ⛰️ **Mountains, relief & viewpoints**
+- 🏛️ **Historic sights, monuments, architecture & culture**
+- 🌳 **Parks & gardens**
+- 🍽️ **Carefully selected food stops**
+- 🛣️ **Quiet, winding & scenic roads**
+
+The user defines a **detour budget** in extra time. Candidate journeys are ranked with a **ScenicScore**, and scenic upgrades stay inside that global budget instead of adding uncontrolled loops.
+
+## Journey beautifully
+
+<div align="center">
+  <img src="assets/frontpage/scenic-path-journey-beautifully.webp" alt="Scenic Path — Journey beautifully with ScenicScore, viewpoints and quiet roads" width="100%" />
+</div>
+
+The experience is designed around three connected layers:
+
+| Layer | What it does |
+|---|---|
+| **ScenicScore** | Ranks route quality instead of optimizing only time or distance |
+| **Experience anchors** | Adds viewpoints, culture, nature, Smart Stops and optional food destinations |
+| **Detour control** | Keeps the complete journey within the user-selected extra-time budget |
 
 ## Current Android build — v0.6.2-rc1
 
-- `versionCode 39`
-- package `cloud.kosch.scenicpath`
-- Kotlin + Jetpack Compose
+The current installable GitHub APK includes:
+
+- Kotlin + Jetpack Compose UI
 - MapLibre Native map
-- start/destination search including addresses and landmarks
+- start and destination search for towns, landmarks, streets and addresses
 - ScenicScore-based route candidates
 - Smart Stops and fixed Scenic POIs
 - route-corridor POI discovery
 - configurable scenic categories and detour budget
 - live GPS navigation HUD
-- route progress, speed, ETA and follow camera
+- route progress, remaining distance, ETA and current speed
+- tilted follow camera and route overview
 - off-route detection and reroute action
-- next Scenic POI and arrival detection
+- next fixed Scenic POI and arrival detection
 - Android TTS alerts
-- privacy/security boundary that keeps reusable provider credentials out of the APK
+- provider boundary that keeps reusable production credentials out of the APK
+- Scenic Path adaptive launcher icon and product branding
 
-## APK download
+### APK
 
-The large **Download APK** graphic at the top of this README is itself the download link.
+**Direct download:**  
+[Scenic-Path-v0.6.2-rc1-debug.apk](https://github.com/chekento/scenic-path-android/releases/download/v0.6.2-rc1/Scenic-Path-v0.6.2-rc1-debug.apk)
 
-**Direct APK:**  
-https://github.com/chekento/scenic-path-android/releases/download/v0.6.2-rc1/Scenic-Path-v0.6.2-rc1-debug.apk
+**Integrity:**  
+[Scenic-Path-v0.6.2-rc1-debug.apk.sha256](https://github.com/chekento/scenic-path-android/releases/download/v0.6.2-rc1/Scenic-Path-v0.6.2-rc1-debug.apk.sha256)
 
-**SHA-256 file:**  
-https://github.com/chekento/scenic-path-android/releases/download/v0.6.2-rc1/Scenic-Path-v0.6.2-rc1-debug.apk.sha256
+> This is an **installable RC/debug test APK**. It is not the final Play Store production-signed package.
 
-The repository workflow `.github/workflows/github-release-apk.yml` builds the installable test APK on `main` and publishes it to the GitHub Release so the frontpage link stays useful instead of pointing at a transient Actions artifact.
+## Why the routing model is different
 
-> This is an **RC/debug test APK**, not the final Play Store production-signed package.
+Conventional navigation primarily optimizes time or distance. Scenic Path treats the **route corridor as part of the destination**.
 
-## How routing differs
+A clean A→B route is the baseline. User-selected mandatory POIs remain hard routing breaks. Optional scenic upgrades then compete for the remaining global detour budget by experience gain per extra minute, rather than independently adding scenic loops to every leg.
 
-A conventional navigation app primarily optimizes time or distance. Scenic Path treats the **route corridor itself** as the experience. POIs are optional experience anchors, while road character, surrounding landscape, route geometry and the selected scenic categories contribute to the journey score.
+That architecture is intended to make scenic routing both **expressive and controllable**.
 
-Mandatory user-selected POIs stay hard routing breaks. Flexible scenic upgrades compete for the remaining global detour budget rather than adding independent loops to every leg.
+## Repository & build channel
+
+The repository keeps the Android app, routing/backend boundary and CI together.
+
+- Package: `cloud.kosch.scenicpath`
+- Target SDK: `36`
+- Current version: `0.6.2-rc1`
+- GitHub APK release: [`v0.6.2-rc1`](https://github.com/chekento/scenic-path-android/releases/tag/v0.6.2-rc1)
+- APK publishing workflow: `.github/workflows/github-release-apk.yml`
+
+The release workflow builds an installable debug APK and publishes it to the GitHub Release. This keeps the frontpage download stable instead of pointing at an expiring Actions artifact.
 
 ## Development
 
 ### Android
 
 1. Copy `local.properties.example` to `local.properties`.
-2. Start the backend if you are testing the configured backend path.
+2. Start the backend if testing the configured backend route.
 3. Open the project in Android Studio and run the `app` configuration.
 
 ### Backend
