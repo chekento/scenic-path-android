@@ -28,6 +28,24 @@ jobs:
           grep -q '@drawable/ic_launcher_foreground' app/src/main/res/mipmap-anydpi-v26/ic_launcher.xml
           grep -q '@drawable/ic_launcher_foreground' app/src/main/res/mipmap-anydpi-v26/ic_launcher_round.xml
 
+      - name: Verify original search algorithm contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -s app/src/main/java/cloud/kosch/scenicpath/OriginalSearchStack.kt
+          test -s app/src/main/java/cloud/kosch/scenicpath/OsmPlaceSearch.kt
+          test -s app/src/main/java/cloud/kosch/scenicpath/OsmAddressSearch.kt
+          test -s app/src/main/java/cloud/kosch/scenicpath/FastRoutePoiDiscovery.kt
+          test -s app/src/main/java/cloud/kosch/scenicpath/RapidRoutePoiDiscovery.kt
+          test -s app/src/main/java/cloud/kosch/scenicpath/PrecisionRoutePoiDiscovery.kt
+          test -s app/src/main/java/cloud/kosch/scenicpath/RoutePoiCoverageDiscovery.kt
+          grep -q 'OsmPlaceSearch.search' app/src/main/java/cloud/kosch/scenicpath/OriginalSearchStack.kt
+          grep -q 'OsmAddressSearch.search' app/src/main/java/cloud/kosch/scenicpath/OriginalSearchStack.kt
+          grep -q 'OriginalSearchStack.search' app/src/main/java/cloud/kosch/scenicpath/PlacePickerSheet.kt
+          grep -q 'RapidRoutePoiDiscovery.discover' app/src/main/java/cloud/kosch/scenicpath/ScenicMap.kt
+          grep -q 'FastRoutePoiDiscovery.discover' app/src/main/java/cloud/kosch/scenicpath/ScenicMap.kt
+          grep -q 'PrecisionRoutePoiDiscovery.discover' app/src/main/java/cloud/kosch/scenicpath/ScenicMap.kt
+
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
@@ -36,6 +54,9 @@ jobs:
       - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '9.1.0'
+
+      - name: Unit tests
+        run: gradle :app:testDebugUnitTest
 
       - name: Build debug APK
         run: gradle :app:assembleDebug
