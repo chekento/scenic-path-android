@@ -21,7 +21,11 @@ jobs:
         run: |
           set -euo pipefail
           test -s assets/frontpage/scenic-path-logo.webp
+          test -s assets/frontpage/scenic-path-app-icon.webp
+          test -s app/src/main/res/drawable-nodpi/scenic_path_launcher_foreground.webp
           test -s app/src/main/res/drawable/ic_launcher_foreground.xml
+          cmp assets/frontpage/scenic-path-app-icon.webp app/src/main/res/drawable-nodpi/scenic_path_launcher_foreground.webp
+          grep -q 'scenic_path_launcher_foreground' app/src/main/res/drawable/ic_launcher_foreground.xml
           grep -q 'android:icon="@mipmap/ic_launcher"' app/src/main/AndroidManifest.xml
           grep -q 'android:roundIcon="@mipmap/ic_launcher_round"' app/src/main/AndroidManifest.xml
           grep -q 'android:logo="@drawable/ic_launcher_foreground"' app/src/main/AndroidManifest.xml
