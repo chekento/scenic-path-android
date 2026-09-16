@@ -1,94 +1,158 @@
-# Google Play Data Safety — Scenic Path release matrix
+# Google Play Data Safety — Scenic Path 0.7.0-rc3
 
-This document is an implementation-grounded worksheet for the Play Console Data Safety form. It is **not** legal advice. Re-check it against the final production deployment, provider contracts and SDK versions immediately before submission.
+**Release-prep date:** 2026-09-16
+
+This is an implementation-grounded worksheet for the Play Console Data Safety form. It is not legal advice. Re-check every answer against the exact signed AAB, production deployment, provider contracts and Google Play wording immediately before submission.
 
 ## Current app facts
 
 - Package: `cloud.kosch.scenicpath`
-- Target SDK: 36
+- Target SDK: 36 / Android 16
+- Minimum SDK: 26
 - No Scenic Path account required
-- No advertising SDK in the app module
+- No advertising SDK in the Android app module
 - Foreground location permissions only: `ACCESS_COARSE_LOCATION`, `ACCESS_FINE_LOCATION`
 - No `ACCESS_BACKGROUND_LOCATION`
-- Release traffic to the Scenic Path backend is HTTPS-only
-- Vehicle profile is stored locally on device
-- Release manifest disables Android backup
+- Release backend traffic is HTTPS-only
+- Android backup is disabled
+- Vehicle profile/preferences are stored locally on device
+- Original Scenic Path place/POI discovery is still present: Photon, explicit Nominatim exact-address lookup, Rapid/Fast/Precision/RoutePoiCoverage discovery
 
-## Recommended Play Console answers to verify
+## Important 0.7.0-rc3 network fact
 
-### Location — Approximate location
+The original search/discovery stack currently contains direct Android calls to third-party/community OSM services in addition to the Scenic Path backend:
 
-**Does the app access/transmit it?** Yes, when the user grants location permission and uses Current Location / navigation.
+- Photon search/type-ahead can send the search text and optional location bias directly to `photon.komoot.io`.
+- Explicit exact-address search can send the entered address text and a location-bias viewbox directly to `nominatim.openstreetmap.org`.
+- Route POI discovery can send route-derived bounding boxes/category queries to public Overpass endpoints.
+- Map rendering contacts the configured map-style/tile provider.
+- Production route planning sends route inputs to the configured Scenic Path backend; that backend can in turn use configured routing/search/place providers such as TomTom, Photon/OSM-compatible services and Foursquare.
 
-**Purpose:** App functionality (route planning, map position, on-screen navigation).
+This matters for Data Safety. Do not describe all location/search processing as backend-only until the Android direct-provider lanes have either been moved behind the production backend or intentionally retained and fully disclosed.
 
-**Required or optional:** Optional. Users can deny location permission; workflows should allow manually selected route locations.
+## Data types to review in Play Console
 
-**Ephemeral processing:** Mark as ephemeral only if the production backend/provider path uses the location solely in memory for the specific request and does not retain it beyond what is necessary for that request. Confirm production logging before submission.
+### Location — approximate location
 
-### Location — Precise location
+**Access/transmission:** Yes when the user grants location permission and uses Current Location, location-biased search or navigation.
 
-Same handling as approximate location. The app requests `ACCESS_FINE_LOCATION`, but Android can allow users to provide approximate location instead.
+**Purpose:** App functionality: current-position display, route planning, rerouting, location-biased place search and on-screen navigation.
+
+**Required or optional:** Optional. The app can be used with manually selected locations where the relevant workflow supports it.
+
+**Collection/sharing:** Review conservatively. Location can be transmitted to Scenic Path backend services and, in this RC, route/search-derived location data can also be sent directly to Photon/Nominatim/Overpass/map providers. Whether a transfer qualifies for a service-provider exception depends on the final provider relationship and Play's current definitions.
+
+**Ephemeral processing:** Do not mark ephemeral until backend and provider logging/retention is confirmed.
+
+### Location — precise location
+
+Same policy position as approximate location. The app requests `ACCESS_FINE_LOCATION`; Android can allow approximate location instead.
 
 **Purpose:** App functionality.
 
 **Required or optional:** Optional.
 
-**Ephemeral:** Confirm against production logging/provider behavior.
+**Ephemeral:** Not yet confirmed.
 
-### App activity — In-app search history
+### App activity — in-app search history / search queries
 
-Place/address text entered by the user can leave the device for search/geocoding.
+Place/address text entered by the user can leave the device:
+
+- type-ahead: Photon lane;
+- explicit exact-address search: Nominatim lane;
+- configured Scenic Path backend search lane.
 
 **Purpose:** App functionality.
 
-**Ephemeral:** Intended to be request-oriented. Confirm that Scenic Path backend logs do not retain query contents before marking ephemeral.
+**Collection/sharing:** Confirm against the final production architecture and provider agreements. Because direct third-party endpoints are currently present, do not assume a service-provider exception without evidence.
 
-### App activity — App interactions / route preferences
+**Ephemeral:** Not yet confirmed.
 
-Scenic Categories, route character, detour budget and vehicle route parameters can be sent with a route request.
+### App activity — app interactions / route preferences
 
-These values are transmitted to provide the requested routing result. Decide with the final Play Console wording whether they meet Google's `App interactions` definition for the production implementation.
+Scenic Categories, route character, detour budget, fixed stops and vehicle route parameters can be sent with route requests.
+
+**Purpose:** App functionality.
+
+These values are transmitted to calculate the requested journey. Confirm the exact Play Console subcategory wording against the final AAB.
 
 ### Device or other IDs
 
-Scenic Path application code does not intentionally create an advertising/device identifier. Re-check Google Play Services / map / provider SDK declarations before submission.
+Scenic Path application code does not intentionally create an advertising identifier or account identifier. Re-check the current Google Play Services Location / MapLibre dependency guidance and the Play SDK Index before submission.
 
 ### Crash logs / diagnostics
 
-No crash-reporting or analytics SDK is intentionally bundled in the current Android module. If Firebase Crashlytics, Sentry, Play SDK diagnostics or another telemetry product is added later, update this section and the Play declaration.
+No Crashlytics, Sentry or first-party analytics SDK is intentionally bundled in the current Android module. If telemetry is added later, update the privacy policy and Data Safety declaration before shipping.
 
-## Sharing vs. service-provider processing
+## Third parties / processors to confirm before production
 
-The production backend can call routing/place/map-data providers. Google Play's Data Safety definition treats transfers differently depending on whether the third party is acting as a service provider on the publisher's behalf.
+Create a final provider register with legal/contractual status and retention terms for every provider used by the production AAB and backend. At minimum review:
 
-Before submission:
+- Scenic Path production backend/host
+- TomTom routing/search if configured
+- production Photon/OSM-compatible search provider
+- production OSM/Overpass-compatible corridor enrichment provider
+- map-style/tile provider
+- Foursquare if Top Food / ratings are enabled
+- any public Photon, Nominatim or Overpass endpoint still reachable from the release binary
 
-- [ ] identify every production routing/search/place/tile provider;
-- [ ] verify the applicable data-processing/contract terms;
-- [ ] decide which transfers qualify as service-provider processing;
-- [ ] declare any transfer that does not qualify for a sharing exception.
+For each provider record:
+
+1. data fields transmitted;
+2. purpose;
+3. retention/logging;
+4. whether it acts on the publisher's behalf as a service provider;
+5. applicable privacy/DPA terms;
+6. whether Play Data Safety requires the transfer to be declared as sharing.
 
 ## Security practices
 
-Recommended answers, provided production matches the repository release gate:
+Provided the production release gate passes:
 
-- Data in transit encrypted: **Yes** (HTTPS release gate).
-- Users can request deletion: there is no Scenic Path account/route-history database in the current design; final answer depends on operational logs/support records.
-- Independent security review: **Do not claim one unless actually completed.**
+- Data in transit encrypted: **Yes** for the configured Scenic Path backend and map-style URL.
+- Cleartext Android release traffic: **Disabled** by manifest placeholder.
+- Android backup: **Disabled**.
+- Users can request deletion: no Scenic Path account/route-history database is designed into this RC, but the final answer depends on operational logs/support records.
+- Independent security review: **Do not claim one unless one has actually been completed.**
+
+Note: direct public OSM/Photon/Overpass endpoints use HTTPS in the current implementation, but production use/capacity and privacy terms still need to be validated separately.
 
 ## Permissions declaration
 
-Current manifest does not request background location. Therefore the special Play background-location declaration/video path should not apply to this release candidate.
+Current manifest requests:
 
-If background navigation is added later with background/foreground-service location behavior, redo the permissions and policy review before shipping that update.
+- `INTERNET`
+- `ACCESS_NETWORK_STATE`
+- `ACCESS_COARSE_LOCATION`
+- `ACCESS_FINE_LOCATION`
+
+It does **not** request `ACCESS_BACKGROUND_LOCATION`. The special Play background-location declaration/video path should therefore not apply to this release candidate.
+
+If background navigation is added later, redo the permissions, prominent-disclosure and policy review before shipping that update.
+
+## Conservative Play Console starting point
+
+Until provider retention/contracts are finalized, use the following as a review checklist rather than blindly copying answers:
+
+- Location / approximate: **collected or transmitted for app functionality — Yes**
+- Location / precise: **collected or transmitted for app functionality — Yes**
+- Search activity/search queries: **transmitted for app functionality — Yes**
+- Route/preferences/app interactions: **review as app interaction data — likely Yes**
+- Ads/advertising profiling: **No**
+- Account data: **No Scenic Path account**
+- Background location: **No**
+- Data in transit encrypted: **Yes**, provided final production configuration passes the release gate
+- Data deletion: answer only after log/support retention and deletion process are finalized
 
 ## Final pre-submit confirmation
 
+- [ ] Exact signed AAB version/versionCode recorded.
 - [ ] Production backend URL configured and HTTPS.
-- [ ] Production map style configured and HTTPS.
-- [ ] Privacy policy published at stable public HTTPS URL.
+- [ ] Production map style/tile endpoint configured and HTTPS.
+- [ ] Public privacy policy URL active and linked both in Play Console and in-app.
+- [ ] Legal publisher/contact details inserted in privacy policy.
 - [ ] Production backend log retention documented.
-- [ ] Provider list and service-provider status confirmed.
-- [ ] No new SDK has introduced analytics/ads/device-ID collection.
-- [ ] Play Console Data Safety responses match the exact uploaded AAB, not an older debug build.
+- [ ] Direct Photon/Nominatim/Overpass release behavior intentionally accepted or moved behind controlled production infrastructure.
+- [ ] Provider register + service-provider/sharing classification completed.
+- [ ] No new SDK introduced analytics, ads, device-ID or other data collection.
+- [ ] Data Safety responses match the exact uploaded AAB, not an older debug APK.
