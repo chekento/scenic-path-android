@@ -10,7 +10,7 @@
         android:appCategory="maps"
         android:icon="@mipmap/ic_launcher"
         android:roundIcon="@mipmap/ic_launcher_round"
-        android:logo="@drawable/scenic_path_logo"
+        android:logo="@drawable/ic_launcher_foreground"
         android:label="Scenic Path"
         android:supportsRtl="true"
         android:theme="@style/Theme.ScenicPath"

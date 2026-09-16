@@ -15,10 +15,24 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
+      - name: Verify Scenic Path brand contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -s assets/frontpage/scenic-path-logo.webp
+          test -s app/src/main/res/drawable/ic_launcher_foreground.xml
+          grep -q 'android:icon="@mipmap/ic_launcher"' app/src/main/AndroidManifest.xml
+          grep -q 'android:roundIcon="@mipmap/ic_launcher_round"' app/src/main/AndroidManifest.xml
+          grep -q 'android:logo="@drawable/ic_launcher_foreground"' app/src/main/AndroidManifest.xml
+          grep -q '@drawable/ic_launcher_foreground' app/src/main/res/mipmap-anydpi-v26/ic_launcher.xml
+          grep -q '@drawable/ic_launcher_foreground' app/src/main/res/mipmap-anydpi-v26/ic_launcher_round.xml
+
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '17'
+
       - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '9.1.0'

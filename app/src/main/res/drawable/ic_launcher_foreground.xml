@@ -1,11 +1,36 @@
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
-    android:width="108dp" android:height="108dp"
-    android:viewportWidth="108" android:viewportHeight="108">
-    <path android:fillColor="#F5C451" android:pathData="M78,20a10,10 0,1 0,0.1,0" />
-    <path android:fillColor="#167D9D" android:pathData="M14,66 L34,40 L46,53 L59,31 L84,58 L96,66 Z" />
-    <path android:fillColor="#DFF7F5" android:pathData="M34,40 L39,51 L46,53 L42,44 Z M59,31 L65,45 L73,52 L68,38 Z" />
-    <path android:fillColor="#0F7B61" android:pathData="M10,66 C28,57 43,60 55,68 C67,76 80,76 98,66 L98,94 L10,94 Z" />
-    <path android:fillColor="#29A886" android:pathData="M10,78 C29,68 44,70 57,78 C70,86 82,85 98,77 L98,94 L10,94 Z" />
-    <path android:fillColor="#FFFFFF" android:strokeColor="#FFFFFF" android:strokeWidth="5"
-        android:strokeLineCap="round" android:pathData="M28,92 C30,78 44,76 52,68 C60,60 59,49 72,43 C78,40 84,40 89,41" />
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+
+    <!-- Scenic Path brand mark: sun, mountains, water, forest and winding road. -->
+    <path android:fillColor="#43B6D9" android:pathData="M54,8a46,46 0,1 0,0.1,0" />
+    <path android:fillColor="#F7C64B" android:pathData="M76,25a9,9 0,1 0,0.1,0" />
+
+    <!-- distant mountains -->
+    <path android:fillColor="#8DD3E6" android:pathData="M14,59 L31,39 L42,50 L56,29 L72,48 L86,40 L98,59 Z" />
+    <path android:fillColor="#167D9D" android:pathData="M10,66 L31,42 L44,55 L58,31 L74,51 L88,42 L101,66 Z" />
+    <path android:fillColor="#EAF9FC" android:pathData="M31,42 L36,51 L44,55 L39,46 Z M58,31 L64,46 L74,51 L66,38 Z" />
+
+    <!-- lake -->
+    <path android:fillColor="#35B9D8" android:pathData="M13,64 C31,58 47,59 58,65 C70,71 84,71 98,65 L98,78 C79,84 61,83 47,76 C35,70 25,70 13,74 Z" />
+
+    <!-- green hills -->
+    <path android:fillColor="#0B6F57" android:pathData="M10,72 C27,61 42,63 54,72 C67,81 82,80 99,70 L99,100 L9,100 Z" />
+    <path android:fillColor="#2A9F6B" android:pathData="M9,83 C27,72 43,73 57,82 C70,90 84,88 99,79 L99,101 L9,101 Z" />
+
+    <!-- winding scenic road -->
+    <path
+        android:fillColor="@android:color/transparent"
+        android:strokeColor="#FFFDF6"
+        android:strokeWidth="7"
+        android:strokeLineCap="round"
+        android:pathData="M29,101 C31,88 46,85 55,77 C63,70 61,60 73,54 C80,50 87,49 93,50" />
+    <path
+        android:fillColor="@android:color/transparent"
+        android:strokeColor="#F4DDA8"
+        android:strokeWidth="2"
+        android:strokeLineCap="round"
+        android:pathData="M29,101 C31,88 46,85 55,77 C63,70 61,60 73,54 C80,50 87,49 93,50" />
 </vector>

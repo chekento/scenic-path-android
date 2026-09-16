@@ -18,6 +18,18 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Verify Scenic Path brand contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -s assets/frontpage/scenic-path-logo.webp
+          test -s app/src/main/res/drawable/ic_launcher_foreground.xml
+          grep -q 'android:icon="@mipmap/ic_launcher"' app/src/main/AndroidManifest.xml
+          grep -q 'android:roundIcon="@mipmap/ic_launcher_round"' app/src/main/AndroidManifest.xml
+          grep -q 'android:logo="@drawable/ic_launcher_foreground"' app/src/main/AndroidManifest.xml
+          grep -q '@drawable/ic_launcher_foreground' app/src/main/res/mipmap-anydpi-v26/ic_launcher.xml
+          grep -q '@drawable/ic_launcher_foreground' app/src/main/res/mipmap-anydpi-v26/ic_launcher_round.xml
+
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
@@ -27,41 +39,56 @@ jobs:
         with:
           gradle-version: '9.1.0'
 
+      - name: Resolve app version
+        id: version
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION=$(sed -n 's/.*versionName = "\([^"]*\)".*/\1/p' app/build.gradle.kts | head -n 1)
+          test -n "$VERSION"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "tag=v$VERSION" >> "$GITHUB_OUTPUT"
+          echo "apk=Scenic-Path-v$VERSION-debug.apk" >> "$GITHUB_OUTPUT"
+
       - name: Build installable debug APK
         run: gradle :app:assembleDebug
 
       - name: Prepare release asset
         shell: bash
+        env:
+          OUT_APK: ${{ steps.version.outputs.apk }}
         run: |
           set -euo pipefail
           APK=$(find app/build/outputs/apk/debug -name '*.apk' -type f | head -n 1)
           test -n "$APK"
-          cp "$APK" Scenic-Path-v0.6.2-rc1-debug.apk
-          sha256sum Scenic-Path-v0.6.2-rc1-debug.apk > Scenic-Path-v0.6.2-rc1-debug.apk.sha256
+          cp "$APK" "$OUT_APK"
+          sha256sum "$OUT_APK" > "$OUT_APK.sha256"
 
       - name: Publish GitHub release and APK
         env:
           GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.version.outputs.tag }}
+          VERSION: ${{ steps.version.outputs.version }}
+          OUT_APK: ${{ steps.version.outputs.apk }}
         shell: bash
         run: |
           set -euo pipefail
-          TAG="v0.6.2-rc1"
           if ! gh release view "$TAG" >/dev/null 2>&1; then
             gh release create "$TAG" \
               --target "$GITHUB_SHA" \
-              --title "Scenic Path v0.6.2-rc1" \
+              --title "Scenic Path v$VERSION" \
               --prerelease \
-              --notes "Installable Scenic Path Android test APK. Package: cloud.kosch.scenicpath. This is an RC/debug build for testing before Play Store production signing."
+              --notes "Installable Scenic Path Android test APK. Package: cloud.kosch.scenicpath. The APK is built from the same branded main-branch source validated by CI."
           fi
           gh release upload "$TAG" \
-            Scenic-Path-v0.6.2-rc1-debug.apk \
-            Scenic-Path-v0.6.2-rc1-debug.apk.sha256 \
+            "$OUT_APK" \
+            "$OUT_APK.sha256" \
             --clobber
 
       - name: Keep workflow artifact too
         uses: actions/upload-artifact@v4
         with:
-          name: Scenic-Path-v0.6.2-rc1-debug-apk
+          name: Scenic-Path-${{ steps.version.outputs.version }}-debug-apk
           path: |
-            Scenic-Path-v0.6.2-rc1-debug.apk
-            Scenic-Path-v0.6.2-rc1-debug.apk.sha256
+            ${{ steps.version.outputs.apk }}
+            ${{ steps.version.outputs.apk }}.sha256
