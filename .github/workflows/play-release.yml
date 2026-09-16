@@ -9,6 +9,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: scenic-path-play-release-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   play-bundle:
     runs-on: ubuntu-latest
@@ -24,6 +28,49 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+
+      - name: Verify Play policy surface
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -q 'targetSdk = 36' app/build.gradle.kts
+          grep -q 'applicationId = "cloud.kosch.scenicpath"' app/build.gradle.kts
+          grep -q 'android.permission.ACCESS_COARSE_LOCATION' app/src/main/AndroidManifest.xml
+          grep -q 'android.permission.ACCESS_FINE_LOCATION' app/src/main/AndroidManifest.xml
+          if grep -q 'android.permission.ACCESS_BACKGROUND_LOCATION' app/src/main/AndroidManifest.xml; then
+            echo 'Background location is not approved for this release.' >&2
+            exit 1
+          fi
+          grep -q 'android:allowBackup="false"' app/src/main/AndroidManifest.xml
+          grep -q 'android:usesCleartextTraffic="${usesCleartextTraffic}"' app/src/main/AndroidManifest.xml
+
+      - name: Verify Scenic Path brand contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -s assets/frontpage/scenic-path-logo.webp
+          test -s assets/frontpage/scenic-path-app-icon.webp
+          test -s app/src/main/res/drawable-nodpi/scenic_path_launcher_foreground.webp
+          cmp -s assets/frontpage/scenic-path-app-icon.webp app/src/main/res/drawable-nodpi/scenic_path_launcher_foreground.webp
+          grep -q 'android:icon="@mipmap/ic_launcher"' app/src/main/AndroidManifest.xml
+          grep -q 'android:roundIcon="@mipmap/ic_launcher_round"' app/src/main/AndroidManifest.xml
+
+      - name: Verify original search algorithm contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -s app/src/main/java/cloud/kosch/scenicpath/OriginalSearchStack.kt
+          test -s app/src/main/java/cloud/kosch/scenicpath/OsmPlaceSearch.kt
+          test -s app/src/main/java/cloud/kosch/scenicpath/OsmAddressSearch.kt
+          test -s app/src/main/java/cloud/kosch/scenicpath/FastRoutePoiDiscovery.kt
+          test -s app/src/main/java/cloud/kosch/scenicpath/RapidRoutePoiDiscovery.kt
+          test -s app/src/main/java/cloud/kosch/scenicpath/PrecisionRoutePoiDiscovery.kt
+          test -s app/src/main/java/cloud/kosch/scenicpath/RoutePoiCoverageDiscovery.kt
+          grep -q 'OsmPlaceSearch.search' app/src/main/java/cloud/kosch/scenicpath/OriginalSearchStack.kt
+          grep -q 'OsmAddressSearch.search' app/src/main/java/cloud/kosch/scenicpath/OriginalSearchStack.kt
+          grep -q 'RapidRoutePoiDiscovery.discover' app/src/main/java/cloud/kosch/scenicpath/ScenicMap.kt
+          grep -q 'FastRoutePoiDiscovery.discover' app/src/main/java/cloud/kosch/scenicpath/ScenicMap.kt
+          grep -q 'PrecisionRoutePoiDiscovery.discover' app/src/main/java/cloud/kosch/scenicpath/ScenicMap.kt
 
       - uses: actions/setup-node@v4
         with:
@@ -41,6 +88,22 @@ jobs:
       - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '9.1.0'
+
+      - name: Unit tests
+        run: gradle :app:testDebugUnitTest
+
+      - name: Resolve app version
+        id: version
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION=$(sed -n 's/.*versionName = "\([^"]*\)".*/\1/p' app/build.gradle.kts | head -n 1)
+          VERSION_CODE=$(sed -n 's/.*versionCode = \([0-9][0-9]*\).*/\1/p' app/build.gradle.kts | head -n 1)
+          test -n "$VERSION"
+          test -n "$VERSION_CODE"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "version_code=$VERSION_CODE" >> "$GITHUB_OUTPUT"
+          echo "aab=Scenic-Path-v$VERSION-play.aab" >> "$GITHUB_OUTPUT"
 
       - name: Validate required Play secrets
         env:
@@ -62,6 +125,7 @@ jobs:
           set -euo pipefail
           printf '%s' "$PLAY_UPLOAD_KEYSTORE_BASE64" | base64 --decode > "$SCENIC_UPLOAD_STORE_FILE"
           chmod 600 "$SCENIC_UPLOAD_STORE_FILE"
+          keytool -list -keystore "$SCENIC_UPLOAD_STORE_FILE" -storepass "$SCENIC_UPLOAD_STORE_PASSWORD" -alias "$SCENIC_UPLOAD_KEY_ALIAS" >/dev/null
 
       - name: Verify production release configuration
         run: gradle :app:verifyPlayReleaseConfig
@@ -69,22 +133,36 @@ jobs:
       - name: Release lint
         run: gradle :app:lintRelease
 
+      - name: Record release dependency inventory
+        run: gradle :app:dependencies --configuration releaseRuntimeClasspath > play-release-dependencies.txt
+
       - name: Build signed release AAB
         run: gradle :app:bundleRelease
 
-      - name: Verify AAB signature
+      - name: Prepare and verify Play bundle
+        env:
+          OUT_AAB: ${{ steps.version.outputs.aab }}
+        shell: bash
         run: |
           set -euo pipefail
           AAB=$(find app/build/outputs/bundle/release -name '*.aab' -type f | head -n 1)
           test -n "$AAB"
-          jarsigner -verify "$AAB"
-          sha256sum "$AAB" | tee play-aab-sha256.txt
+          cp "$AAB" "$OUT_AAB"
+          jarsigner -verify -verbose -certs "$OUT_AAB" >/dev/null
+          sha256sum "$OUT_AAB" | tee "$OUT_AAB.sha256"
+          printf 'versionName=%s\nversionCode=%s\ncommit=%s\n' \
+            '${{ steps.version.outputs.version }}' \
+            '${{ steps.version.outputs.version_code }}' \
+            "$GITHUB_SHA" > play-release-metadata.txt
 
       - name: Upload signed Play AAB
         uses: actions/upload-artifact@v4
         with:
-          name: scenic-path-play-aab-rc
+          name: Scenic-Path-${{ steps.version.outputs.version }}-Play-AAB
           path: |
-            app/build/outputs/bundle/release/*.aab
-            play-aab-sha256.txt
+            ${{ steps.version.outputs.aab }}
+            ${{ steps.version.outputs.aab }}.sha256
+            play-release-metadata.txt
+            play-release-dependencies.txt
           if-no-files-found: error
+          retention-days: 30
