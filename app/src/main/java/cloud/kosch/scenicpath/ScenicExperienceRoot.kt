@@ -174,7 +174,7 @@ fun ScenicExperienceRoot(
             onStops = { showStops = true },
             onEnableGps = requestLocationPermission,
             locationPermissionGranted = locationPermissionGranted,
-            modifier = Modifier.align(Alignment.TopCenter),
+            modifier = Modifier.align(Alignment.TopCenter).statusBarsPadding(),
         )
 
         routeError?.let { message ->
@@ -209,13 +209,14 @@ fun ScenicExperienceRoot(
                 onEdit = { showPlanner = true },
                 modifier = Modifier
                     .align(Alignment.BottomCenter)
+                    .navigationBarsPadding()
                     .padding(start = 12.dp, end = 78.dp, bottom = 16.dp)
                     .fillMaxWidth(),
             )
         }
 
         Column(
-            modifier = Modifier.align(Alignment.BottomEnd).padding(16.dp),
+            modifier = Modifier.align(Alignment.BottomEnd).navigationBarsPadding().padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(10.dp),
             horizontalAlignment = Alignment.End,
         ) {
@@ -234,7 +235,7 @@ fun ScenicExperienceRoot(
                 onClick = { mapError = null },
                 label = { Text("Map fallback active") },
                 leadingIcon = { Icon(Icons.Default.WarningAmber, null) },
-                modifier = Modifier.align(Alignment.BottomStart).padding(18.dp),
+                modifier = Modifier.align(Alignment.BottomStart).navigationBarsPadding().padding(18.dp),
             )
         }
     }
