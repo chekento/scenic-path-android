@@ -21,11 +21,11 @@ jobs:
         run: |
           set -euo pipefail
           test -s assets/frontpage/scenic-path-logo.webp
-          test -s assets/frontpage/scenic-path-app-icon.webp
-          test -s app/src/main/res/drawable-nodpi/scenic_path_launcher_foreground.webp
+          test -s assets/frontpage/scenic-path-icon.png
+          test -s app/src/main/res/drawable-nodpi/scenic_path_app_icon.png
           test -s app/src/main/res/drawable/ic_launcher_foreground.xml
-          cmp assets/frontpage/scenic-path-app-icon.webp app/src/main/res/drawable-nodpi/scenic_path_launcher_foreground.webp
-          grep -q 'scenic_path_launcher_foreground' app/src/main/res/drawable/ic_launcher_foreground.xml
+          cmp assets/frontpage/scenic-path-icon.png app/src/main/res/drawable-nodpi/scenic_path_app_icon.png
+          grep -q 'scenic_path_app_icon' app/src/main/res/drawable/ic_launcher_foreground.xml
           grep -q 'android:icon="@mipmap/ic_launcher"' app/src/main/AndroidManifest.xml
           grep -q 'android:roundIcon="@mipmap/ic_launcher_round"' app/src/main/AndroidManifest.xml
           grep -q 'android:logo="@drawable/ic_launcher_foreground"' app/src/main/AndroidManifest.xml
@@ -49,6 +49,11 @@ jobs:
           grep -q 'RapidRoutePoiDiscovery.discover' app/src/main/java/cloud/kosch/scenicpath/ScenicMap.kt
           grep -q 'FastRoutePoiDiscovery.discover' app/src/main/java/cloud/kosch/scenicpath/ScenicMap.kt
           grep -q 'PrecisionRoutePoiDiscovery.discover' app/src/main/java/cloud/kosch/scenicpath/ScenicMap.kt
+
+      - name: Decode brand images
+        run: |
+          python -m pip install Pillow
+          python -c "from PIL import Image; im = Image.open('assets/frontpage/scenic-path-icon.png'); im.load(); assert im.width == im.height; print(im.size)"
 
       - uses: actions/setup-java@v4
         with:
@@ -106,4 +111,28 @@ jobs:
         with:
           name: scenic-path-lint-report
           path: app/build/reports/lint-results-*.html
+          if-no-files-found: ignore
+
+  live-route-smoke:
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '9.1.0'
+      - name: Real Hamburg to Lisbon route
+        env:
+          SCENIC_LIVE_ROUTING: '1'
+        run: gradle :app:testDebugUnitTest --tests '*LiveRoutingSmokeTest'
+      - name: Upload live route results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: scenic-path-live-route-results
+          path: app/build/test-results/testDebugUnitTest/*.xml
           if-no-files-found: ignore

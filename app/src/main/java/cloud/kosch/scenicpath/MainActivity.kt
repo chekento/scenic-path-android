@@ -18,6 +18,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -37,7 +38,7 @@ class MainActivity : ComponentActivity() {
                     mutableStateOf(hasForegroundLocationPermission())
                 }
                 var showVehicleSettings by remember { mutableStateOf(false) }
-                var showNavigationDisclaimer by remember { mutableStateOf(true) }
+                var showNavigationDisclaimer by rememberSaveable { mutableStateOf(true) }
                 val permissionLauncher = rememberLauncherForActivityResult(
                     ActivityResultContracts.RequestMultiplePermissions()
                 ) { result ->

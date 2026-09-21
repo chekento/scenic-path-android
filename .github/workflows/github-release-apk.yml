@@ -23,11 +23,11 @@ jobs:
         run: |
           set -euo pipefail
           test -s assets/frontpage/scenic-path-logo.webp
-          test -s assets/frontpage/scenic-path-app-icon.webp
-          test -s app/src/main/res/drawable-nodpi/scenic_path_launcher_foreground.webp
+          test -s assets/frontpage/scenic-path-icon.png
+          test -s app/src/main/res/drawable-nodpi/scenic_path_app_icon.png
           test -s app/src/main/res/drawable/ic_launcher_foreground.xml
-          cmp assets/frontpage/scenic-path-app-icon.webp app/src/main/res/drawable-nodpi/scenic_path_launcher_foreground.webp
-          grep -q 'scenic_path_launcher_foreground' app/src/main/res/drawable/ic_launcher_foreground.xml
+          cmp assets/frontpage/scenic-path-icon.png app/src/main/res/drawable-nodpi/scenic_path_app_icon.png
+          grep -q 'scenic_path_app_icon' app/src/main/res/drawable/ic_launcher_foreground.xml
           grep -q 'android:icon="@mipmap/ic_launcher"' app/src/main/AndroidManifest.xml
           grep -q 'android:roundIcon="@mipmap/ic_launcher_round"' app/src/main/AndroidManifest.xml
           grep -q 'android:logo="@drawable/ic_launcher_foreground"' app/src/main/AndroidManifest.xml
@@ -52,6 +52,11 @@ jobs:
           grep -q 'FastRoutePoiDiscovery.discover' app/src/main/java/cloud/kosch/scenicpath/ScenicMap.kt
           grep -q 'PrecisionRoutePoiDiscovery.discover' app/src/main/java/cloud/kosch/scenicpath/ScenicMap.kt
 
+      - name: Decode brand images
+        run: |
+          python -m pip install Pillow
+          python -c "from PIL import Image; im = Image.open('assets/frontpage/scenic-path-icon.png'); im.load(); assert im.width == im.height; print(im.size)"
+
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
@@ -63,6 +68,9 @@ jobs:
 
       - name: Unit tests
         run: gradle :app:testDebugUnitTest
+
+      - name: Android lint
+        run: gradle :app:lintRelease
 
       - name: Resolve app version
         id: version
@@ -103,7 +111,7 @@ jobs:
               --target "$GITHUB_SHA" \
               --title "Scenic Path v$VERSION" \
               --prerelease \
-              --notes "Installable Scenic Path Android full-search RC. Package: cloud.kosch.scenicpath. This build preserves the canonical original Scenic Path search stack and uses the same canonical Scenic Path emblem for repository branding and the Android launcher icon, both enforced by CI."
+              --notes-file CHANGELOG.md
           fi
           gh release upload "$TAG" \
             "$OUT_APK" \

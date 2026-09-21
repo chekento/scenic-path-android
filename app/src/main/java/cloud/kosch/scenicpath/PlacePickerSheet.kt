@@ -12,6 +12,10 @@ import androidx.compose.material.icons.filled.LocationOn
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
@@ -28,9 +32,10 @@ fun PlacePickerSheet(
     bias: GeoPoint? = null,
     onDismiss: () -> Unit,
     onPick: (PlaceSuggestion) -> Unit,
+    onQueryChange: (String) -> Unit = {},
 ) {
     val context = LocalContext.current
-    var query by remember(initialQuery) { mutableStateOf(initialQuery) }
+    var query by rememberSaveable { mutableStateOf(initialQuery) }
     var results by remember { mutableStateOf<List<PlaceSuggestion>>(emptyList()) }
     var searching by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
@@ -43,7 +48,8 @@ fun PlacePickerSheet(
         submitNonce++
     }
 
-    LaunchedEffect(query, bias, submitNonce) {
+    val searchBias = remember { bias }
+    LaunchedEffect(query, submitNonce) {
         val normalized = query.trim()
         if (normalized.length < 2) {
             results = emptyList()
@@ -53,19 +59,26 @@ fun PlacePickerSheet(
         }
 
         val explicit = submitNonce > handledSubmitNonce && submittedQuery == normalized
-        delay(if (explicit) 20 else 340)
         searching = true
         error = null
+        results = emptyList()
+        delay(if (explicit) 0 else 300)
 
-        val found = runCatching {
+        val found = try {
             OriginalSearchStack.search(
                 context = context,
                 query = normalized,
-                bias = bias,
+                bias = searchBias,
                 exactAddressRequested = explicit,
                 maxResults = 16,
+                onPartial = { results = it },
             )
-        }.getOrElse { emptyList() }
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (_: Exception) {
+            emptyList()
+        }
+        currentCoroutineContext().ensureActive()
 
         if (explicit) handledSubmitNonce = submitNonce
         results = found
@@ -80,7 +93,8 @@ fun PlacePickerSheet(
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(horizontal = 18.dp)
-                .padding(bottom = 28.dp),
+                .padding(bottom = 28.dp)
+                .imePadding(),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -96,7 +110,7 @@ fun PlacePickerSheet(
 
             OutlinedTextField(
                 value = query,
-                onValueChange = { query = it },
+                onValueChange = { query = it; onQueryChange(it) },
                 modifier = Modifier.fillMaxWidth(),
                 singleLine = true,
                 label = { Text("Street, house number, place or landmark") },
@@ -105,18 +119,17 @@ fun PlacePickerSheet(
                 keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
                 keyboardActions = KeyboardActions(onSearch = { submitSearch() }),
                 trailingIcon = {
-                    if (searching) {
-                        CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
-                    } else if (query.trim().length >= 2) {
-                        IconButton(onClick = { submitSearch() }) {
-                            Icon(Icons.Default.Search, "Search exact address")
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        if (searching) CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
+                        if (query.trim().length >= 2) {
+                            IconButton(onClick = { submitSearch() }) { Icon(Icons.Default.Search, "Search exact address") }
                         }
                     }
                 },
             )
 
             Text(
-                "Tip: type-ahead keeps the original Photon + device/backend lanes. Press Search for exact Nominatim street + house-number lookup.",
+                "Suggestions appear as you type. For an exact address, enter the street, house number and town, then tap Search.",
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -156,13 +169,7 @@ fun PlacePickerSheet(
                 }
             }
 
-            if (BuildConfig.DEBUG) {
-                Text(
-                    "Original search stack active: Android/device + backend + Photon type-ahead · Nominatim exact address on explicit Search.",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
+
         }
     }
 }

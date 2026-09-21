@@ -24,23 +24,14 @@ object OsmPlaceSearch {
             if (normalized.length < 2) return@withContext emptyList()
 
             val encoded = URLEncoder.encode(normalized, Charsets.UTF_8.name())
-            val localeLanguage = Locale.getDefault().language.takeIf { it.length == 2 } ?: "de"
+            val localeLanguage = Locale.getDefault().language.takeIf { it in setOf("de", "en", "fr") } ?: "en"
             val biasQuery = bias?.let {
                 "&lat=${it.lat}&lon=${it.lon}&zoom=12&location_bias_scale=0.35"
             }.orEmpty()
-            val url = "$PHOTON_DEMO_URL/api?q=$encoded&limit=8&lang=$localeLanguage$biasQuery"
+            val url = "$PHOTON_DEMO_URL/api?q=$encoded&limit=16&lang=$localeLanguage$biasQuery"
 
-            val connection = (URL(url).openConnection() as HttpURLConnection).apply {
-                requestMethod = "GET"
-                connectTimeout = 3_500
-                readTimeout = 3_500
-                setRequestProperty("Accept", "application/geo+json, application/json")
-                setRequestProperty("User-Agent", "ScenicPath-Android/${BuildConfig.VERSION_NAME} development")
-            }
-
-            try {
-                if (connection.responseCode !in 200..299) return@withContext emptyList()
-                val text = connection.inputStream.bufferedReader(Charsets.UTF_8).use { it.readText() }
+            val text = CancellableNetwork.text(url, timeoutMs = 5_000)
+            run {
                 val features = JSONObject(text).optJSONArray("features") ?: return@withContext emptyList()
 
                 buildList {
@@ -80,7 +71,7 @@ object OsmPlaceSearch {
                         add(
                             PlaceSuggestion(
                                 id = id,
-                                title = name,
+                                title = if (houseNumber != null && street != null) "$street $houseNumber" else name,
                                 subtitle = listOf(address, "OpenStreetMap · Photon")
                                     .filter { it.isNotBlank() }
                                     .joinToString(" · "),
@@ -91,8 +82,6 @@ object OsmPlaceSearch {
                 }.distinctBy { suggestion ->
                     "${suggestion.title.lowercase(Locale.ROOT)}:${"%.5f".format(Locale.US, suggestion.point.lat)}:${"%.5f".format(Locale.US, suggestion.point.lon)}"
                 }
-            } finally {
-                connection.disconnect()
             }
         }
 }

@@ -1,5 +1,6 @@
 package cloud.kosch.scenicpath
 
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
@@ -12,6 +13,8 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.res.painterResource
+import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.launch
@@ -30,11 +33,11 @@ fun ScenicExperienceRoot(
     locationPermissionGranted: Boolean,
     requestLocationPermission: () -> Unit,
 ) {
-    val scope = rememberCoroutineScope()
+    val session: JourneySession = viewModel()
     val location = rememberLocationUiState(locationPermissionGranted)
 
-    var startSelection by remember { mutableStateOf<PlaceSuggestion?>(null) }
-    var destinationSelection by remember { mutableStateOf<PlaceSuggestion?>(null) }
+    var startSelection by session.startSelection
+    var destinationSelection by session.destinationSelection
     var showStartPicker by remember { mutableStateOf(false) }
     var showDestinationPicker by remember { mutableStateOf(false) }
     var showPlanner by remember { mutableStateOf(false) }
@@ -42,16 +45,16 @@ fun ScenicExperienceRoot(
     var showManualKind by remember { mutableStateOf(false) }
     var showManualPlace by remember { mutableStateOf(false) }
     var pendingStopKind by remember { mutableStateOf(StopKind.CUSTOM) }
-    var preferences by remember { mutableStateOf(ScenicPreferences(maxStops = 6)) }
-    var plan by remember { mutableStateOf(TripPlan()) }
+    var preferences by session.preferences
+    var plan by session.plan
     var recenterToken by remember { mutableIntStateOf(0) }
-    var routePlan by remember { mutableStateOf<RoutePlanUi?>(null) }
-    var selectedCandidateIndex by remember { mutableIntStateOf(0) }
-    var routeLoading by remember { mutableStateOf(false) }
-    var routeError by remember { mutableStateOf<String?>(null) }
+    var routePlan by session.routePlan
+    var selectedCandidateIndex by session.selectedCandidateIndex
+    var routeLoading by session.routeLoading
+    var routeError by session.routeError
     var mapError by remember { mutableStateOf<String?>(null) }
-    var topExpanded by remember { mutableStateOf(true) }
-    var routeDirty by remember { mutableStateOf(false) }
+    var topExpanded by session.topExpanded
+    var routeDirty by session.routeDirty
 
     val origin = startSelection?.point ?: location.point
     val destination = destinationSelection?.point
@@ -64,6 +67,7 @@ fun ScenicExperienceRoot(
     val activeRoute = routePlan?.candidates?.getOrNull(selectedCandidateIndex)
 
     fun clearRouteForEndpointChange() {
+        session.invalidate()
         routePlan = null
         selectedCandidateIndex = 0
         routeDirty = false
@@ -71,47 +75,16 @@ fun ScenicExperienceRoot(
     }
 
     fun buildRoute() {
-        val from = origin
-        val to = destination
-        if (from == null) {
-            routeError = "Choose a start place or enable live GPS first."
-            return
-        }
-        if (to == null) {
-            routeError = "Choose a destination first."
-            return
-        }
-        routeLoading = true
-        routeError = null
         showPlanner = false
         showStops = false
-        scope.launch {
-            ScenicApi.planRoute(from, to, plan, preferences)
-                .onSuccess { result ->
-                    routeLoading = false
-                    if (result.candidates.isNotEmpty()) {
-                        routePlan = result
-                        selectedCandidateIndex = 0
-                        routeDirty = false
-                        topExpanded = false
-                    } else {
-                        topExpanded = routePlan == null
-                        routeError = if (routePlan != null) {
-                            "No replacement journey matched the selected time budget. Your previous route is still shown."
-                        } else {
-                            "No journey matched the selected time budget."
-                        }
-                    }
-                }
-                .onFailure { error ->
-                    routeLoading = false
-                    topExpanded = routePlan == null
-                    routeError = if (routePlan != null) {
-                        "${error.message ?: "Journey planning failed"}. Your previous route is still shown."
-                    } else {
-                        error.message ?: "Journey planning failed"
-                    }
-                }
+        session.buildRoute(origin, destination)
+    }
+
+    val vehicle = VehicleSettingsState.profile
+    LaunchedEffect(vehicle) {
+        if (preferences.vehicle != vehicle) {
+            session.draftChanged()
+            preferences = preferences.copy(vehicle = vehicle)
         }
     }
 
@@ -132,7 +105,7 @@ fun ScenicExperienceRoot(
                 subtype = stop.subtype,
             )
         )
-        routeDirty = routePlan != null
+        session.draftChanged()
         showStops = false
         showPlanner = true
     }
@@ -158,7 +131,7 @@ fun ScenicExperienceRoot(
                 )
             )
         }
-        if (routePlan != null) routeDirty = true
+        session.draftChanged()
     }
 
     Box(Modifier.fillMaxSize()) {
@@ -191,6 +164,7 @@ fun ScenicExperienceRoot(
             plan = plan,
             preferences = preferences,
             routeLoading = routeLoading,
+            onCancel = { session.invalidate() },
             hasDestination = destination != null,
             hasRoute = routePlan != null,
             routeDirty = routeDirty,
@@ -274,11 +248,11 @@ fun ScenicExperienceRoot(
             hasRoute = routePlan != null,
             onPlanChange = {
                 plan = it
-                if (routePlan != null) routeDirty = true
+                session.draftChanged()
             },
             onPreferencesChange = {
                 preferences = it
-                if (routePlan != null) routeDirty = true
+                session.draftChanged()
             },
             onRequestSuggestions = {
                 showPlanner = false
@@ -305,10 +279,12 @@ fun ScenicExperienceRoot(
     if (showStartPicker) {
         PlacePickerSheet(
             title = "Choose start",
-            initialQuery = startSelection?.title.orEmpty(),
+            initialQuery = session.startQuery.value.ifBlank { startSelection?.title.orEmpty() },
+            onQueryChange = { session.startQuery.value = it },
             bias = location.point,
             onDismiss = { showStartPicker = false },
             onPick = {
+                session.startQuery.value = it.title
                 startSelection = it
                 showStartPicker = false
                 clearRouteForEndpointChange()
@@ -319,10 +295,12 @@ fun ScenicExperienceRoot(
     if (showDestinationPicker) {
         PlacePickerSheet(
             title = "Choose destination",
-            initialQuery = destinationSelection?.title.orEmpty(),
+            initialQuery = session.destinationQuery.value.ifBlank { destinationSelection?.title.orEmpty() },
+            onQueryChange = { session.destinationQuery.value = it },
             bias = origin,
             onDismiss = { showDestinationPicker = false },
             onPick = {
+                session.destinationQuery.value = it.title
                 destinationSelection = it
                 showDestinationPicker = false
                 clearRouteForEndpointChange()
@@ -348,6 +326,8 @@ fun ScenicExperienceRoot(
     if (showManualPlace) {
         PlacePickerSheet(
             title = "Manually add ${pendingStopKind.label.lowercase()}",
+            initialQuery = session.stopQuery.value,
+            onQueryChange = { session.stopQuery.value = it },
             bias = origin,
             onDismiss = {
                 showManualPlace = false
@@ -364,7 +344,7 @@ fun ScenicExperienceRoot(
                         locked = true,
                     )
                 )
-                if (routePlan != null) routeDirty = true
+                session.draftChanged()
                 showManualPlace = false
                 showPlanner = true
             },
@@ -383,6 +363,7 @@ private fun ExperienceTopPanel(
     plan: TripPlan,
     preferences: ScenicPreferences,
     routeLoading: Boolean,
+    onCancel: () -> Unit,
     hasDestination: Boolean,
     hasRoute: Boolean,
     routeDirty: Boolean,
@@ -404,7 +385,12 @@ private fun ExperienceTopPanel(
         verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
-            Icon(Icons.Default.Landscape, null, tint = MaterialTheme.colorScheme.primary)
+            Image(
+                painterResource(R.drawable.scenic_path_app_icon),
+                contentDescription = "Scenic Path",
+                modifier = Modifier.size(42.dp).clip(MaterialTheme.shapes.medium)
+                    .background(androidx.compose.ui.graphics.Color(0xFF062F35)),
+            )
             Spacer(Modifier.width(8.dp))
             Column(Modifier.weight(1f)) {
                 if (expanded) {
@@ -423,12 +409,16 @@ private fun ExperienceTopPanel(
                     )
                 }
             }
-            if (routeLoading) CircularProgressIndicator(Modifier.size(22.dp), strokeWidth = 2.dp)
+            if (routeLoading) {
+                CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
+                IconButton(onClick = onCancel) { Icon(Icons.Default.Close, "Cancel route calculation") }
+            }
             IconButton(onClick = onToggle) {
                 Icon(if (expanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore, if (expanded) "Minimize start and destination" else "Expand start and destination")
             }
         }
 
+        if (routeLoading) Text("Calculating the complete journey…", style = MaterialTheme.typography.bodySmall)
         if (expanded) {
             ExperiencePlaceField("Start", startLabel, Icons.Default.MyLocation, startSupporting, onStart)
             ExperiencePlaceField("Destination", destinationLabel.ifBlank { "Where do you want to go?" }, Icons.Default.Flag, destinationSupporting, onDestination)

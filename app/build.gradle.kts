@@ -51,12 +51,19 @@ android {
         applicationId = "cloud.kosch.scenicpath"
         minSdk = 26
         targetSdk = 36
-        versionCode = 43
-        versionName = "0.7.1-rc1"
+        versionCode = 44
+        versionName = "0.7.2-rc1"
         manifestPlaceholders["usesCleartextTraffic"] = "false"
     }
 
     signingConfigs {
+        // Public test-only identity; never used for Play/production signing.
+        getByName("debug") {
+            storeFile = rootProject.file(".ci/scenic-test.keystore")
+            storePassword = "android"
+            keyAlias = "androiddebugkey"
+            keyPassword = "android"
+        }
         create("release") {
             if (releaseSigningConfigured) {
                 storeFile = file(uploadStoreFile!!)
@@ -161,6 +168,8 @@ dependencies {
 
     implementation("androidx.activity:activity-compose:1.11.0")
     implementation("androidx.lifecycle:lifecycle-runtime-compose:2.9.2")
+    implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.9.2")
+    implementation("androidx.lifecycle:lifecycle-viewmodel-ktx:2.9.2")
     implementation("androidx.compose.ui:ui")
     implementation("androidx.compose.ui:ui-tooling-preview")
     implementation("androidx.compose.foundation:foundation")
@@ -172,5 +181,6 @@ dependencies {
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.10.2")
 
     testImplementation("junit:junit:4.13.2")
+    testImplementation("org.json:json:20240303")
     debugImplementation("androidx.compose.ui:ui-tooling")
 }
