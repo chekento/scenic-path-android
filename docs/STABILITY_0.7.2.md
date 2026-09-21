@@ -2,7 +2,7 @@
 
 ## Routing
 
-`VehicleAwareJourneyPlanner` now invokes `LongDistanceRouting` directly. Above 600 km (120 km for bicycle), it obtains a real OSRM road corridor and divides it on existing network vertices. Each section is recalculated by Valhalla with the selected vehicle costing and dimensions. OSRM guide geometry is never used as the final vehicle route. Short-route distance-limit errors enter the same path; bounded recursive subdivision handles stricter service limits. All mandatory stops use this route adapter.
+`VehicleAwareJourneyPlanner` now invokes `LongDistanceRouting` directly. Above 600 km (120 km for bicycle), it obtains a real OSRM road corridor and divides it on existing network vertices. Each section is recalculated by Valhalla with the selected vehicle costing and dimensions. OSRM guide geometry is never used as the final vehicle route. Public OSRM profiles rejected motorway-exclusion parameters in live checks, so exclusions are applied in Valhalla costing and intermediate-anchor road filters, without sending unsupported guide parameters. Short-route distance-limit errors enter the same path; bounded recursive subdivision handles stricter service limits. All mandatory stops use this route adapter.
 
 Failed or disconnected sections fail the complete new calculation. The UI retains the previous committed route. Coroutine cancellation disconnects HTTP requests and cannot start a fallback. Optional scenic failure retains the direct route. The duplicate no-stop baseline request is removed.
 

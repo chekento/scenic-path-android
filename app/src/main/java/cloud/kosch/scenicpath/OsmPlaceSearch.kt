@@ -71,7 +71,11 @@ object OsmPlaceSearch {
                         add(
                             PlaceSuggestion(
                                 id = id,
-                                title = if (houseNumber != null && street != null) "$street $houseNumber" else name,
+                                title = when {
+                                    houseNumber == null || street == null -> name
+                                    name == street -> "$street $houseNumber"
+                                    else -> "$name · $street $houseNumber"
+                                },
                                 subtitle = listOf(address, "OpenStreetMap · Photon")
                                     .filter { it.isNotBlank() }
                                     .joinToString(" · "),

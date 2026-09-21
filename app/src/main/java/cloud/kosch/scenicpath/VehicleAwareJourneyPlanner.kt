@@ -197,21 +197,38 @@ object VehicleAwareJourneyPlanner {
         destination = locations.last(),
         maxSpanMeters = if (preferences.vehicle.kind == VehicleKind.BICYCLE) 120_000.0 else 600_000.0,
         requestGuide = { OsmRoadCorridor.request(locations.first(), locations.last(), preferences) },
-        requestLeg = { from, to -> requestSingleRoute(listOf(from, to), preferences, scenic) },
+        requestLeg = { from, to ->
+            requestSingleRoute(listOf(from, to), preferences, scenic,
+                filterStartAnchor = from != locations.first(), filterEndAnchor = to != locations.last())
+        },
     )
 
     private suspend fun requestSingleRoute(
         locations: List<GeoPoint>,
         preferences: ScenicPreferences,
         scenic: Boolean,
+        filterStartAnchor: Boolean = false,
+        filterEndAnchor: Boolean = false,
     ): RoadRoute {
         val vehicle = preferences.vehicle
         val costing = costingName(vehicle.kind)
         val options = costingOptions(vehicle, preferences, scenic)
         val body = JSONObject().apply {
             put("locations", JSONArray().apply {
-                locations.forEach { point ->
-                    put(JSONObject().put("lat", point.lat).put("lon", point.lon).put("type", "break"))
+                locations.forEachIndexed { index, point ->
+                    val location = JSONObject().put("lat", point.lat).put("lon", point.lon).put("type", "break")
+                    val intermediate = (index == 0 && filterStartAnchor) || (index == locations.lastIndex && filterEndAnchor)
+                    if (intermediate && (preferences.avoidMotorways || preferences.avoidTolls)) {
+                        location.put("search_cutoff", 5_000)
+                        location.put("search_filter", JSONObject().apply {
+                            if (preferences.avoidMotorways) {
+                                put("max_road_class", "trunk")
+                                put("exclude_ramp", true)
+                            }
+                            if (preferences.avoidTolls) put("exclude_toll", true)
+                        })
+                    }
+                    put(location)
                 }
             })
             put("costing", costing)

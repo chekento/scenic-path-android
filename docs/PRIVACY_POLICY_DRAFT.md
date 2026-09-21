@@ -53,6 +53,7 @@ Production route planning sends the necessary request data over HTTPS to the con
 The original 0.7 search/discovery stack also contains direct Android requests to OpenStreetMap-based services:
 
 - Photon for type-ahead and category/corridor discovery;
+- Valhalla for development vehicle routing and FOSSGIS OSRM for long-distance road corridors; these requests include the chosen route endpoints/intermediate coordinates;
 - Nominatim for explicit street + house-number search;
 - Overpass-compatible endpoints for route-corridor POI discovery;
 - the configured map-style/tile provider for map rendering.

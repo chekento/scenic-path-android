@@ -115,17 +115,13 @@ internal object OsmRoadCorridor {
     suspend fun request(origin: GeoPoint, destination: GeoPoint, preferences: ScenicPreferences): List<GeoPoint> {
         pacer.awaitTurn()
         val bicycle = preferences.vehicle.kind == VehicleKind.BICYCLE
-        // FOSSGIS's car profile has no precomputed motorway exclusion. The OSRM
-        // reference car profile supports it; never drop the user's exclusion on HTTP 400.
-        val endpoint = when {
-            bicycle -> "https://routing.openstreetmap.de/routed-bike"
-            preferences.avoidMotorways -> "https://router.project-osrm.org"
-            else -> "https://routing.openstreetmap.de/routed-car"
-        }
+        // OSRM supplies only a topology guide. Public OSRM profiles do not support
+        // all exclusion flags. Vehicle settings are applied to every final Valhalla
+        // section, including correlation of intermediate anchors to permitted roads.
+        val endpoint = if (bicycle) "https://routing.openstreetmap.de/routed-bike" else "https://routing.openstreetmap.de/routed-car"
         val coordinates = "${origin.lon},${origin.lat};${destination.lon},${destination.lat}"
-        val exclusion = if (!bicycle && preferences.avoidMotorways) "&exclude=motorway" else ""
         val text = CancellableNetwork.text(
-            "$endpoint/route/v1/driving/$coordinates?overview=full&geometries=geojson&steps=false$exclusion",
+            "$endpoint/route/v1/driving/$coordinates?overview=full&geometries=geojson&steps=false",
             timeoutMs = 25_000,
         )
         val response = JSONObject(text)
