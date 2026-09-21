@@ -25,6 +25,7 @@ object ScenicPoiSharedState {
             first = points,
             second = publishedPoints.value,
             maxResults = MAX_SHARED_POINTS,
+            route = route,
         )
         if (next.isNotEmpty()) publishedPoints.value = next
     }

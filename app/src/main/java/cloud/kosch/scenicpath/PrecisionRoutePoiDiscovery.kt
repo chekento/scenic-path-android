@@ -1,9 +1,9 @@
 package cloud.kosch.scenicpath
 
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.async
-import kotlinx.coroutines.awaitAll
-import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
@@ -118,50 +118,36 @@ object PrecisionRoutePoiDiscovery {
         maxResults: Int,
         radiusMeters: Int = 15_000,
         maxSamples: Int = 10,
+        onPartial: suspend (List<ScenePointUi>) -> Unit = {},
     ): List<ScenePointUi> = withContext(Dispatchers.IO) {
         if (route.size < 2 || enabledKinds.isEmpty() || maxResults <= 0) return@withContext emptyList()
 
         val deep = radiusMeters >= 24_000 || maxSamples >= 12
-        val segments = splitRoute(
-            route = route,
-            maxSegmentMeters = if (deep) 50_000.0 else 82_000.0,
-            maxPointsPerSegment = if (deep) 16 else 13,
-        )
-        val routeForDistance = sampleRoute(route, if (deep) 560 else 380)
-        val collected = mutableListOf<ScenePointUi>()
-
-        for (segment in segments) {
-            val activeGroups = groups.mapNotNull { group ->
-                val activeSelectors = group.selectors.filter { selector ->
-                    selector.requiredKind == null || selector.requiredKind in enabledKinds
-                }
-                if (activeSelectors.isEmpty()) null else group to activeSelectors
-            }
-
-            // Four groups at most: essential, heritage, culture, landscape. Failures are
-            // isolated and endpoint selection is rotated per query to avoid a single public
-            // instance becoming the sole point of failure.
-            val resultSets = coroutineScope {
-                activeGroups.map { (group, selectors) ->
-                    async(Dispatchers.IO) {
-                        runCatching {
-                            querySegment(
-                                group = group,
-                                selectors = selectors,
-                                segment = segment,
-                                routeForDistance = routeForDistance,
-                                enabledKinds = enabledKinds,
-                                deep = deep,
-                                requestedRadiusMeters = radiusMeters,
-                            )
-                        }.getOrElse { emptyList() }
-                    }
-                }.awaitAll()
-            }
-            resultSets.forEach(collected::addAll)
+        val segments = RoutePoiGeometry(route).windows(if (deep) 50_000.0 else 82_000.0)
+        val activeGroups = groups.mapNotNull { group ->
+            val selectors = group.selectors.filter { it.requiredKind == null || it.requiredKind in enabledKinds }
+            if (selectors.isEmpty()) null else group to selectors
         }
-
-        balanceAndDedupe(collected, maxResults)
+        val collected = RoutePoiScan.collect(segments, onPartial = onPartial) { segment ->
+            val geometry = RoutePoiGeometry(segment)
+            val line = geometry.samples(if (deep) 16 else 13)
+            val result = mutableListOf<ScenePointUi>()
+            for ((group, selectors) in activeGroups) {
+                currentCoroutineContext().ensureActive()
+                val points = try {
+                    RoutePoiScan.overpass.withPermit {
+                        querySegment(group, selectors, line, geometry, enabledKinds, deep, radiusMeters)
+                    }
+                } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                    throw cancelled
+                } catch (_: Exception) {
+                    emptyList()
+                }
+                result += points
+            }
+            result
+        }
+        balanceAndDedupe(collected, maxResults, route)
     }
 
     /**
@@ -172,20 +158,21 @@ object PrecisionRoutePoiDiscovery {
         first: List<ScenePointUi>,
         second: List<ScenePointUi>,
         maxResults: Int,
+        route: List<GeoPoint> = emptyList(),
     ): List<ScenePointUi> {
         val active = ScenicSceneSelectionState.activeKinds
         val filtered = (first + second).filter { point ->
             val kind = StopKind.entries.firstOrNull { it.name == point.kind } ?: StopKind.SCENIC
             kind == StopKind.SCENIC || kind in active
         }
-        return balanceAndDedupe(filtered, maxResults)
+        return balanceAndDedupe(filtered, maxResults, route)
     }
 
-    private fun querySegment(
+    private suspend fun querySegment(
         group: QueryGroup,
         selectors: List<SelectorSpec>,
         segment: List<GeoPoint>,
-        routeForDistance: List<GeoPoint>,
+        routeForDistance: RoutePoiGeometry,
         enabledKinds: Set<StopKind>,
         deep: Boolean,
         requestedRadiusMeters: Int,
@@ -218,7 +205,7 @@ object PrecisionRoutePoiDiscovery {
             val kind = sceneKindForRawType(rawType)
             if (kind != StopKind.SCENIC && kind !in enabledKinds) continue
 
-            val distance = routeForDistance.minOfOrNull { haversineMeters(point, it) } ?: continue
+            val distance = routeForDistance.project(point).distanceMeters
             if (distance > radius * 1.30) continue
 
             val name = preferredName(tags).ifBlank { fallbackName(rawType) }
@@ -249,14 +236,16 @@ object PrecisionRoutePoiDiscovery {
         return points
     }
 
-    private fun balanceAndDedupe(input: List<ScenePointUi>, maxResults: Int): List<ScenePointUi> {
+    private fun balanceAndDedupe(input: List<ScenePointUi>, maxResults: Int, route: List<GeoPoint>): List<ScenePointUi> {
         if (input.isEmpty() || maxResults <= 0) return emptyList()
 
         val deduped = mutableListOf<ScenePointUi>()
-        input.sortedByDescending { it.suggestionScore }.forEach { candidate ->
+        input.sortedWith(compareByDescending<ScenePointUi> { it.includedInRoute }.thenByDescending { it.suggestionScore }.thenBy { it.id }).forEach { candidate ->
             val duplicate = deduped.any { existing -> samePlace(existing, candidate) }
             if (!duplicate) deduped += candidate
         }
+
+        if (route.size >= 2) return selectAlongRoute(deduped, maxResults, route)
 
         val byLane = deduped
             .groupBy { scenicCategoryLaneFor(it).id }
@@ -296,6 +285,42 @@ object PrecisionRoutePoiDiscovery {
         return result.take(maxResults)
     }
 
+    private fun selectAlongRoute(points: List<ScenePointUi>, maxResults: Int, route: List<GeoPoint>): List<ScenePointUi> {
+        val geometry = RoutePoiGeometry(route)
+        val bucketCount = kotlin.math.ceil(geometry.lengthMeters / 65_000.0).toInt().coerceIn(1, maxResults)
+        val buckets = points.groupBy { point ->
+            (geometry.project(point.point).alongMeters / geometry.lengthMeters.coerceAtLeast(1.0) * bucketCount)
+                .toInt().coerceIn(0, bucketCount - 1)
+        }.mapValues { (_, candidates) -> candidates.toMutableList() }
+        val order = RoutePoiScan.order(bucketCount).filter { it in buckets }
+        val result = mutableListOf<ScenePointUi>()
+        val laneCounts = mutableMapOf<Pair<Int, String>, Int>()
+        val globalCounts = mutableMapOf<String, Int>()
+        // One place per occupied section before a dense/high-scoring departure city gets more.
+        while (result.size < maxResults) {
+            var added = false
+            for (bucket in order) {
+                if (result.size >= maxResults) break
+                val candidates = buckets.getValue(bucket)
+                val candidate = candidates.minWithOrNull(
+                    compareByDescending<ScenePointUi> { it.includedInRoute }
+                        .thenBy { laneCounts[bucket to scenicCategoryLaneFor(it).id] ?: 0 }
+                        .thenBy { globalCounts[scenicCategoryLaneFor(it).id] ?: 0 }
+                        .thenByDescending { it.suggestionScore }
+                        .thenBy { it.id }
+                ) ?: continue
+                candidates.remove(candidate)
+                result += candidate
+                val lane = scenicCategoryLaneFor(candidate).id
+                laneCounts[bucket to lane] = (laneCounts[bucket to lane] ?: 0) + 1
+                globalCounts[lane] = (globalCounts[lane] ?: 0) + 1
+                added = true
+            }
+            if (!added) break
+        }
+        return result
+    }
+
     private fun laneCap(laneId: String, maxResults: Int): Int {
         if (maxResults <= 40) return 4
         val base = if (maxResults <= 140) 9 else 15
@@ -325,7 +350,7 @@ object PrecisionRoutePoiDiscovery {
         return a.subtype == b.subtype && distance < 30
     }
 
-    private fun execute(query: String, deep: Boolean): JSONArray {
+    private suspend fun execute(query: String, deep: Boolean): JSONArray {
         val encodedBody = "data=" + URLEncoder.encode(query, Charsets.UTF_8.name())
         val encodedQuery = URLEncoder.encode(query, Charsets.UTF_8.name())
         var lastError: Throwable? = null
@@ -333,12 +358,14 @@ object PrecisionRoutePoiDiscovery {
         val orderedEndpoints = endpoints.indices.map { endpoints[(start + it) % endpoints.size] }
 
         for (endpoint in orderedEndpoints) {
+            currentCoroutineContext().ensureActive()
             try {
                 return executePost(endpoint, encodedBody, deep)
             } catch (error: Throwable) {
                 lastError = error
             }
             if (encodedQuery.length < 6_500) {
+                currentCoroutineContext().ensureActive()
                 try {
                     return executeGet(endpoint, encodedQuery, deep)
                 } catch (error: Throwable) {
@@ -555,48 +582,6 @@ object PrecisionRoutePoiDiscovery {
         val centerLat = center.optDouble("lat", Double.NaN)
         val centerLon = center.optDouble("lon", Double.NaN)
         return if (centerLat.isFinite() && centerLon.isFinite()) GeoPoint(centerLat, centerLon) else null
-    }
-
-    private fun splitRoute(
-        route: List<GeoPoint>,
-        maxSegmentMeters: Double,
-        maxPointsPerSegment: Int,
-    ): List<List<GeoPoint>> {
-        if (route.size < 2) return emptyList()
-        val segments = mutableListOf<List<GeoPoint>>()
-        var current = mutableListOf(route.first())
-        var accumulated = 0.0
-
-        for (index in 1 until route.size) {
-            val previous = route[index - 1]
-            val point = route[index]
-            accumulated += haversineMeters(previous, point)
-            current += point
-            if (accumulated >= maxSegmentMeters && index < route.lastIndex) {
-                segments += simplifyByIndex(current, maxPointsPerSegment)
-                current = mutableListOf(point)
-                accumulated = 0.0
-            }
-        }
-        if (current.size >= 2) segments += simplifyByIndex(current, maxPointsPerSegment)
-        return segments.ifEmpty { listOf(simplifyByIndex(route, maxPointsPerSegment)) }
-    }
-
-    private fun simplifyByIndex(points: List<GeoPoint>, maxPoints: Int): List<GeoPoint> {
-        if (points.size <= maxPoints) return points
-        val step = (points.size - 1).toDouble() / (maxPoints - 1).coerceAtLeast(1)
-        return (0 until maxPoints)
-            .map { index -> points[(index * step).roundToInt().coerceIn(0, points.lastIndex)] }
-            .distinct()
-            .let { simplified -> if (simplified.lastOrNull() == points.last()) simplified else simplified + points.last() }
-    }
-
-    private fun sampleRoute(route: List<GeoPoint>, maxSamples: Int): List<GeoPoint> {
-        if (route.size <= maxSamples) return route
-        val step = (route.size - 1).toDouble() / (maxSamples - 1).coerceAtLeast(1)
-        return (0 until maxSamples).map { index ->
-            route[(index * step).roundToInt().coerceIn(0, route.lastIndex)]
-        }
     }
 
     private fun haversineMeters(a: GeoPoint, b: GeoPoint): Double {

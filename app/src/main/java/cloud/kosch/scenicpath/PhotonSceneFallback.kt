@@ -1,23 +1,15 @@
 package cloud.kosch.scenicpath
 
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.async
-import kotlinx.coroutines.awaitAll
-import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
 import java.net.HttpURLConnection
 import java.net.URL
 import java.net.URLEncoder
 import java.util.Locale
-import kotlin.math.asin
-import kotlin.math.cos
-import kotlin.math.max
-import kotlin.math.min
-import kotlin.math.pow
 import kotlin.math.roundToInt
-import kotlin.math.sin
-import kotlin.math.sqrt
 
 /**
  * Fast OSM-backed route discovery used by the long-route planner.
@@ -35,33 +27,19 @@ object PhotonSceneFallback {
         maxResults: Int = 18,
         fast: Boolean = true,
         includeTargetedBackfill: Boolean = true,
+        onPartial: suspend (List<ScenePointUi>) -> Unit = {},
     ): List<ScenePointUi> = withContext(Dispatchers.IO) {
-        if (route.size < 2) return@withContext emptyList()
+        if (route.size < 2 || maxResults <= 0) return@withContext emptyList()
         val categories = categoriesFor(enabledKinds)
         if (categories.isEmpty()) return@withContext emptyList()
 
-        val length = routeLengthMeters(route)
-        val normalCount = when {
-            length > 180_000 -> 6
-            length > 70_000 -> 5
-            else -> 3
-        }
-        val sampleCount = if (fast) min(6, normalCount) else normalCount
-        val samples = routeSamples(route, sampleCount)
-        val routeForDistance = routeSamples(route, 120)
-        val found = linkedMapOf<String, ScenePointUi>()
-
-        for (batch in samples.chunked(2)) {
-            val resultSets = coroutineScope {
-                batch.map { sample ->
-                    async(Dispatchers.IO) {
-                        runCatching { query(sample, categories, fast) }.getOrNull()
-                    }
-                }.awaitAll()
-            }
-
+        val routeGeometry = RoutePoiGeometry(route)
+        val sampleCount = (kotlin.math.ceil(routeGeometry.lengthMeters / 40_000.0).toInt() + 1).coerceAtLeast(3)
+        val samples = routeGeometry.samples(sampleCount)
+        val found = RoutePoiScan.collect(samples, onPartial = onPartial) { sample ->
+            val resultSets = listOf(RoutePoiScan.photon.withPermit { query(sample, categories, fast) })
+            val windowPoints = mutableListOf<ScenePointUi>()
             for (features in resultSets) {
-                features ?: continue
                 for (i in 0 until features.length()) {
                     val feature = features.optJSONObject(i) ?: continue
                     val geometry = feature.optJSONObject("geometry") ?: continue
@@ -80,7 +58,7 @@ object PhotonSceneFallback {
                     if (kind != StopKind.SCENIC && kind !in enabledKinds) continue
 
                     val point = GeoPoint(lat, lon)
-                    val distance = routeForDistance.minOfOrNull { haversineMeters(point, it) } ?: continue
+                    val distance = routeGeometry.project(point).distanceMeters
                     if (distance > 15_000) continue
 
                     val name = properties.optString("name").ifBlank {
@@ -93,8 +71,7 @@ object PhotonSceneFallback {
                     val restaurantBonus = if (rawType == "restaurant") 9.0 else 0.0
                     val score = (relevance * 100.0 + restaurantBonus - distance / 320.0).coerceAtLeast(1.0)
 
-                    found.putIfAbsent(
-                        id,
+                    windowPoints.add(
                         ScenePointUi(
                             id = id,
                             name = name,
@@ -113,9 +90,10 @@ object PhotonSceneFallback {
                     )
                 }
             }
+            windowPoints
         }
 
-        val photon = coverageSelect(found.values.toList(), enabledKinds, maxResults)
+        val photon = FastRoutePoiDiscovery.mergeResults(found, emptyList(), enabledKinds, maxResults, route)
         if (!includeTargetedBackfill) return@withContext photon
 
         val missingKinds = enabledKinds
@@ -132,29 +110,9 @@ object PhotonSceneFallback {
                 maxSamples = 3,
                 allowBackfill = false,
             )
-        }.getOrElse { emptyList() }
+        }.getOrElse { if (it is CancellationException) throw it else emptyList() }
 
-        FastRoutePoiDiscovery.mergeResults(photon, rescue, enabledKinds, maxResults)
-    }
-
-    private fun coverageSelect(
-        values: List<ScenePointUi>,
-        enabledKinds: Set<StopKind>,
-        maxResults: Int,
-    ): List<ScenePointUi> {
-        val deduped = values.distinctBy { "${it.name.lowercase(Locale.ROOT)}:${it.kind}" }
-        val grouped = deduped.groupBy { it.kind }.mapValues { (_, value) -> value.sortedByDescending { it.suggestionScore } }
-        val selected = mutableListOf<ScenePointUi>()
-
-        prototypeSelectableSceneKinds.filter { it in enabledKinds }.forEach { kind ->
-            grouped[kind.name]?.firstOrNull()?.let { candidate ->
-                if (selected.size < maxResults) selected += candidate
-            }
-        }
-        deduped.sortedByDescending { it.suggestionScore }.forEach { candidate ->
-            if (selected.size < maxResults && selected.none { it.id == candidate.id }) selected += candidate
-        }
-        return selected.take(maxResults)
+        FastRoutePoiDiscovery.mergeResults(photon, rescue, enabledKinds, maxResults, route)
     }
 
     private fun query(
@@ -289,24 +247,4 @@ object PhotonSceneFallback {
         else -> kind.defaultDwellMinutes
     }
 
-    private fun routeSamples(route: List<GeoPoint>, maxSamples: Int): List<GeoPoint> {
-        if (route.size <= maxSamples) return route
-        val step = (route.size - 1).toDouble() / max(1, maxSamples - 1)
-        return (0 until maxSamples).map { index ->
-            route[(index * step).roundToInt().coerceIn(0, route.lastIndex)]
-        }
-    }
-
-    private fun routeLengthMeters(route: List<GeoPoint>): Double =
-        route.zipWithNext().sumOf { (a, b) -> haversineMeters(a, b) }
-
-    private fun haversineMeters(a: GeoPoint, b: GeoPoint): Double {
-        val earth = 6_371_000.0
-        val dLat = Math.toRadians(b.lat - a.lat)
-        val dLon = Math.toRadians(b.lon - a.lon)
-        val lat1 = Math.toRadians(a.lat)
-        val lat2 = Math.toRadians(b.lat)
-        val h = sin(dLat / 2).pow(2) + cos(lat1) * cos(lat2) * sin(dLon / 2).pow(2)
-        return 2 * earth * asin(sqrt(h.coerceIn(0.0, 1.0)))
-    }
 }

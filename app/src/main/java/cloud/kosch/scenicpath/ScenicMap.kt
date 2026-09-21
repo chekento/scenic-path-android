@@ -146,11 +146,12 @@ fun ScenicMap(
         }
     }
 
-    val candidateCore = remember(highlights, sharedHighlights, localHighlights) {
+    val candidateCore = remember(highlights, sharedHighlights, localHighlights, routePoints) {
         PrecisionRoutePoiDiscovery.mergeForDisplay(
             first = highlights + sharedHighlights,
             second = localHighlights,
             maxResults = MAX_SCENIC_MARKERS,
+            route = routePoints,
         )
     }
     LaunchedEffect(candidateCore) {
@@ -159,11 +160,12 @@ fun ScenicMap(
                 first = candidateCore,
                 second = retainedHighlights,
                 maxResults = MAX_SCENIC_MARKERS,
+                route = routePoints,
             )
         }
     }
-    val coreVisible = remember(candidateCore, retainedHighlights) {
-        PrecisionRoutePoiDiscovery.mergeForDisplay(candidateCore, retainedHighlights, MAX_SCENIC_MARKERS)
+    val coreVisible = remember(candidateCore, retainedHighlights, routePoints) {
+        PrecisionRoutePoiDiscovery.mergeForDisplay(candidateCore, retainedHighlights, MAX_SCENIC_MARKERS, routePoints)
     }
     val visibleHighlights = remember(coreVisible, plannedHighlights, plannedStopIds) {
         buildList {
@@ -216,6 +218,7 @@ fun ScenicMap(
                 first = highlights,
                 second = retainedHighlights,
                 maxResults = MAX_SCENIC_MARKERS,
+                route = routePoints,
             )
             ScenicPoiSharedState.publish(routePoints, retainedHighlights)
         }
@@ -225,8 +228,8 @@ fun ScenicMap(
         suspend fun commit(points: List<ScenePointUi>) {
             if (points.isEmpty()) return
             withContext(Dispatchers.Main.immediate) {
-                localHighlights = PrecisionRoutePoiDiscovery.mergeForDisplay(points, localHighlights, MAX_SCENIC_MARKERS)
-                retainedHighlights = PrecisionRoutePoiDiscovery.mergeForDisplay(points, retainedHighlights, MAX_SCENIC_MARKERS)
+                localHighlights = PrecisionRoutePoiDiscovery.mergeForDisplay(points, localHighlights, MAX_SCENIC_MARKERS, routePoints)
+                retainedHighlights = PrecisionRoutePoiDiscovery.mergeForDisplay(points, retainedHighlights, MAX_SCENIC_MARKERS, routePoints)
                 ScenicPoiSharedState.publish(routePoints, retainedHighlights)
             }
         }
@@ -234,13 +237,13 @@ fun ScenicMap(
         coroutineScope {
             launch(Dispatchers.IO) {
                 commit(runCatching {
-                    RapidRoutePoiDiscovery.discover(routePoints, enabledKinds, 220)
-                }.getOrElse { emptyList() })
+                    RapidRoutePoiDiscovery.discover(routePoints, enabledKinds, 220, onPartial = ::commit)
+                }.getOrElse { if (it is kotlinx.coroutines.CancellationException) throw it else emptyList() })
             }
             launch(Dispatchers.IO) {
                 commit(runCatching {
-                    FastRoutePoiDiscovery.discover(routePoints, enabledKinds, 220)
-                }.getOrElse { emptyList() })
+                    FastRoutePoiDiscovery.discover(routePoints, enabledKinds, 220, completeRoute = true, onPartial = ::commit)
+                }.getOrElse { if (it is kotlinx.coroutines.CancellationException) throw it else emptyList() })
             }
             launch(Dispatchers.IO) {
                 commit(runCatching {
@@ -250,8 +253,9 @@ fun ScenicMap(
                         maxResults = MAX_SCENIC_MARKERS,
                         radiusMeters = 15_000,
                         maxSamples = 10,
+                        onPartial = ::commit,
                     )
-                }.getOrElse { emptyList() })
+                }.getOrElse { if (it is kotlinx.coroutines.CancellationException) throw it else emptyList() })
             }
         }
     }

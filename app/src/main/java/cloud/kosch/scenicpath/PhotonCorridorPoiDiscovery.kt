@@ -1,23 +1,18 @@
 package cloud.kosch.scenicpath
 
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.async
-import kotlinx.coroutines.awaitAll
-import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.withContext
-import kotlinx.coroutines.withTimeoutOrNull
 import org.json.JSONArray
 import org.json.JSONObject
 import java.net.HttpURLConnection
 import java.net.URL
 import java.net.URLEncoder
 import java.util.Locale
-import kotlin.math.asin
 import kotlin.math.cos
-import kotlin.math.pow
 import kotlin.math.roundToInt
-import kotlin.math.sin
-import kotlin.math.sqrt
 
 /** Category-filtered human-interest discovery using the Photon index. */
 object PhotonCorridorPoiDiscovery {
@@ -72,6 +67,7 @@ object PhotonCorridorPoiDiscovery {
         route: List<GeoPoint>,
         enabledKinds: Set<StopKind>,
         maxResults: Int = 120,
+        onPartial: suspend (List<ScenePointUi>) -> Unit = {},
     ): List<ScenePointUi> = withContext(Dispatchers.IO) {
         if (route.size < 2 || enabledKinds.isEmpty() || maxResults <= 0) return@withContext emptyList()
 
@@ -80,34 +76,28 @@ object PhotonCorridorPoiDiscovery {
         }
         if (activePacks.isEmpty()) return@withContext emptyList()
 
-        val routeForDistance = sampleRoute(route, 520)
-        val windows = splitRoute(route, 90_000.0).take(6)
-        val all = coroutineScope {
-            windows.flatMapIndexed { windowIndex, segment ->
-                activePacks.map { pack ->
-                    async(Dispatchers.IO) {
-                        withTimeoutOrNull(6_200) {
-                            runCatching {
-                                queryWindow(windowIndex, segment, routeForDistance, enabledKinds, pack)
-                            }.getOrElse { emptyList() }
-                        }.orEmpty()
-                    }
+        val windows = RoutePoiGeometry(route).windows(65_000.0)
+        val all = RoutePoiScan.collect(windows.withIndex().toList(), onPartial = onPartial) { (index, segment) ->
+            val geometry = RoutePoiGeometry(segment)
+            activePacks.flatMap { pack ->
+                currentCoroutineContext().ensureActive()
+                RoutePoiScan.photon.withPermit {
+                    queryWindow(index, segment, geometry, enabledKinds, pack)
                 }
-            }.awaitAll()
-        }.flatten()
-
-        PrecisionRoutePoiDiscovery.mergeForDisplay(all, emptyList(), maxResults)
+            }
+        }
+        PrecisionRoutePoiDiscovery.mergeForDisplay(all, emptyList(), maxResults, route)
     }
 
-    private fun queryWindow(
+    private suspend fun queryWindow(
         windowIndex: Int,
         segment: List<GeoPoint>,
-        routeForDistance: List<GeoPoint>,
+        routeForDistance: RoutePoiGeometry,
         enabledKinds: Set<StopKind>,
         pack: Pack,
     ): List<ScenePointUi> {
         val box = bbox(segment, 13_000)
-        val center = segment[segment.size / 2]
+        val center = RoutePoiGeometry(segment).samples(3)[1]
         val includeRaw = pack.categories.joinToString(",")
         val include = URLEncoder.encode(includeRaw, Charsets.UTF_8.name())
         val boxRaw = "${box.west},${box.south},${box.east},${box.north}"
@@ -123,6 +113,7 @@ object PhotonCorridorPoiDiscovery {
 
         var features = runCatching { fetch(searchUrl) }.getOrElse { JSONArray() }
         if (features.length() == 0) {
+            currentCoroutineContext().ensureActive()
             // Some Photon deployments are stricter about textless `/api` queries. Reverse is
             // documented to accept the same include filter, so keep a category-filtered,
             // route-centered fallback instead of reverting to unfiltered natural features.
@@ -141,7 +132,7 @@ object PhotonCorridorPoiDiscovery {
     private fun parseFeatures(
         windowIndex: Int,
         features: JSONArray,
-        routeForDistance: List<GeoPoint>,
+        routeForDistance: RoutePoiGeometry,
         enabledKinds: Set<StopKind>,
     ): List<ScenePointUi> {
         val result = mutableListOf<ScenePointUi>()
@@ -163,7 +154,7 @@ object PhotonCorridorPoiDiscovery {
             if (kind != StopKind.SCENIC && kind !in enabledKinds) continue
 
             val point = GeoPoint(lat, lon)
-            val distance = routeForDistance.minOfOrNull { haversineMeters(point, it) } ?: continue
+            val distance = routeForDistance.project(point).distanceMeters
             if (distance > 16_500) continue
 
             val name = properties.optString("name").trim().ifBlank {
@@ -294,39 +285,4 @@ object PhotonCorridorPoiDiscovery {
         return BBox(minLat - latPad, minLon - lonPad, maxLat + latPad, maxLon + lonPad)
     }
 
-    private fun splitRoute(route: List<GeoPoint>, maxMeters: Double): List<List<GeoPoint>> {
-        if (route.size < 2) return emptyList()
-        val result = mutableListOf<List<GeoPoint>>()
-        var current = mutableListOf(route.first())
-        var meters = 0.0
-        for (index in 1 until route.size) {
-            meters += haversineMeters(route[index - 1], route[index])
-            current += route[index]
-            if (meters >= maxMeters && index < route.lastIndex) {
-                result += sampleRoute(current, 18)
-                current = mutableListOf(route[index])
-                meters = 0.0
-            }
-        }
-        if (current.size >= 2) result += sampleRoute(current, 18)
-        return result.ifEmpty { listOf(sampleRoute(route, 18)) }
-    }
-
-    private fun sampleRoute(route: List<GeoPoint>, maxSamples: Int): List<GeoPoint> {
-        if (route.size <= maxSamples) return route
-        val step = (route.size - 1).toDouble() / (maxSamples - 1).coerceAtLeast(1)
-        return (0 until maxSamples).map { index ->
-            route[(index * step).roundToInt().coerceIn(0, route.lastIndex)]
-        }
-    }
-
-    private fun haversineMeters(a: GeoPoint, b: GeoPoint): Double {
-        val earth = 6_371_000.0
-        val dLat = Math.toRadians(b.lat - a.lat)
-        val dLon = Math.toRadians(b.lon - a.lon)
-        val lat1 = Math.toRadians(a.lat)
-        val lat2 = Math.toRadians(b.lat)
-        val h = sin(dLat / 2).pow(2) + cos(lat1) * cos(lat2) * sin(dLon / 2).pow(2)
-        return 2 * earth * asin(sqrt(h.coerceIn(0.0, 1.0)))
-    }
 }

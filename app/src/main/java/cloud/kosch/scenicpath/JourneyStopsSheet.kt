@@ -58,6 +58,7 @@ fun JourneyStopsSheet(
                         route = current.points,
                         enabledKinds = prototypeSelectableSceneKinds,
                         maxResults = 150,
+                        completeRoute = true,
                     )
                 }
                 val precisionJob = async(Dispatchers.IO) {
@@ -76,6 +77,7 @@ fun JourneyStopsSheet(
                 first = precision,
                 second = fast,
                 maxResults = 240,
+                route = current.points,
             )
 
             if (refreshToken > 0) {
@@ -90,6 +92,7 @@ fun JourneyStopsSheet(
                     first = deep,
                     second = combined,
                     maxResults = 340,
+                    route = current.points,
                 )
             }
             combined
@@ -106,11 +109,12 @@ fun JourneyStopsSheet(
         } else point
     }
 
-    val merged = remember(routePoints, enriched) {
+    val merged = remember(routePoints, enriched, route?.points) {
         PrecisionRoutePoiDiscovery.mergeForDisplay(
             first = routePoints,
             second = enriched,
             maxResults = 360,
+            route = route?.points.orEmpty(),
         )
     }
 

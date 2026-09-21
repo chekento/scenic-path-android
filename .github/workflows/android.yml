@@ -62,8 +62,25 @@ jobs:
       - name: Unit tests
         run: gradle :app:testDebugUnitTest
 
+      - name: Upload JVM regression results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: scenic-path-jvm-tests
+          path: app/build/test-results/testDebugUnitTest/*.xml
+          if-no-files-found: ignore
+
       - name: Build debug APK
         run: gradle :app:assembleDebug
+
+      - name: Verify installable APK
+        shell: bash
+        run: |
+          set -euo pipefail
+          scenic_build_tools=$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -n 1)
+          "$scenic_build_tools/apksigner" verify --verbose app/build/outputs/apk/debug/app-debug.apk
+          "$scenic_build_tools/aapt" dump badging app/build/outputs/apk/debug/app-debug.apk | sed -n '1,5p'
+          sha256sum app/build/outputs/apk/debug/app-debug.apk
 
       - name: Android lint
         run: gradle :app:lintRelease
