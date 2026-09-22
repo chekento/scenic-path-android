@@ -40,6 +40,7 @@ class ExplorationPlanningTest {
         assertTrue(stops.size >= 10)
         assertTrue(stops.size <= 24)
         assertTrue(stops.all { ScenicAutoStopPlanner.isAutomatic(it) })
-        assertEquals(stops.map { it.point?.lon }, stops.map { it.point?.lon }.sorted())
+        val longitudes = stops.mapNotNull { it.point?.lon }
+        assertEquals(longitudes, longitudes.sorted())
     }
 }
