@@ -7,8 +7,6 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
-import java.net.HttpURLConnection
-import java.net.URL
 import java.net.URLEncoder
 import java.util.Locale
 import kotlin.math.cos
@@ -69,7 +67,7 @@ object RoutePoiCoverageDiscovery {
         if (activeSelectors.isEmpty()) return@withContext emptyList()
 
         val windows = RoutePoiGeometry(route).windows(58_000.0)
-        val collected = RoutePoiScan.collect(windows, onPartial = onPartial) { segment ->
+        val collected = RoutePoiScan.collect(windows, route = route, onPartial = onPartial) { segment ->
             RoutePoiScan.overpass.withPermit {
                 queryWindow(segment, RoutePoiGeometry(segment), activeSelectors, corridorMeters)
             }
@@ -163,14 +161,16 @@ object RoutePoiCoverageDiscovery {
             val endpoint = endpoints[(start + offset) % endpoints.size]
             try {
                 return post(endpoint, body)
-            } catch (error: Throwable) {
+            } catch (error: Exception) {
+                if (error is kotlinx.coroutines.CancellationException) throw error
                 lastError = error
             }
             if (encoded.length < 6_500) {
                 currentCoroutineContext().ensureActive()
                 try {
                     return get(endpoint, encoded)
-                } catch (error: Throwable) {
+                } catch (error: Exception) {
+                if (error is kotlinx.coroutines.CancellationException) throw error
                     lastError = error
                 }
             }
@@ -178,46 +178,11 @@ object RoutePoiCoverageDiscovery {
         throw lastError ?: IllegalStateException("POI coverage service unavailable")
     }
 
-    private fun post(endpoint: String, body: String): JSONArray {
-        val connection = (URL(endpoint).openConnection() as HttpURLConnection).apply {
-            requestMethod = "POST"
-            connectTimeout = 2_500
-            readTimeout = 8_500
-            doOutput = true
-            setRequestProperty("Content-Type", "application/x-www-form-urlencoded; charset=utf-8")
-            setRequestProperty("Accept", "application/json")
-            setRequestProperty("User-Agent", "ScenicPath-Android/${BuildConfig.VERSION_NAME} development")
-        }
-        return try {
-            connection.outputStream.bufferedWriter(Charsets.UTF_8).use { it.write(body) }
-            readJson(connection)
-        } finally {
-            connection.disconnect()
-        }
-    }
+    private suspend fun post(endpoint: String, body: String): JSONArray =
+        JSONObject(PoiNetwork.text(endpoint, body).ifBlank { "{}" }).optJSONArray("elements") ?: JSONArray()
 
-    private fun get(endpoint: String, encodedQuery: String): JSONArray {
-        val connection = (URL("$endpoint?data=$encodedQuery").openConnection() as HttpURLConnection).apply {
-            requestMethod = "GET"
-            connectTimeout = 2_500
-            readTimeout = 8_500
-            setRequestProperty("Accept", "application/json")
-            setRequestProperty("User-Agent", "ScenicPath-Android/${BuildConfig.VERSION_NAME} development")
-        }
-        return try {
-            readJson(connection)
-        } finally {
-            connection.disconnect()
-        }
-    }
-
-    private fun readJson(connection: HttpURLConnection): JSONArray {
-        val code = connection.responseCode
-        val stream = if (code in 200..299) connection.inputStream else connection.errorStream
-        val text = stream?.bufferedReader(Charsets.UTF_8)?.use { it.readText() }.orEmpty()
-        if (code !in 200..299) error("Overpass HTTP $code")
-        return JSONObject(text.ifBlank { "{}" }).optJSONArray("elements") ?: JSONArray()
-    }
+    private suspend fun get(endpoint: String, encodedQuery: String): JSONArray =
+        JSONObject(PoiNetwork.text("$endpoint?data=$encodedQuery").ifBlank { "{}" }).optJSONArray("elements") ?: JSONArray()
 
     private fun rawType(tags: JSONObject): String? {
         val tourism = tags.optString("tourism").lowercase(Locale.ROOT)

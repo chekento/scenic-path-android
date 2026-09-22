@@ -1,40 +1,44 @@
 package cloud.kosch.scenicpath
 
 import androidx.compose.runtime.mutableStateOf
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
 
-/**
- * Durable POI memory for the currently open planning session.
- *
- * The map itself owns the lifecycle boundary: while a calculated route is being edited and
- * recalculated, route geometry may change arbitrarily and this pool is append-only (subject to
- * balanced deduplication/capacity). When ScenicMap receives an empty route because start or
- * destination was changed, the pool is explicitly cleared before the next journey is built.
- *
- * This deliberately avoids deriving journey identity from routed coordinates. Valhalla may snap
- * the same logical start/destination to different road edges, so coordinates are routing output,
- * not a reliable planning-session id.
- */
+/** Bounded POI memory for one planning session; clearing invalidates in-flight publishers. */
 object ScenicPoiSharedState {
     private const val MAX_SHARED_POINTS = 520
-
     private val publishedPoints = mutableStateOf<List<ScenePointUi>>(emptyList())
+    private val mergeLock = Mutex()
+    private var generation = 0L
 
-    fun publish(route: List<GeoPoint>, points: List<ScenePointUi>) {
+    @Synchronized fun epoch(): Long = generation
+
+    suspend fun publish(route: List<GeoPoint>, points: List<ScenePointUi>, epoch: Long = epoch()) {
         if (route.size < 2 || points.isEmpty()) return
-        val next = PrecisionRoutePoiDiscovery.mergeForDisplay(
-            first = points,
-            second = publishedPoints.value,
-            maxResults = MAX_SHARED_POINTS,
-            route = route,
-        )
-        if (next.isNotEmpty()) publishedPoints.value = next
+        withContext(Dispatchers.Default) {
+            mergeLock.withLock {
+                val previous = synchronized(this@ScenicPoiSharedState) {
+                    if (epoch != generation) return@withLock
+                    publishedPoints.value
+                }
+                val next = PrecisionRoutePoiDiscovery.mergeForDisplay(points, previous, MAX_SHARED_POINTS, route)
+                currentCoroutineContext().ensureActive()
+                synchronized(this@ScenicPoiSharedState) {
+                    if (epoch == generation && next.isNotEmpty()) publishedPoints.value = next
+                }
+            }
+        }
     }
 
-    fun pointsFor(route: List<GeoPoint>): List<ScenePointUi> {
-        return if (route.size >= 2) publishedPoints.value else emptyList()
-    }
+    fun pointsFor(route: List<GeoPoint>): List<ScenePointUi> =
+        if (route.size >= 2) publishedPoints.value else emptyList()
 
-    fun clear() {
+    @Synchronized fun clear() {
+        generation++
         publishedPoints.value = emptyList()
     }
 }

@@ -7,8 +7,6 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
-import java.net.HttpURLConnection
-import java.net.URL
 import java.net.URLEncoder
 import java.util.Locale
 import kotlin.math.asin
@@ -128,7 +126,7 @@ object PrecisionRoutePoiDiscovery {
             val selectors = group.selectors.filter { it.requiredKind == null || it.requiredKind in enabledKinds }
             if (selectors.isEmpty()) null else group to selectors
         }
-        val collected = RoutePoiScan.collect(segments, onPartial = onPartial) { segment ->
+        val collected = RoutePoiScan.collect(segments, route = route, onPartial = onPartial) { segment ->
             val geometry = RoutePoiGeometry(segment)
             val line = geometry.samples(if (deep) 16 else 13)
             val result = mutableListOf<ScenePointUi>()
@@ -286,7 +284,7 @@ object PrecisionRoutePoiDiscovery {
     }
 
     private fun selectAlongRoute(points: List<ScenePointUi>, maxResults: Int, route: List<GeoPoint>): List<ScenePointUi> {
-        val geometry = RoutePoiGeometry(route)
+        val geometry = RoutePoiGeometry.forRoute(route)
         val bucketCount = kotlin.math.ceil(geometry.lengthMeters / 65_000.0).toInt().coerceIn(1, maxResults)
         val buckets = points.groupBy { point ->
             (geometry.project(point.point).alongMeters / geometry.lengthMeters.coerceAtLeast(1.0) * bucketCount)
@@ -338,6 +336,10 @@ object PrecisionRoutePoiDiscovery {
         if (a.id == b.id) return true
         if (a.kind != b.kind) return false
         val sameName = a.name.trim().equals(b.name.trim(), ignoreCase = true)
+        if (sameName && a.subtype == "river" && b.subtype == "river") return true
+        if (!sameName && a.subtype != b.subtype) return false
+        val maximum = if (sameName) 4_000 else 30
+        if (kotlin.math.abs(a.point.lat - b.point.lat) * 111_195 > maximum) return false
         val distance = haversineMeters(a.point, b.point)
         if (sameName) {
             // Rivers are represented by many OSM ways. For POI purposes one named river is
@@ -361,14 +363,16 @@ object PrecisionRoutePoiDiscovery {
             currentCoroutineContext().ensureActive()
             try {
                 return executePost(endpoint, encodedBody, deep)
-            } catch (error: Throwable) {
+            } catch (error: Exception) {
+                if (error is kotlinx.coroutines.CancellationException) throw error
                 lastError = error
             }
             if (encodedQuery.length < 6_500) {
                 currentCoroutineContext().ensureActive()
                 try {
                     return executeGet(endpoint, encodedQuery, deep)
-                } catch (error: Throwable) {
+                } catch (error: Exception) {
+                if (error is kotlinx.coroutines.CancellationException) throw error
                     lastError = error
                 }
             }
@@ -376,46 +380,13 @@ object PrecisionRoutePoiDiscovery {
         throw lastError ?: IllegalStateException("Precision POI discovery unavailable")
     }
 
-    private fun executePost(endpoint: String, encodedBody: String, deep: Boolean): JSONArray {
-        val connection = (URL(endpoint).openConnection() as HttpURLConnection).apply {
-            requestMethod = "POST"
-            connectTimeout = if (deep) 3_500 else 2_500
-            readTimeout = if (deep) 15_000 else 9_000
-            doOutput = true
-            setRequestProperty("Content-Type", "application/x-www-form-urlencoded; charset=utf-8")
-            setRequestProperty("Accept", "application/json")
-            setRequestProperty("User-Agent", "ScenicPath-Android/${BuildConfig.VERSION_NAME} development")
-        }
-        return try {
-            connection.outputStream.bufferedWriter(Charsets.UTF_8).use { it.write(encodedBody) }
-            readJson(connection)
-        } finally {
-            connection.disconnect()
-        }
-    }
+    private suspend fun executePost(endpoint: String, encodedBody: String, deep: Boolean): JSONArray =
+        JSONObject(PoiNetwork.text(endpoint, encodedBody, if (deep) 15_000 else 9_000).ifBlank { "{}" })
+            .optJSONArray("elements") ?: JSONArray()
 
-    private fun executeGet(endpoint: String, encodedQuery: String, deep: Boolean): JSONArray {
-        val connection = (URL("$endpoint?data=$encodedQuery").openConnection() as HttpURLConnection).apply {
-            requestMethod = "GET"
-            connectTimeout = if (deep) 3_500 else 2_500
-            readTimeout = if (deep) 15_000 else 9_000
-            setRequestProperty("Accept", "application/json")
-            setRequestProperty("User-Agent", "ScenicPath-Android/${BuildConfig.VERSION_NAME} development")
-        }
-        return try {
-            readJson(connection)
-        } finally {
-            connection.disconnect()
-        }
-    }
-
-    private fun readJson(connection: HttpURLConnection): JSONArray {
-        val code = connection.responseCode
-        val stream = if (code in 200..299) connection.inputStream else connection.errorStream
-        val text = stream?.bufferedReader(Charsets.UTF_8)?.use { it.readText() }.orEmpty()
-        if (code !in 200..299) error("Overpass HTTP $code")
-        return JSONObject(text.ifBlank { "{}" }).optJSONArray("elements") ?: JSONArray()
-    }
+    private suspend fun executeGet(endpoint: String, encodedQuery: String, deep: Boolean): JSONArray =
+        JSONObject(PoiNetwork.text("$endpoint?data=$encodedQuery", timeoutMs = if (deep) 15_000 else 9_000).ifBlank { "{}" })
+            .optJSONArray("elements") ?: JSONArray()
 
     private fun rawType(tags: JSONObject): String? {
         val tourism = tags.optString("tourism").lowercase(Locale.ROOT)

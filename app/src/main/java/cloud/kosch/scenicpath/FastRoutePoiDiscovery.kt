@@ -20,8 +20,8 @@ import kotlinx.coroutines.withTimeoutOrNull
  * geometry changed, so one temporary network/provider failure could leave the complete planning
  * session without clickable locations.
  *
- * The first wave still uses the two fast Photon strategies and publishes each successful partial
- * result immediately into ScenicPoiSharedState. If both are empty, an independent rescue wave uses
+ * The first wave still uses the two fast Photon strategies and passes each successful partial
+ * result to its caller. If both are empty, an independent rescue wave uses
  * bounded OSM/Overpass coverage plus a slower direct Photon retry. This keeps initial-route latency
  * low when the normal providers work, but prevents a one-shot outage from becoming a permanently
  * empty map. ScenicMap's deeper Rapid/Precision passes remain complementary enrichment.
@@ -42,9 +42,6 @@ object FastRoutePoiDiscovery {
             if (points.isEmpty()) return
             lock.withLock {
                 accumulated = mergeResults(points, accumulated, enabledKinds, maxResults, route)
-                withContext(Dispatchers.Main.immediate) {
-                    ScenicPoiSharedState.publish(route, accumulated)
-                }
                 onPartial(accumulated)
             }
         }

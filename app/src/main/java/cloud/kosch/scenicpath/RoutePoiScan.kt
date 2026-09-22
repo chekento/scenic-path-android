@@ -38,13 +38,15 @@ internal object RoutePoiScan {
     suspend fun <T> collect(
         windows: List<T>,
         parallelism: Int = 3,
+        route: List<GeoPoint> = emptyList(),
+        maxRetained: Int = 1_024,
         onPartial: suspend (List<ScenePointUi>) -> Unit = {},
         query: suspend (T) -> List<ScenePointUi>,
     ): List<ScenePointUi> = coroutineScope {
-        require(parallelism > 0)
+        require(parallelism > 0 && maxRetained > 0)
         val next = AtomicInteger()
         val ordered = order(windows.size)
-        val results = Array(windows.size) { emptyList<ScenePointUi>() }
+        var retained = emptyList<ScenePointUi>()
         val publishLock = Mutex()
         List(minOf(parallelism, windows.size)) {
             async {
@@ -61,11 +63,14 @@ internal object RoutePoiScan {
                         emptyList()
                     }
                     currentCoroutineContext().ensureActive()
-                    results[index] = points
-                    if (points.isNotEmpty()) publishLock.withLock { onPartial(points) }
+                    if (points.isNotEmpty()) publishLock.withLock {
+                        retained = if (route.size >= 2) PrecisionRoutePoiDiscovery.mergeForDisplay(points, retained, maxRetained, route)
+                            else (retained + points).distinctBy { it.id }.takeLast(maxRetained)
+                        onPartial(points)
+                    }
                 }
             }
         }.awaitAll()
-        results.flatMap { it }
+        retained
     }
 }

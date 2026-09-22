@@ -37,7 +37,7 @@ object RapidRoutePoiDiscovery {
         if (route.size < 2 || enabledKinds.isEmpty() || maxResults <= 0) return@withContext emptyList()
 
         val windows = RoutePoiGeometry(route).windows(65_000.0)
-        val results = RoutePoiScan.collect(windows.withIndex().toList(), onPartial = onPartial) { (index, segment) ->
+        val results = RoutePoiScan.collect(windows.withIndex().toList(), route = route, onPartial = onPartial) { (index, segment) ->
             RoutePoiScan.overpass.withPermit {
                 queryWindow(index, segment, RoutePoiGeometry(segment), enabledKinds)
             }
@@ -137,26 +137,13 @@ object RapidRoutePoiDiscovery {
         for (attempt in 0..1) {
             currentCoroutineContext().ensureActive()
             val endpoint = endpoints[(windowIndex + attempt) % endpoints.size]
-            val connection = (URL(endpoint).openConnection() as HttpURLConnection).apply {
-                requestMethod = "POST"
-                connectTimeout = 1_800
-                readTimeout = 4_500
-                doOutput = true
-                setRequestProperty("Content-Type", "application/x-www-form-urlencoded; charset=utf-8")
-                setRequestProperty("Accept", "application/json")
-                setRequestProperty("User-Agent", "ScenicPath-Android/${BuildConfig.VERSION_NAME} development")
-            }
             try {
-                connection.outputStream.bufferedWriter(Charsets.UTF_8).use { it.write(body) }
-                val code = connection.responseCode
-                val stream = if (code in 200..299) connection.inputStream else connection.errorStream
-                val text = stream?.bufferedReader(Charsets.UTF_8)?.use { it.readText() }.orEmpty()
-                if (code !in 200..299) error("Overpass HTTP $code")
+                val text = PoiNetwork.text(endpoint, body, 4_500)
                 return JSONObject(text.ifBlank { "{}" }).optJSONArray("elements") ?: JSONArray()
-            } catch (error: Throwable) {
+            } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                throw cancelled
+            } catch (error: Exception) {
                 lastError = error
-            } finally {
-                connection.disconnect()
             }
         }
         throw lastError ?: IllegalStateException("Rapid POI scan unavailable")

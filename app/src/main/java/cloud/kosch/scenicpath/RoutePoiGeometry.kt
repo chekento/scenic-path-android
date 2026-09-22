@@ -11,35 +11,88 @@ internal class RoutePoiGeometry(val points: List<GeoPoint>) {
 
     data class Projection(val distanceMeters: Double, val alongMeters: Double)
 
-    /** Distance to line segments, not to a small set of isolated route vertices. */
+    // A balanced segment tree rejects whole stretches instead of walking 70,000 vertices
+    // for every POI. Longitude bounds are unwrapped so dateline crossings stay correct.
+    private class Node(
+        val first: Int, val last: Int,
+        val south: Double, val north: Double, val west: Double, val east: Double,
+        val left: Node? = null, val right: Node? = null,
+    )
+    private val root: Node? = if (points.size < 2) null else {
+        val longitude = DoubleArray(points.size)
+        longitude[0] = points.first().lon
+        for (i in 1 until points.size) longitude[i] = longitude[i - 1] + longitudeDelta(points[i].lon - points[i - 1].lon)
+        fun build(first: Int, last: Int): Node {
+            if (last - first < 24) {
+                var south = Double.POSITIVE_INFINITY
+                var north = Double.NEGATIVE_INFINITY
+                var west = Double.POSITIVE_INFINITY
+                var east = Double.NEGATIVE_INFINITY
+                for (i in first - 1..last) {
+                    south = min(south, points[i].lat); north = max(north, points[i].lat)
+                    west = min(west, longitude[i]); east = max(east, longitude[i])
+                }
+                return Node(first, last, south, north, west, east)
+            }
+            val middle = (first + last) / 2
+            val left = build(first, middle)
+            val right = build(middle + 1, last)
+            return Node(first, last, min(left.south, right.south), max(left.north, right.north),
+                min(left.west, right.west), max(left.east, right.east), left, right)
+        }
+        build(1, points.lastIndex)
+    }
+    private val projections = object : LinkedHashMap<GeoPoint, Projection>(256, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<GeoPoint, Projection>?) = size > 2_048
+    }
+
+    /** Exact nearest segment under the same local metric used by the corridor filter. */
     fun project(point: GeoPoint): Projection {
+        synchronized(projections) { projections[point]?.let { return it } }
         if (points.isEmpty()) return Projection(Double.POSITIVE_INFINITY, 0.0)
         var bestSquared = Double.POSITIVE_INFINITY
         var along = 0.0
         val xScale = 111_195.0 * cos(Math.toRadians(point.lat)).coerceAtLeast(0.01)
-        for (i in 1 until points.size) {
-            val a = points[i - 1]
-            val b = points[i]
-            val ax = longitudeDelta(a.lon - point.lon) * xScale
-            val ay = (a.lat - point.lat) * 111_195.0
-            val bx = ax + longitudeDelta(b.lon - a.lon) * xScale
-            val by = (b.lat - point.lat) * 111_195.0
-            // Cheap rejection makes projection over the complete geometry practical.
-            val nearX = if (min(ax, bx) > 0) min(ax, bx) else max(ax, bx).coerceAtMost(0.0)
-            val nearY = if (min(ay, by) > 0) min(ay, by) else max(ay, by).coerceAtMost(0.0)
-            if (nearX * nearX + nearY * nearY > bestSquared) continue
-            val dx = bx - ax
-            val dy = by - ay
-            val squared = dx * dx + dy * dy
-            val t = if (squared == 0.0) 0.0 else (-(ax * dx + ay * dy) / squared).coerceIn(0.0, 1.0)
-            val distanceSquared = (ax + t * dx).pow(2) + (ay + t * dy).pow(2)
-            if (distanceSquared < bestSquared) {
-                bestSquared = distanceSquared
-                along = cumulative[i - 1] + t * (cumulative[i] - cumulative[i - 1])
+        fun lowerBound(node: Node): Double {
+            val longitude = point.lon + 360.0 * round(((node.west + node.east) / 2.0 - point.lon) / 360.0)
+            val x = if (node.east - node.west >= 180.0) 0.0
+                else max(max(node.west - longitude, longitude - node.east), 0.0) * xScale
+            val y = max(max(node.south - point.lat, point.lat - node.north), 0.0) * 111_195.0
+            return x * x + y * y
+        }
+        fun visit(node: Node) {
+            if (lowerBound(node) > bestSquared) return
+            val left = node.left
+            val right = node.right
+            if (left != null && right != null) {
+                if (lowerBound(left) <= lowerBound(right)) { visit(left); visit(right) }
+                else { visit(right); visit(left) }
+                return
+            }
+            for (i in node.first..node.last) {
+                val a = points[i - 1]
+                val b = points[i]
+                val ax = longitudeDelta(a.lon - point.lon) * xScale
+                val ay = (a.lat - point.lat) * 111_195.0
+                val bx = ax + longitudeDelta(b.lon - a.lon) * xScale
+                val by = (b.lat - point.lat) * 111_195.0
+                val dx = bx - ax
+                val dy = by - ay
+                val squared = dx * dx + dy * dy
+                val t = if (squared == 0.0) 0.0 else (-(ax * dx + ay * dy) / squared).coerceIn(0.0, 1.0)
+                val distanceSquared = (ax + t * dx).pow(2) + (ay + t * dy).pow(2)
+                val candidateAlong = cumulative[i - 1] + t * (cumulative[i] - cumulative[i - 1])
+                if (distanceSquared < bestSquared || (distanceSquared == bestSquared && candidateAlong < along)) {
+                    bestSquared = distanceSquared
+                    along = candidateAlong
+                }
             }
         }
-        return if (bestSquared.isFinite()) Projection(sqrt(bestSquared), along)
-        else Projection(meters(point, points.first()), 0.0)
+        root?.let(::visit)
+        val result = if (bestSquared.isFinite()) Projection(sqrt(bestSquared), along)
+            else Projection(meters(point, points.first()), 0.0)
+        synchronized(projections) { projections[point] = result }
+        return result
     }
 
     /** Includes every vertex and both endpoints; even a single long edge is subdivided. */
@@ -80,6 +133,16 @@ internal class RoutePoiGeometry(val points: List<GeoPoint>) {
     }
 
     companion object {
+        // Identity lookup avoids hashing a complete route at every update; bounded across reroutes.
+        private val recent = ArrayDeque<RoutePoiGeometry>()
+        @Synchronized fun forRoute(points: List<GeoPoint>): RoutePoiGeometry {
+            recent.firstOrNull { it.points === points }?.let { return it }
+            return RoutePoiGeometry(points).also {
+                if (recent.size == 2) recent.removeFirst()
+                recent.addLast(it)
+            }
+        }
+
         fun meters(a: GeoPoint, b: GeoPoint): Double {
             val lat = Math.toRadians(b.lat - a.lat)
             val lon = Math.toRadians(longitudeDelta(b.lon - a.lon))

@@ -1,4 +1,4 @@
-# Scenic Path 0.7.2-rc1 / 44
+# Scenic Path 0.7.2-rc2 / 45
 
 ## Routing
 
@@ -27,3 +27,13 @@ Regression cases cover complete long-route coverage, on-network splits, stricter
 `SCENIC_LIVE_ROUTING=1` enables a real Hamburg–Lisbon test through the actual vehicle planner; its result is tracked separately from deterministic tests. Android CI builds the APK, verifies its signature/version and runs lint plus an unsigned release AAB smoke build.
 
 API references: [Valhalla route API](https://valhalla.github.io/valhalla/api/route/api-reference/), [OSRM route API](https://project-osrm.org/docs/v5.24.0/api/), [FOSSGIS service policy](https://routing.openstreetmap.de/about.html). Public requests are paced to at most one per second per routing host.
+
+## POI load and map stability
+
+Native GeoJSON/Symbol layers replace camera-driven Compose marker projection. Clusters expand on taps by advancing zoom, without native cluster-ID lookups that can race with replaced sources. Planned stops use a separate source. Complete road geometry is uploaded only on route changes, prepared off the UI thread; GPS updates touch only the user source. Navigation snapshots are calculated only while navigation is active, on Default, reusing cumulative route distances.
+
+A bounded queue (6 batches of at most 256 points) applies backpressure and publishes at 350 ms intervals. POI discovery retains at most 1,024 candidates per pass and the shared planning pool at most 520. Selection uses full route segments via a bounding tree and a 2,048-entry projection cache. Only two route indexes are retained. Scanning still visits all windows, including the destination. Journey clearing invalidates old publishers. Smart Stops reads this shared pool rather than starting duplicate automatic scans.
+
+Background POI HTTP has three dedicated workers; foreground operations have four. Both queues are bounded to 32 and cancellation removes queued tasks and disconnects active requests. Responses are size-limited (2 MiB characters for enrichment; 512 KiB for details). Map enrichment stops below STARTED, completed scans are not restarted on resume, and MapView receives memory-pressure callbacks. Interrupted scans can repeat completed windows on resume; bounded deduplication preserves existing discoveries.
+
+Regression tests exercise 70,001 route vertices with 2,000 POIs, 4,000 batched updates, old-session rejection, foreground access during occupied POI workers, oversized responses, dateline/loop projection against exhaustive segment search, and planned-stop separation. These checks and Android CI do not establish crash-free behavior on every physical device.

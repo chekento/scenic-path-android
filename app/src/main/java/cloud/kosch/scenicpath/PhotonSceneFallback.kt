@@ -5,8 +5,6 @@ import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
-import java.net.HttpURLConnection
-import java.net.URL
 import java.net.URLEncoder
 import java.util.Locale
 import kotlin.math.roundToInt
@@ -36,7 +34,7 @@ object PhotonSceneFallback {
         val routeGeometry = RoutePoiGeometry(route)
         val sampleCount = (kotlin.math.ceil(routeGeometry.lengthMeters / 40_000.0).toInt() + 1).coerceAtLeast(3)
         val samples = routeGeometry.samples(sampleCount)
-        val found = RoutePoiScan.collect(samples, onPartial = onPartial) { sample ->
+        val found = RoutePoiScan.collect(samples, route = route, onPartial = onPartial) { sample ->
             val resultSets = listOf(RoutePoiScan.photon.withPermit { query(sample, categories, fast) })
             val windowPoints = mutableListOf<ScenePointUi>()
             for (features in resultSets) {
@@ -115,7 +113,7 @@ object PhotonSceneFallback {
         FastRoutePoiDiscovery.mergeResults(photon, rescue, enabledKinds, maxResults, route)
     }
 
-    private fun query(
+    private suspend fun query(
         sample: GeoPoint,
         categories: List<String>,
         fast: Boolean,
@@ -124,22 +122,8 @@ object PhotonSceneFallback {
         val radius = if (fast) 25 else 30
         val limit = if (fast) 70 else 50
         val url = "$ENDPOINT?lon=${sample.lon}&lat=${sample.lat}&radius=$radius&limit=$limit&lang=de&dedupe=1&include=$include"
-        val connection = (URL(url).openConnection() as HttpURLConnection).apply {
-            requestMethod = "GET"
-            connectTimeout = if (fast) 2_000 else 3_500
-            readTimeout = if (fast) 3_800 else 6_500
-            setRequestProperty("Accept", "application/json")
-            setRequestProperty("User-Agent", "ScenicPath-Android/${BuildConfig.VERSION_NAME} development")
-        }
-        try {
-            val code = connection.responseCode
-            val stream = if (code in 200..299) connection.inputStream else connection.errorStream
-            val text = stream?.bufferedReader(Charsets.UTF_8)?.use { it.readText() }.orEmpty()
-            if (code !in 200..299) error("Photon HTTP $code")
-            return JSONObject(text.ifBlank { "{}" }).optJSONArray("features") ?: org.json.JSONArray()
-        } finally {
-            connection.disconnect()
-        }
+        return JSONObject(PoiNetwork.text(url, timeoutMs = if (fast) 3_800 else 6_500).ifBlank { "{}" })
+            .optJSONArray("features") ?: org.json.JSONArray()
     }
 
     private fun categoriesFor(enabledKinds: Set<StopKind>): List<String> = buildList {

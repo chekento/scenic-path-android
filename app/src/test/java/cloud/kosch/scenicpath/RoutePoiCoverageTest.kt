@@ -127,7 +127,7 @@ class RoutePoiCoverageTest {
     }
 
     @Test
-    fun sharedPoolUsesTheSameRouteWideBalanceAsTheMap() {
+    fun sharedPoolUsesTheSameRouteWideBalanceAsTheMap() = runBlocking {
         ScenicPoiSharedState.publish(longRoute, listOf(poi("end", longRoute.last())))
         ScenicPoiSharedState.publish(longRoute, (0..600).map { poi("start$it", GeoPoint(50.0 + it * 0.0005, -2.0), 900.0) })
         assertTrue(ScenicPoiSharedState.pointsFor(longRoute).any { it.id == "end" })

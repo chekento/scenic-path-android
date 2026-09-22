@@ -1,6 +1,12 @@
 # Changelog
 
-## 0.7.2-rc1 — Build 44
+## 0.7.2-rc2 — Build 45
+
+- Render POIs in native clustered map layers, retaining separately selectable fixed stops. Camera motion no longer recomposes hundreds of marker views.
+- Upload route geometry only when it changes; GPS updates only the location marker. Navigation calculations run off the UI thread and reuse route distances.
+- Batch POI updates with bounded backpressure, a 520-place shared pool, a segment index and bounded projection cache. Full-route scanning and destination coverage remain intact.
+- Cancel HTTP requests and background scans promptly. Bound provider response size and worker queues; reserve separate capacity for route/search/detail requests.
+- Smart Stops reuses live discoveries; explicit refresh performs a deeper search. Forward Android memory-pressure events to the map renderer.
 
 - Long-distance routes use a full road-network corridor and bounded, vehicle-specific route sections; smaller sections are retried for provider distance errors. Stops, endpoint coverage and section continuity are preserved. No partial journey or straight-line substitute is offered as a route.
 - Reuse the direct baseline, preserve cancellation through provider failures, and bound optional scenic detours.

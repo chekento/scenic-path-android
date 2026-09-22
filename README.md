@@ -3,21 +3,21 @@
 <div align="center">
   <img src="assets/frontpage/scenic-path-icon.png" alt="Scenic Path app icon" width="144" />
   <br />
-  <a href="https://github.com/chekento/scenic-path-android/releases/download/v0.7.2-rc1/Scenic-Path-v0.7.2-rc1-debug.apk">
+  <a href="https://github.com/chekento/scenic-path-android/releases/download/v0.7.2-rc2/Scenic-Path-v0.7.2-rc2-debug.apk">
     <img src="assets/frontpage/scenic-path-hero-photo.webp" alt="Scenic Path — Download the current Android APK" width="100%" />
   </a>
 </div>
 
 <div align="center">
 
-## ⬇️ [DOWNLOAD SCENIC PATH v0.7.2-rc1 APK](https://github.com/chekento/scenic-path-android/releases/download/v0.7.2-rc1/Scenic-Path-v0.7.2-rc1-debug.apk)
+## ⬇️ [DOWNLOAD SCENIC PATH v0.7.2-rc2 APK](https://github.com/chekento/scenic-path-android/releases/download/v0.7.2-rc2/Scenic-Path-v0.7.2-rc2-debug.apk)
 
 **Tap the large hero image above or the download text here — both point directly to the current APK.**
 
-[Release notes](https://github.com/chekento/scenic-path-android/releases/tag/v0.7.2-rc1) ·
-[SHA-256](https://github.com/chekento/scenic-path-android/releases/download/v0.7.2-rc1/Scenic-Path-v0.7.2-rc1-debug.apk.sha256)
+[Release notes](https://github.com/chekento/scenic-path-android/releases/tag/v0.7.2-rc2) ·
+[SHA-256](https://github.com/chekento/scenic-path-android/releases/download/v0.7.2-rc2/Scenic-Path-v0.7.2-rc2-debug.apk.sha256)
 
-`cloud.kosch.scenicpath` · Android 16 / API 36 · `versionCode 44` · full-search RC
+`cloud.kosch.scenicpath` · Android 16 / API 36 · `versionCode 45` · stability RC
 
 </div>
 
@@ -92,9 +92,9 @@ The route corridor continues to use the original discovery layers in parallel:
 
 CI checks the presence and call-sites of these algorithms before an APK can be published. Unit tests cover exact-address priority, cross-provider de-duplication and result limits.
 
-## Current Android build — v0.7.2-rc1
+## Current Android build — v0.7.2-rc2
 
-Build 44 fixes long journeys that exceeded a routing-service distance limit. A complete road-network corridor is divided into bounded sections, each recalculated with the selected vehicle profile. POI discovery continues across the complete route.
+Build 45 fixes long journeys that exceeded a routing-service distance limit. A complete road-network corridor is divided into bounded sections, each recalculated with the selected vehicle profile. POI discovery continues across the complete route.
 
 Address suggestions now appear progressively, remain stable during GPS updates, and support an explicit exact-address search while other providers are still loading. Route requests can be cancelled; older replies cannot replace newer input. The journey and search drafts survive screen rotation.
 
@@ -125,10 +125,10 @@ The current installable GitHub APK includes:
 ### APK
 
 **Direct download:**  
-[Scenic-Path-v0.7.2-rc1-debug.apk](https://github.com/chekento/scenic-path-android/releases/download/v0.7.2-rc1/Scenic-Path-v0.7.2-rc1-debug.apk)
+[Scenic-Path-v0.7.2-rc2-debug.apk](https://github.com/chekento/scenic-path-android/releases/download/v0.7.2-rc2/Scenic-Path-v0.7.2-rc2-debug.apk)
 
 **Integrity:**  
-[Scenic-Path-v0.7.2-rc1-debug.apk.sha256](https://github.com/chekento/scenic-path-android/releases/download/v0.7.2-rc1/Scenic-Path-v0.7.2-rc1-debug.apk.sha256)
+[Scenic-Path-v0.7.2-rc2-debug.apk.sha256](https://github.com/chekento/scenic-path-android/releases/download/v0.7.2-rc2/Scenic-Path-v0.7.2-rc2-debug.apk.sha256)
 
 > This is an **installable RC/debug test APK**. It is not the final Play Store production-signed package.
 
@@ -144,8 +144,8 @@ That architecture is intended to make scenic routing both **expressive and contr
 
 - Package: `cloud.kosch.scenicpath`
 - Target SDK: `36`
-- Current version: `0.7.2-rc1`
-- GitHub APK release: [`v0.7.2-rc1`](https://github.com/chekento/scenic-path-android/releases/tag/v0.7.2-rc1)
+- Current version: `0.7.2-rc2`
+- GitHub APK release: [`v0.7.2-rc2`](https://github.com/chekento/scenic-path-android/releases/tag/v0.7.2-rc2)
 - APK publishing workflow: `.github/workflows/github-release-apk.yml`
 
 Before publishing, CI validates the brand contract, original search-algorithm contract, unit tests, Android build and lint. The publishing workflow derives the APK/release name from `versionName` so future releases do not require hard-coded download filenames in the build logic.

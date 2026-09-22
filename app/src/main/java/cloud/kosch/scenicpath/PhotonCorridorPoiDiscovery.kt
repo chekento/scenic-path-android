@@ -7,8 +7,6 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
-import java.net.HttpURLConnection
-import java.net.URL
 import java.net.URLEncoder
 import java.util.Locale
 import kotlin.math.cos
@@ -77,7 +75,7 @@ object PhotonCorridorPoiDiscovery {
         if (activePacks.isEmpty()) return@withContext emptyList()
 
         val windows = RoutePoiGeometry(route).windows(65_000.0)
-        val all = RoutePoiScan.collect(windows.withIndex().toList(), onPartial = onPartial) { (index, segment) ->
+        val all = RoutePoiScan.collect(windows.withIndex().toList(), route = route, onPartial = onPartial) { (index, segment) ->
             val geometry = RoutePoiGeometry(segment)
             activePacks.flatMap { pack ->
                 currentCoroutineContext().ensureActive()
@@ -193,24 +191,8 @@ object PhotonCorridorPoiDiscovery {
         return result
     }
 
-    private fun fetch(url: String): JSONArray {
-        val connection = (URL(url).openConnection() as HttpURLConnection).apply {
-            requestMethod = "GET"
-            connectTimeout = 2_200
-            readTimeout = 4_800
-            setRequestProperty("Accept", "application/json")
-            setRequestProperty("User-Agent", "ScenicPath-Android/${BuildConfig.VERSION_NAME} development")
-        }
-        try {
-            val code = connection.responseCode
-            val stream = if (code in 200..299) connection.inputStream else connection.errorStream
-            val text = stream?.bufferedReader(Charsets.UTF_8)?.use { it.readText() }.orEmpty()
-            if (code !in 200..299) error("Photon corridor HTTP $code")
-            return JSONObject(text.ifBlank { "{}" }).optJSONArray("features") ?: JSONArray()
-        } finally {
-            connection.disconnect()
-        }
-    }
+    private suspend fun fetch(url: String): JSONArray =
+        JSONObject(PoiNetwork.text(url, timeoutMs = 4_800).ifBlank { "{}" }).optJSONArray("features") ?: JSONArray()
 
     private fun photonRawType(key: String, value: String): String? = when {
         key == "tourism" && value == "museum" -> "museum"

@@ -85,7 +85,12 @@ object ScenicApi {
 
         if (BuildConfig.DEBUG) {
             // Photon is already a separate lane in OriginalSearchStack; never call it twice.
-            return@withContext searchDeviceGeocoder(context, normalized)
+            val local = searchDeviceGeocoder(context, normalized)
+            if (local.isNotEmpty()) return@withContext local
+            if (baseUrl.startsWith("https://") && !baseUrl.contains("invalid.invalid")) {
+                return@withContext optionalRequest { searchBackend(normalized, bias) }.orEmpty()
+            }
+            return@withContext emptyList()
         }
         requireProductionServicesConfigured()
         val backend = optionalRequest { searchBackend(normalized, bias) }.orEmpty()
