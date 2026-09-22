@@ -19,6 +19,7 @@ import org.maplibre.geojson.Point
 internal object ScenicMapPois {
     const val SOURCE = "scenic-pois"
     const val LAYER = "scenic-poi-icons"
+    const val POINTS_LAYER = "scenic-poi-points"
     const val CLUSTERS = "scenic-poi-clusters"
     const val STOPS_SOURCE = "scenic-planned-stops"
     const val STOPS_LAYER = "scenic-stop-icons"
@@ -41,6 +42,13 @@ internal object ScenicMapPois {
             .withFilter(Expression.has("point_count"))
             .withProperties(textField(Expression.toString(Expression.get("point_count"))),
                 textSize(13f), textColor("#FFFFFF"), textAllowOverlap(true), textIgnorePlacement(true)))
+        // A native dot remains visible even if a device cannot resolve an emoji image from the
+        // style expression. It also gives every unclustered candidate a clear tap target below
+        // the richer category icon.
+        style.addLayer(CircleLayer(POINTS_LAYER, SOURCE)
+            .withFilter(Expression.not(Expression.has("point_count")))
+            .withProperties(circleColor("#0E7C66"), circleRadius(7f),
+                circleStrokeColor("#FFFFFF"), circleStrokeWidth(2.5f)))
         style.addLayer(SymbolLayer(LAYER, SOURCE)
             .withFilter(Expression.not(Expression.has("point_count")))
             .withProperties(iconImage(Expression.get("icon")), iconSize(0.5f),

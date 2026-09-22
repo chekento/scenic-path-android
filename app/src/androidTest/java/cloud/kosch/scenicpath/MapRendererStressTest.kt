@@ -77,6 +77,7 @@ class MapRendererStressTest {
         assertNull(error.get())
         compose.runOnUiThread {
             assertNotNull(map.get()!!.style!!.getLayer(ScenicMapPois.LAYER))
+            assertNotNull(map.get()!!.style!!.getLayer(ScenicMapPois.POINTS_LAYER))
             assertNotNull(map.get()!!.style!!.getLayer(ScenicMapPois.CLUSTERS))
             assertNotNull(map.get()!!.style!!.getLayer(ScenicMapPois.STOPS_LAYER))
         }

@@ -89,6 +89,10 @@ fun ScenicMap(
     var selectedHighlight by remember { mutableStateOf<ScenePointUi?>(null) }
     var selectedDetails by remember { mutableStateOf<ScenicPoiDetails?>(null) }
     var detailsLoading by remember { mutableStateOf(false) }
+    // Keep a direct Compose render signal for the native GeoJSON update. The shared state is
+    // still the route-owned source of truth, but reading it only through a helper can miss the
+    // recomposition that must feed MapLibre after a background discovery batch completes.
+    var renderedPoiHighlights by remember { mutableStateOf<List<ScenePointUi>>(emptyList()) }
 
     // Navigation state deliberately lives with the map so it survives ordinary POI/card changes
     // without introducing another app navigation stack.
@@ -112,7 +116,7 @@ fun ScenicMap(
     val latestUserLocation by rememberUpdatedState(userLocation)
     val latestPoiSearchStateChange by rememberUpdatedState(onPoiSearchStateChange)
     val latestPoiCandidatesChange by rememberUpdatedState(onPoiCandidatesChange)
-    val sharedHighlights = ScenicPoiSharedState.pointsFor(routePoints)
+    val sharedHighlights = renderedPoiHighlights
     val activeKinds = ScenicSceneSelectionState.activeKinds
     val plannedStopIds = remember(stops) { stops.mapTo(mutableSetOf()) { it.id } }
     val plannedHighlights = remember(stops) {
@@ -175,6 +179,7 @@ fun ScenicMap(
     // journey (for example New York → Los Angeles) from being projected onto the next one.
     LaunchedEffect(routePoints, lifecycleOwner, discoverPois, activeKinds) {
         selectedHighlight = null
+        renderedPoiHighlights = emptyList()
         if (routePoints.size < 2) {
             navigationActive = false
             ScenicPoiSharedState.clear()
@@ -187,6 +192,7 @@ fun ScenicMap(
         val publishUi: suspend (Boolean, Boolean) -> Unit = { loading, completed ->
             withContext(Dispatchers.Main.immediate) {
                 val points = ScenicPoiSharedState.pointsFor(routePoints)
+                renderedPoiHighlights = points
                 val count = maxOf(points.size, ScenicPoiSharedState.discoveredCount(routePoints))
                 latestPoiSearchStateChange(loading, count)
                 latestPoiCandidatesChange(points, completed)
