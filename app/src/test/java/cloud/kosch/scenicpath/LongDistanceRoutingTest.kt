@@ -79,7 +79,7 @@ class LongDistanceRoutingTest {
     fun waypointLegsUseARealRoadBridgeForNearbyProviderSnaps() = runBlocking {
         val start = GeoPoint(50.0, 8.0)
         val incomingSnap = GeoPoint(50.001, 8.010)
-        val outgoingSnap = GeoPoint(50.001, 8.011)
+        val outgoingSnap = GeoPoint(50.001, 8.012)
         val destination = GeoPoint(50.0, 8.020)
         val first = leg(start, incomingSnap)
         val second = leg(outgoingSnap, destination)
@@ -107,7 +107,7 @@ class LongDistanceRoutingTest {
     fun failedWaypointBridgeStillRejectsTheReplacementRoute() = runBlocking {
         val start = GeoPoint(50.0, 8.0)
         val incomingSnap = GeoPoint(50.001, 8.010)
-        val outgoingSnap = GeoPoint(50.001, 8.011)
+        val outgoingSnap = GeoPoint(50.001, 8.012)
         val destination = GeoPoint(50.0, 8.020)
         try {
             LongDistanceRouting.stitchWithBridges(
