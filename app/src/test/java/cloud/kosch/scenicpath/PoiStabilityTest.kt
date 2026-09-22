@@ -75,6 +75,23 @@ class PoiStabilityTest {
         assertEquals("current", ScenicPoiSharedState.pointsFor(route).single().id)
     }
 
+    @Test fun startingAnotherRouteRemovesOldMarkersAndRejectsLateResults() = runBlocking {
+        val firstRoute = listOf(GeoPoint(40.0, -74.0), GeoPoint(41.0, -73.0))
+        val secondRoute = listOf(GeoPoint(53.7, 10.2), GeoPoint(52.5, 13.4))
+        val firstEpoch = ScenicPoiSharedState.begin(firstRoute)
+        ScenicPoiSharedState.publish(firstRoute, listOf(poi("new-york", firstRoute.first())), firstEpoch)
+        assertEquals("new-york", ScenicPoiSharedState.pointsFor(firstRoute).single().id)
+
+        val secondEpoch = ScenicPoiSharedState.begin(secondRoute)
+        assertTrue(ScenicPoiSharedState.pointsFor(firstRoute).isEmpty())
+        assertTrue(ScenicPoiSharedState.pointsFor(secondRoute).isEmpty())
+        ScenicPoiSharedState.publish(firstRoute, listOf(poi("late-old-route", firstRoute.last())), firstEpoch)
+        assertTrue(ScenicPoiSharedState.pointsFor(secondRoute).isEmpty())
+
+        ScenicPoiSharedState.publish(secondRoute, listOf(poi("berlin", secondRoute.last())), secondEpoch)
+        assertEquals("berlin", ScenicPoiSharedState.pointsFor(secondRoute).single().id)
+    }
+
     @Test(timeout = 5_000) fun busyPoiWorkersDoNotBlockForegroundAndCancelPromptly() = runBlocking {
         val entered = CountDownLatch(3)
         val hold = CountDownLatch(1)

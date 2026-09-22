@@ -44,7 +44,10 @@ internal object ScenicMapPois {
         style.addLayer(SymbolLayer(LAYER, SOURCE)
             .withFilter(Expression.not(Expression.has("point_count")))
             .withProperties(iconImage(Expression.get("icon")), iconSize(0.5f),
-                iconAllowOverlap(false), iconPadding(3f)))
+                // Route candidates must remain discoverable at city zoom levels; MapLibre's
+                // collision engine otherwise hides every icon in a dense corridor even though
+                // the source contains valid features. Clustering still protects overview zoom.
+                iconAllowOverlap(true), iconIgnorePlacement(true), iconPadding(3f)))
         // Fixed waypoints never disappear into a cluster or lose priority to discoveries.
         style.addLayer(SymbolLayer(STOPS_LAYER, STOPS_SOURCE)
             .withProperties(iconImage(Expression.get("icon")), iconSize(0.6f),

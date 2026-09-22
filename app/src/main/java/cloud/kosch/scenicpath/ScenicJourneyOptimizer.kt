@@ -310,7 +310,7 @@ object ScenicJourneyOptimizer {
                 append("Journey Optimizer · ${corridorRadiusKm.roundToInt()} km search space")
                 append(" · ${discoveries.size} scenic candidates")
                 append(" · Valhalla time-distance matrix")
-                append(" · up to $maxStops automatic stops inside +$budgetMinutes min")
+                append(" · up to $maxStops automatic stops inside +${explorationTimeLabel(budgetMinutes)}")
             },
         )
     }
@@ -756,19 +756,15 @@ object ScenicJourneyOptimizer {
     }
 
     private fun automaticStopLimit(budgetMinutes: Int, configuredMax: Int): Int {
-        val budgetLimit = when {
-            budgetMinutes >= 240 -> 6
-            budgetMinutes >= 180 -> 5
-            budgetMinutes >= 120 -> 4
-            budgetMinutes >= 75 -> 3
-            budgetMinutes >= 40 -> 2
-            budgetMinutes >= 20 -> 1
-            else -> 0
-        }
-        return min(configuredMax.coerceAtLeast(1), budgetLimit)
+        val budgetLimit = ScenicAutoStopPlanner.suggestedStopCapacity(budgetMinutes)
+        return min(maxOf(configuredMax, budgetLimit), budgetLimit)
     }
 
     private fun matrixCandidateLimit(budgetMinutes: Int): Int = when {
+        budgetMinutes >= 10_080 -> 48
+        budgetMinutes >= 4_320 -> 36
+        budgetMinutes >= 1_440 -> 28
+        budgetMinutes >= 720 -> 24
         budgetMinutes >= 180 -> 20
         budgetMinutes >= 90 -> 17
         budgetMinutes >= 45 -> 14
@@ -776,7 +772,7 @@ object ScenicJourneyOptimizer {
     }
 
     private fun corridorRadiusKm(budgetMinutes: Int): Double =
-        (4.0 + budgetMinutes * 0.15).coerceIn(6.0, 42.0)
+        explorationCorridorKm(budgetMinutes)
 
     private fun offsetPolyline(points: List<GeoPoint>, lateralKm: Double): List<GeoPoint> {
         if (points.size < 2 || abs(lateralKm) < 0.1) return points

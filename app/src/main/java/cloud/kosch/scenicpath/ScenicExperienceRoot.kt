@@ -64,6 +64,8 @@ fun ScenicExperienceRoot(
     var mapError by remember { mutableStateOf<String?>(null) }
     var topExpanded by session.topExpanded
     var routeDirty by session.routeDirty
+    var automaticStopsApplied by remember { mutableStateOf(false) }
+    var automaticRebuildRequest by remember { mutableIntStateOf(0) }
 
     val origin = startSelection?.point ?: location.point
     val destination = destinationSelection?.point
@@ -81,12 +83,47 @@ fun ScenicExperienceRoot(
         selectedCandidateIndex = 0
         routeDirty = false
         topExpanded = true
+        plan = plan.copy(stops = plan.stops.filterNot(ScenicAutoStopPlanner::isAutomatic))
+        automaticStopsApplied = false
     }
 
     fun buildRoute() {
         showPlanner = false
         showStops = false
         session.buildRoute(origin, destination)
+    }
+
+    fun handlePoiCandidates(candidates: List<ScenePointUi>, completed: Boolean) {
+        if (automaticStopsApplied || !plan.autoSuggestStops || routeLoading || routeDirty) return
+        val route = activeRoute ?: return
+        val minimumCandidates = when {
+            preferences.maxExtraMinutes >= 1_440 -> 6
+            preferences.maxExtraMinutes >= 360 -> 4
+            else -> 2
+        }
+        if (!completed && candidates.size < minimumCandidates) return
+        if (candidates.isEmpty()) return
+        val automatic = ScenicAutoStopPlanner.select(
+            candidates = candidates,
+            route = route.points,
+            explorationMinutes = preferences.maxExtraMinutes,
+            configuredMaxStops = preferences.maxStops,
+        ).filterNot { candidate -> plan.stops.any { it.id == candidate.id } }
+        if (automatic.isEmpty()) {
+            if (completed) automaticStopsApplied = true
+            return
+        }
+        automaticStopsApplied = true
+        plan = plan.copy(stops = plan.stops + automatic)
+        session.draftChanged()
+        automaticRebuildRequest++
+    }
+
+    LaunchedEffect(automaticRebuildRequest, plan.stops) {
+        if (automaticRebuildRequest > 0 && plan.stops.any(ScenicAutoStopPlanner::isAutomatic)) {
+            automaticRebuildRequest = 0
+            buildRoute()
+        }
     }
 
     val vehicle = VehicleSettingsState.profile
@@ -156,6 +193,7 @@ fun ScenicExperienceRoot(
             onRecalculateRoute = ::buildRoute,
             onMapError = { mapError = it },
             onPoiSearchStateChange = { loading, count -> session.updatePoiSearchState(loading, count) },
+            onPoiCandidatesChange = ::handlePoiCandidates,
         )
 
         ExperienceTopPanel(
@@ -427,7 +465,7 @@ private fun ExperienceTopPanel(
                         maxLines = 1,
                     )
                     Text(
-                        "${plan.routeCharacter.label} · +${preferences.maxExtraMinutes} min · ${if (plan.autoSuggestStops) "Smart Stops" else "roads only"}${if (routeDirty) " · changes pending" else ""}",
+                        "${plan.routeCharacter.label} · +${explorationTimeLabel(preferences.maxExtraMinutes)} · ${if (plan.autoSuggestStops) "Smart Stops" else "roads only"}${if (routeDirty) " · changes pending" else ""}",
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
@@ -451,7 +489,7 @@ private fun ExperienceTopPanel(
                 Text(
                     when {
                         routeLoading -> "Calculating the complete road journey…"
-                        poiCount > 0 -> "Searching scenic places… $poiCount candidates already visible"
+                        poiCount > 0 -> "Searching scenic places… $poiCount candidates loaded"
                         else -> "Searching scenic places along the complete route…"
                     },
                     style = MaterialTheme.typography.bodySmall,
@@ -470,7 +508,7 @@ private fun ExperienceTopPanel(
                     AssistChip(onClick = onEnableGps, label = { Text("Enable GPS") }, leadingIcon = { Icon(Icons.Default.GpsFixed, null, Modifier.size(18.dp)) })
                 }
                 AssistChip(onClick = onPlanner, label = { Text(plan.routeCharacter.label) }, leadingIcon = { Icon(Icons.Default.AutoAwesome, null, Modifier.size(18.dp)) })
-                AssistChip(onClick = onPlanner, label = { Text("+${preferences.maxExtraMinutes} min") }, leadingIcon = { Icon(Icons.Default.MoreTime, null, Modifier.size(18.dp)) })
+                AssistChip(onClick = onPlanner, label = { Text("+${explorationTimeLabel(preferences.maxExtraMinutes)}") }, leadingIcon = { Icon(Icons.Default.MoreTime, null, Modifier.size(18.dp)) })
                 AssistChip(onClick = onStops, label = { Text("Smart Stops") }, leadingIcon = { Icon(Icons.Default.AddLocationAlt, null, Modifier.size(18.dp)) })
                 if (routeDirty) {
                     AssistChip(onClick = onPlanner, label = { Text("Changes pending") }, leadingIcon = { Icon(Icons.Default.Update, null, Modifier.size(18.dp)) })

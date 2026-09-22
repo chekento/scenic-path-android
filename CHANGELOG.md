@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.7.3-rc2 — Build 47
+
+- Bind the shared POI pool to the active route. Starting a new journey clears old markers immediately and late results from the previous route are rejected.
+- Make progressive POI discovery bounded and cancellable. Provider waves now drain completed partials safely, expose the real loaded-candidate count and cannot appear permanently stuck at the 520-place render pool.
+- Keep route POIs visible at city zoom levels by letting the native clustered map layer render valid candidate icons instead of hiding them through symbol collisions.
+- Add route-wide automatic Smart Stops: longer exploration budgets promote well-spaced candidates into real route waypoints, so multi-day and multi-week plans do not require manual POI selection.
+- Extend exploration time from hours to 30 days with presets and free values such as `18h`, `3d` and `2w`; the scenic corridor and automatic itinerary capacity expand with the selected time.
+
 ## 0.7.3-rc1 — Build 46
 
 - Make long-distance vehicle routing resilient at automatically generated road-corridor anchors. Endpoint matching no longer applies contradictory hard motorway/toll filters to those anchors; the selected vehicle costing remains authoritative for the final route.

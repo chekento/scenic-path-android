@@ -1,4 +1,16 @@
-# Scenic Path 0.7.3-rc1 / Build 46
+# Scenic Path 0.7.3-rc2 / Build 47
+
+## Route-owned POI sessions
+
+The shared POI pool is now keyed to a compact fingerprint of the active route. Starting a new route clears the previous marker pool before discovery begins; a generation token rejects late results from cancelled provider waves. The UI count tracks unique candidates received separately from the bounded 520-place render pool, so reaching the safe render capacity is not presented as a stalled search.
+
+## Bounded progressive discovery
+
+Rapid, Fast and Precision discovery still publish completed route sections incrementally, but the map now drains all queued partial batches before closing a pass and applies a 75-second/120-second wall-clock deadline depending on route size. Provider cancellation disconnects the underlying HTTP requests. Candidate icons allow native rendering at city zoom while the clustered layer protects the overview map.
+
+## Automatic long-form itinerary
+
+Exploration budgets accept free minute/hour/day/week values up to 30 days. Larger budgets expand the corridor and the automatic Smart Stop capacity. The map promotes a route-wide, category-diverse, well-spaced subset into real route waypoints; the existing vehicle-aware router then recalculates the journey through those stops.
 
 ## Strengthened route commit
 
@@ -16,4 +28,4 @@ The start picker offers the current fused-GPS position directly. It shows an acc
 
 ## Validation scope
 
-The repository CI workflow is the authoritative validation path for Build 46. It runs deterministic JVM tests, the Android debug build and APK verification, release lint, the unsigned AAB smoke build, the live Hamburg–Lisbon routing check and the API 35 native-map stress test. The installable APK and SHA-256 asset are published only by the successful main-branch release workflow.
+The repository CI workflow is the authoritative validation path for Build 47. It runs deterministic JVM tests, the Android debug build and APK verification, release lint, the unsigned AAB smoke build, the live Hamburg–Lisbon routing check and the API 35 native-map stress test. The installable APK and SHA-256 asset are published only by the successful main-branch release workflow.

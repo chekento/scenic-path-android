@@ -226,7 +226,7 @@ object SegmentedJourneyOptimizer {
             note = buildString {
                 append("Fast long-route planner · $segmentCount safe road segments")
                 append(" · one global POI search")
-                append(" · shared +$totalBudget min budget")
+                append(" · shared +${explorationTimeLabel(totalBudget)} budget")
                 if (includedIds.isNotEmpty()) append(" · ${includedIds.size} Smart Stop${if (includedIds.size == 1) "" else "s"} included")
                 else append(" · ${discoveries.size} automatic suggestions")
                 if (includedIds.any { id -> discoveries.any { it.id == id && it.kind == StopKind.FOOD.name } }) append(" · Top Food included")
@@ -351,6 +351,10 @@ object SegmentedJourneyOptimizer {
         budgetMinutes: Int,
     ): List<ScenePointUi> {
         val maxStops = when {
+            budgetMinutes >= 10_080 -> min(12, maxOf(preferences.maxStops, 12))
+            budgetMinutes >= 4_320 -> min(8, maxOf(preferences.maxStops, 8))
+            budgetMinutes >= 1_440 -> min(6, maxOf(preferences.maxStops, 6))
+            budgetMinutes >= 720 -> min(4, maxOf(preferences.maxStops, 4))
             budgetMinutes >= 210 -> min(3, preferences.maxStops)
             budgetMinutes >= 100 -> min(2, preferences.maxStops)
             budgetMinutes >= 30 -> min(1, preferences.maxStops)

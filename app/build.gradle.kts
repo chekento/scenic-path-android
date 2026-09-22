@@ -52,8 +52,8 @@ android {
         minSdk = 26
         targetSdk = 36
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
-        versionCode = 46
-        versionName = "0.7.3-rc1"
+        versionCode = 47
+        versionName = "0.7.3-rc2"
         manifestPlaceholders["usesCleartextTraffic"] = "false"
     }
 

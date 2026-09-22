@@ -132,7 +132,7 @@ object VehicleAwareJourneyPlanner {
             driveExtraMinutes = scenicDriveExtra,
             dwellMinutes = dwell,
             totalExtraMinutes = scenicDriveExtra + dwell,
-            corridorRadiusKm = (4.0 + effective.maxExtraMinutes * 0.15).coerceIn(6.0, 42.0),
+            corridorRadiusKm = explorationCorridorKm(effective.maxExtraMinutes),
             dataConfidence = if (discovered.isEmpty()) 0.65 else 0.9,
         )
 

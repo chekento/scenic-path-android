@@ -10,7 +10,9 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.ui.unit.dp
 import kotlin.math.roundToInt
 
@@ -31,13 +33,23 @@ fun JourneyPlannerSheet(
     var advanced by remember { mutableStateOf(false) }
     var draftPlan by remember(plan) { mutableStateOf(plan) }
     var draftPreferences by remember(preferences) { mutableStateOf(preferences) }
+    var freeTimeText by remember(preferences) { mutableStateOf(explorationTimeLabel(preferences.maxExtraMinutes)) }
     var rebuildRequested by remember { mutableStateOf(false) }
 
     val budget = draftPreferences.maxExtraMinutes
-    val corridorKm = (4.0 + budget * 0.15).coerceIn(6.0, 42.0)
+    val corridorKm = explorationCorridorKm(budget)
     val autoStops = autoStopPreview(budget, draftPreferences.maxStops)
     val dirty = draftPlan != plan || draftPreferences != preferences
     val sceneCount = draftPlan.enabledSceneKinds.size
+
+    fun applyBudget(value: Int, updateText: Boolean = true) {
+        val normalized = value.coerceIn(0, MAX_EXPLORATION_MINUTES)
+        draftPreferences = draftPreferences.copy(
+            maxExtraMinutes = normalized,
+            maxStops = maxOf(draftPreferences.maxStops, ScenicAutoStopPlanner.suggestedStopCapacity(normalized)),
+        )
+        if (updateText) freeTimeText = explorationTimeLabel(normalized)
+    }
 
     // Parent state updates are synchronous but the parent's buildRoute callback belongs to the
     // previous composition until Compose applies the new plan/preferences. Waiting for both
@@ -111,9 +123,9 @@ fun JourneyPlannerSheet(
                         selected = draftPlan.mode == mode,
                         onClick = {
                             val maxStops = when (mode) {
-                                PlanningMode.QUICK -> 5
-                                PlanningMode.DAY_TRIP -> 8
-                                PlanningMode.ROAD_TRIP -> 12
+                                PlanningMode.QUICK -> 6
+                                PlanningMode.DAY_TRIP -> 12
+                                PlanningMode.ROAD_TRIP -> 24
                             }
                             draftPlan = draftPlan.copy(mode = mode)
                             draftPreferences = draftPreferences.copy(maxStops = maxStops)
@@ -142,22 +154,38 @@ fun JourneyPlannerSheet(
 
             Text("Exploration time", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
             HorizontalChoiceRowV5 {
-                listOf(30, 60, 120, 180, 240).forEach { minutes ->
+                listOf(30, 60, 120, 240, 360, 720, 1_440, 4_320, 10_080, 20_160).forEach { minutes ->
                     FilterChip(
                         selected = budget == minutes,
-                        onClick = { draftPreferences = draftPreferences.copy(maxExtraMinutes = minutes) },
-                        label = { Text(if (minutes < 60) "+${minutes}m" else "+${minutes / 60}h${if (minutes % 60 == 0) "" else " ${minutes % 60}m"}") },
+                        onClick = { applyBudget(minutes) },
+                        label = { Text("+${explorationTimeLabel(minutes)}") },
                     )
                 }
             }
             Slider(
-                value = budget.toFloat(),
-                onValueChange = { draftPreferences = draftPreferences.copy(maxExtraMinutes = it.roundToInt()) },
-                valueRange = 0f..360f,
-                steps = 23,
+                value = budget.coerceAtMost(10_080).toFloat(),
+                onValueChange = { applyBudget(it.roundToInt()) },
+                valueRange = 0f..10_080f,
+                steps = 0,
+            )
+            OutlinedTextField(
+                value = freeTimeText,
+                onValueChange = { value ->
+                    freeTimeText = value
+                    parseExplorationTime(value)?.let { applyBudget(it, updateText = false) }
+                },
+                modifier = Modifier.fillMaxWidth(),
+                singleLine = true,
+                label = { Text("Free exploration time") },
+                placeholder = { Text("e.g. 2w, 3d, 18h or 240m") },
+                supportingText = { Text("Up to ${explorationTimeLabel(MAX_EXPLORATION_MINUTES)} · $budget min = ${explorationTimeLabel(budget)}") },
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+                leadingIcon = { Icon(Icons.Default.EditCalendar, null) },
             )
             Text(
                 when {
+                    budget >= 10_080 -> "Multi-week itinerary: route-wide Smart Stops are embedded automatically and distributed across the journey."
+                    budget >= 1_440 -> "Multi-day itinerary: the corridor widens substantially and more route stops can be embedded automatically."
                     budget >= 240 -> "Adventure space: large detours and radically different road corridors are allowed."
                     budget >= 120 -> "Explorer space: major highlights may justify leaving the obvious corridor."
                     else -> "Local scenic space: worthwhile places with efficient detours are preferred."
@@ -415,16 +443,10 @@ fun JourneyPlannerSheet(
 }
 
 private fun autoStopPreview(budgetMinutes: Int, configuredMax: Int): Int {
-    val budgetLimit = when {
-        budgetMinutes >= 240 -> 6
-        budgetMinutes >= 180 -> 5
-        budgetMinutes >= 120 -> 4
-        budgetMinutes >= 75 -> 3
-        budgetMinutes >= 40 -> 2
-        budgetMinutes >= 20 -> 1
-        else -> 0
-    }
-    return minOf(configuredMax.coerceAtLeast(1), budgetLimit)
+    return minOf(
+        maxOf(configuredMax, ScenicAutoStopPlanner.suggestedStopCapacity(budgetMinutes)),
+        ScenicAutoStopPlanner.suggestedStopCapacity(budgetMinutes),
+    )
 }
 
 private fun <T> List<T>.moveItem(from: Int, to: Int): List<T> {

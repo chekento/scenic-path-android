@@ -24,6 +24,7 @@ import androidx.lifecycle.compose.LocalLifecycleOwner
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.withContext
 import org.maplibre.android.camera.CameraPosition
 import org.maplibre.android.camera.CameraUpdateFactory
@@ -56,6 +57,8 @@ private const val ROUTE_LAYER = "scenic-route-layer"
 // capacity that old route discoveries and newly reached areas can coexist instead of trading one
 // marker set for another after the third/fourth waypoint.
 private const val MAX_SCENIC_MARKERS = 420
+private const val POI_SCAN_DEADLINE_SHORT_MS = 75_000L
+private const val POI_SCAN_DEADLINE_LONG_MS = 120_000L
 
 /** MapLibre route host + clustered native POIs + first native live-navigation mode. */
 @Composable
@@ -71,6 +74,7 @@ fun ScenicMap(
     onRecalculateRoute: () -> Unit = {},
     onMapError: (String) -> Unit = {},
     onPoiSearchStateChange: (loading: Boolean, count: Int) -> Unit = { _, _ -> },
+    onPoiCandidatesChange: (candidates: List<ScenePointUi>, completed: Boolean) -> Unit = { _, _ -> },
     discoverPois: Boolean = true,
 ) {
     val context = LocalContext.current
@@ -107,6 +111,7 @@ fun ScenicMap(
 
     val latestUserLocation by rememberUpdatedState(userLocation)
     val latestPoiSearchStateChange by rememberUpdatedState(onPoiSearchStateChange)
+    val latestPoiCandidatesChange by rememberUpdatedState(onPoiCandidatesChange)
     val sharedHighlights = ScenicPoiSharedState.pointsFor(routePoints)
     val activeKinds = ScenicSceneSelectionState.activeKinds
     val plannedStopIds = remember(stops) { stops.mapTo(mutableSetOf()) { it.id } }
@@ -166,22 +171,33 @@ fun ScenicMap(
         }
     }
 
-    // Preserve discoveries on reroutes, but cancel network work when the app is backgrounded.
+    // Every committed route owns a fresh POI session. This prevents results from a previous
+    // journey (for example New York → Los Angeles) from being projected onto the next one.
     LaunchedEffect(routePoints, lifecycleOwner, discoverPois, activeKinds) {
         selectedHighlight = null
         if (routePoints.size < 2) {
             navigationActive = false
             ScenicPoiSharedState.clear()
             latestPoiSearchStateChange(false, 0)
+            latestPoiCandidatesChange(emptyList(), true)
             return@LaunchedEffect
         }
-        val epoch = ScenicPoiSharedState.epoch()
+        val epoch = ScenicPoiSharedState.begin(routePoints)
         ScenicPoiSharedState.publish(routePoints, highlights, epoch)
+        val publishUi: suspend (Boolean, Boolean) -> Unit = { loading, completed ->
+            withContext(Dispatchers.Main.immediate) {
+                val points = ScenicPoiSharedState.pointsFor(routePoints)
+                val count = maxOf(points.size, ScenicPoiSharedState.discoveredCount(routePoints))
+                latestPoiSearchStateChange(loading, count)
+                latestPoiCandidatesChange(points, completed)
+            }
+        }
+        publishUi(loading = false, completed = false)
         if (!discoverPois) {
-            latestPoiSearchStateChange(false, ScenicPoiSharedState.pointsFor(routePoints).size)
+            publishUi(loading = false, completed = true)
             return@LaunchedEffect
         }
-        latestPoiSearchStateChange(true, ScenicPoiSharedState.pointsFor(routePoints).size)
+        publishUi(loading = true, completed = false)
         var completed = false
         lifecycleOwner.lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
             if (completed) return@repeatOnLifecycle
@@ -190,40 +206,48 @@ fun ScenicMap(
             val publisher = launch(Dispatchers.Default) {
                 updates.consume {
                     ScenicPoiSharedState.publish(routePoints, it, epoch)
-                    withContext(Dispatchers.Main.immediate) {
-                        latestPoiSearchStateChange(true, ScenicPoiSharedState.pointsFor(routePoints).size)
-                    }
+                    publishUi(loading = true, completed = false)
                 }
             }
             try {
-                coroutineScope {
-                    launch(Dispatchers.IO) {
-                        updates.submit(optionalRequest {
-                            RapidRoutePoiDiscovery.discover(routePoints, enabledKinds, 220, onPartial = updates::submit)
-                        }.orEmpty())
-                    }
-                    launch(Dispatchers.IO) {
-                        updates.submit(optionalRequest {
-                            FastRoutePoiDiscovery.discover(routePoints, enabledKinds, 220,
-                                completeRoute = true, onPartial = updates::submit)
-                        }.orEmpty())
-                    }
-                    launch(Dispatchers.IO) {
-                        updates.submit(optionalRequest {
-                            PrecisionRoutePoiDiscovery.discover(routePoints, enabledKinds, MAX_SCENIC_MARKERS,
-                                radiusMeters = 15_000, maxSamples = 10, onPartial = updates::submit)
-                        }.orEmpty())
+                // Route geometry can contain 70,000 vertices. Use its bounded vertex count here
+                // instead of building a projection index on the Compose/main dispatcher.
+                val deadline = if (routePoints.size > 2_000) {
+                    POI_SCAN_DEADLINE_LONG_MS
+                } else {
+                    POI_SCAN_DEADLINE_SHORT_MS
+                }
+                withTimeoutOrNull(deadline) {
+                    coroutineScope {
+                        launch(Dispatchers.IO) {
+                            updates.submit(optionalRequest {
+                                FastRoutePoiDiscovery.discover(routePoints, enabledKinds, 220,
+                                    completeRoute = true, onPartial = updates::submit)
+                            }.orEmpty())
+                        }
+                        launch(Dispatchers.IO) {
+                            updates.submit(optionalRequest {
+                                RapidRoutePoiDiscovery.discover(routePoints, enabledKinds, 220, onPartial = updates::submit)
+                            }.orEmpty())
+                        }
+                        launch(Dispatchers.IO) {
+                            updates.submit(optionalRequest {
+                                PrecisionRoutePoiDiscovery.discover(routePoints, enabledKinds, MAX_SCENIC_MARKERS,
+                                    radiusMeters = 15_000, maxSamples = 10, onPartial = updates::submit)
+                            }.orEmpty())
+                        }
                     }
                 }
                 updates.close()
                 publisher.join()
                 completed = true
+                publishUi(loading = false, completed = true)
             } finally {
                 updates.close()
-                publisher.cancel()
+                if (!completed) publisher.cancel()
             }
         }
-        latestPoiSearchStateChange(false, ScenicPoiSharedState.pointsFor(routePoints).size)
+        publishUi(loading = false, completed = true)
     }
     val latestHighlights by rememberUpdatedState(visibleHighlights)
     val disposed = remember { java.util.concurrent.atomic.AtomicBoolean(false) }
