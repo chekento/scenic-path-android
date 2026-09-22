@@ -123,7 +123,7 @@ fun PlacePickerSheet(
                         Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
-                        Icon(Icons.Default.MyLocation, null, tint = MaterialTheme.colorScheme.primary)
+                        Icon(Icons.Default.LocationOn, null, tint = MaterialTheme.colorScheme.primary)
                         Spacer(Modifier.width(10.dp))
                         Column(Modifier.weight(1f)) {
                             Text("Use current GPS location", fontWeight = FontWeight.SemiBold)
@@ -142,14 +142,14 @@ fun PlacePickerSheet(
                         when {
                             currentLocation != null && onUseCurrentLocation != null -> {
                                 FilledTonalButton(onClick = { onUseCurrentLocation?.invoke() }) {
-                                    Icon(Icons.Default.GpsFixed, null, Modifier.size(18.dp))
+                                    Icon(Icons.Default.LocationOn, null, Modifier.size(18.dp))
                                     Spacer(Modifier.width(6.dp))
                                     Text("Use")
                                 }
                             }
                             currentLocation == null && onRequestLocationPermission != null -> {
                                 OutlinedButton(onClick = { onRequestLocationPermission?.invoke() }) {
-                                    Icon(Icons.Default.GpsFixed, null, Modifier.size(18.dp))
+                                    Icon(Icons.Default.LocationOn, null, Modifier.size(18.dp))
                                     Spacer(Modifier.width(6.dp))
                                     Text("Enable")
                                 }
