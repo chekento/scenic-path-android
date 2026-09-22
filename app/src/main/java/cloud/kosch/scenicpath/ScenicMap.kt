@@ -192,12 +192,12 @@ fun ScenicMap(
                 latestPoiCandidatesChange(points, completed)
             }
         }
-        publishUi(loading = false, completed = false)
+        publishUi(false, false)
         if (!discoverPois) {
-            publishUi(loading = false, completed = true)
+            publishUi(false, true)
             return@LaunchedEffect
         }
-        publishUi(loading = true, completed = false)
+        publishUi(true, false)
         var completed = false
         lifecycleOwner.lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
             if (completed) return@repeatOnLifecycle
@@ -206,7 +206,7 @@ fun ScenicMap(
             val publisher = launch(Dispatchers.Default) {
                 updates.consume {
                     ScenicPoiSharedState.publish(routePoints, it, epoch)
-                    publishUi(loading = true, completed = false)
+                    publishUi(true, false)
                 }
             }
             try {
@@ -241,13 +241,13 @@ fun ScenicMap(
                 updates.close()
                 publisher.join()
                 completed = true
-                publishUi(loading = false, completed = true)
+                publishUi(false, true)
             } finally {
                 updates.close()
                 if (!completed) publisher.cancel()
             }
         }
-        publishUi(loading = false, completed = true)
+        publishUi(false, true)
     }
     val latestHighlights by rememberUpdatedState(visibleHighlights)
     val disposed = remember { java.util.concurrent.atomic.AtomicBoolean(false) }
