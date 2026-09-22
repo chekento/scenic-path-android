@@ -38,10 +38,16 @@ Background POI HTTP has three dedicated workers; foreground operations have four
 
 Regression tests exercise 70,001 route vertices with 2,000 POIs, 4,000 batched updates, old-session rejection, foreground access during occupied POI workers, oversized responses, dateline/loop projection against exhaustive segment search, and planned-stop separation. These checks and Android CI do not establish crash-free behavior on every physical device.
 
-Android CI additionally runs the actual `ScenicMap` on an API 35 emulator with 70,001 route vertices and 520 POIs, repeatedly replaces source data, moves the camera, updates GPS, backgrounds/resumes the activity and signals memory pressure. A screenshot and Android test results are retained as CI artifacts. A dense-route regression exposed equal-score selection losing the nearest destination candidates; boundary buckets now retain an endpoint representative before filling additional positions.
+Android CI additionally runs the actual `ScenicMap` on an API 35 emulator with 70,001 route vertices and 520 POIs, repeatedly replaces source data, moves the camera, updates GPS, backgrounds/resumes the activity and signals memory pressure. Android test results and device logs are retained as CI artifacts. A dense-route regression exposed equal-score selection losing the nearest destination candidates; boundary buckets now retain an endpoint representative before filling additional positions.
 
 Observed JVM load run on GitHub Actions: 70,001 vertices / 2,000 candidates / 520 retained in 432 ms, with endpoint and middle coverage asserted. This measures selection and accumulation in the test runner, not network latency or physical-device frame rate. All 37 deterministic tests passed; the opt-in live routing test is counted separately.
 
 The first device run caught a native abort in the new marker setup: zero-density Android bitmaps produce an invalid MapLibre pixel ratio. Marker bitmaps now explicitly use 160 dpi, and style callback setup handles initialization failures without propagating an exception through JNI. Android lint also enforces the corrected cancellation-handler indentation.
 
 The instrumented test's continuation interceptor also exposed a worker-thread MapLibre source update after background GeoJSON preparation. All source writes explicitly dispatch to `Main.immediate`; CPU preparation stays on Default. This does not rely on the surrounding Compose effect's dispatcher.
+
+## Completed validation
+
+App commit `bc275d7e4e023478051213107529ed11e496c0a8`: Android build, APK signature/version verification, lint, unsigned release AAB, 37 deterministic tests, live Hamburg–Lisbon routing and the API 35 native-map stress test all passed. The device test ran for 21.565 seconds and completed all 24 source/GPS/camera changes plus background/resume and memory-pressure signaling. Its final process PSS snapshot was 298,669 KiB (not a peak-memory measurement).
+
+[CI run and artifacts](https://github.com/chekento/scenic-path-android/actions/runs/35696470070). That run's map job was marked failed only by a subsequent attempt to copy a screenshot from the app's already-cleaned cache; the device test XML records one test and zero failures. The unnecessary post-test copy is removed; the tested application code is unchanged.
