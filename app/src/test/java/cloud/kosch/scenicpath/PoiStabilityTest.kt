@@ -120,6 +120,13 @@ class PoiStabilityTest {
         assertEquals(listOf("stop"), stops.features()!!.map { it.getStringProperty("poi_id") })
     }
 
+    @Test fun rawProviderKindsRemainVisibleOnTheMap() {
+        val rawMuseum = poi("museum", GeoPoint(50.0, 9.0)).copy(kind = "museum", subtype = "museum")
+        val rawCastle = poi("castle", GeoPoint(51.0, 10.0)).copy(kind = "castle", subtype = "castle")
+        assertTrue(visibleForSceneKinds(rawMuseum, allSelectableSceneKinds))
+        assertTrue(visibleForSceneKinds(rawCastle, allSelectableSceneKinds))
+    }
+
     private fun wrap(lon: Double) = ((lon + 540.0) % 360.0) - 180.0
     private fun exhaustive(route: List<GeoPoint>, p: GeoPoint): Pair<Double, Double> {
         var best = Double.POSITIVE_INFINITY

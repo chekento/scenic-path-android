@@ -5,8 +5,11 @@ import android.content.res.Configuration
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
+import android.os.SystemClock
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Map
 import androidx.compose.material.icons.filled.Navigation
@@ -15,6 +18,8 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.Lifecycle
@@ -47,6 +52,7 @@ import org.maplibre.geojson.Feature
 import org.maplibre.geojson.FeatureCollection
 import org.maplibre.geojson.LineString
 import org.maplibre.geojson.Point
+import kotlin.math.roundToInt
 
 private const val USER_SOURCE = "scenic-user-source"
 private const val USER_LAYER = "scenic-user-layer"
@@ -59,6 +65,12 @@ private const val ROUTE_LAYER = "scenic-route-layer"
 private const val MAX_SCENIC_MARKERS = 420
 private const val POI_SCAN_DEADLINE_SHORT_MS = 75_000L
 private const val POI_SCAN_DEADLINE_LONG_MS = 120_000L
+
+private data class ScenicScreenMarker(
+    val highlight: ScenePointUi,
+    val x: Float,
+    val y: Float,
+)
 
 /** MapLibre route host + clustered native POIs + first native live-navigation mode. */
 @Composable
@@ -147,7 +159,7 @@ fun ScenicMap(
         buildList {
             addAll(plannedHighlights)
             sharedHighlights.forEach { point ->
-                val enabled = point.kind == StopKind.SCENIC.name || activeKinds.any { it.name == point.kind }
+                val enabled = visibleForSceneKinds(point, activeKinds)
                 if (enabled && point.id !in plannedStopIds) add(point)
             }
         }.take(MAX_SCENIC_MARKERS)
@@ -257,6 +269,8 @@ fun ScenicMap(
     }
     val latestHighlights by rememberUpdatedState(visibleHighlights)
     val disposed = remember { java.util.concurrent.atomic.AtomicBoolean(false) }
+    var projectionTick by remember { mutableIntStateOf(0) }
+    var screenMarkers by remember { mutableStateOf<List<ScenicScreenMarker>>(emptyList()) }
 
     val mapView = remember(context) {
         runCatching { MapView(context).also { it.onCreate(null) } }
@@ -270,6 +284,8 @@ fun ScenicMap(
         MapFallback(modifier, mapError ?: "Map unavailable")
         return
     }
+    val markerDensity = LocalDensity.current
+    val markerPaddingPx = with(markerDensity) { 22.dp.toPx() }
 
     DisposableEffect(lifecycleOwner, mapView) {
         var started = false
@@ -338,6 +354,15 @@ fun ScenicMap(
                         map.uiSettings.isCompassEnabled = true
                         map.uiSettings.isAttributionEnabled = true
                         map.uiSettings.isLogoEnabled = true
+                        var lastProjectionRequest = 0L
+                        map.addOnCameraMoveListener {
+                            val now = SystemClock.uptimeMillis()
+                            if (now - lastProjectionRequest >= 80L) {
+                                lastProjectionRequest = now
+                                projectionTick++
+                            }
+                        }
+                        map.addOnCameraIdleListener { projectionTick++ }
                         map.addOnMapClickListener { coordinate ->
                             val hit = map.queryRenderedFeatures(map.projection.toScreenLocation(coordinate),
                                 ScenicMapPois.STOPS_LAYER, ScenicMapPois.LAYER, ScenicMapPois.CLUSTERS).firstOrNull()
@@ -378,6 +403,42 @@ fun ScenicMap(
 
         if (!styleLoaded && mapError == null) CircularProgressIndicator(Modifier.align(Alignment.Center))
         mapError?.let { MapStatusBadge(it, Modifier.align(Alignment.BottomStart).padding(12.dp)) }
+
+        // MapLibre remains the authoritative map renderer, but this lightweight Compose layer
+        // makes every discovered POI visible immediately even on devices/styles where dynamic
+        // symbol-image evaluation or a clustered GeoJSON refresh is delayed. Positions are
+        // projected from the current native camera and refreshed while the camera moves.
+        screenMarkers.forEach { marker ->
+            key(marker.highlight.id) {
+                val markerSize = if (marker.highlight.includedInRoute) 36.dp else 30.dp
+                val markerSizePx = with(markerDensity) { markerSize.toPx() }
+                Surface(
+                    modifier = Modifier
+                        .offset {
+                            IntOffset(
+                                (marker.x - markerSizePx / 2f).roundToInt(),
+                                (marker.y - markerSizePx / 2f).roundToInt(),
+                            )
+                        }
+                        .size(markerSize)
+                        .clickable { selectedHighlight = marker.highlight },
+                    shape = CircleShape,
+                    color = if (marker.highlight.includedInRoute) {
+                        MaterialTheme.colorScheme.primaryContainer
+                    } else {
+                        MaterialTheme.colorScheme.surface
+                    },
+                    tonalElevation = 3.dp,
+                ) {
+                    Box(contentAlignment = Alignment.Center) {
+                        Text(
+                            scenicCategoryLaneFor(marker.highlight).emoji,
+                            style = MaterialTheme.typography.labelLarge,
+                        )
+                    }
+                }
+            }
+        }
 
         // Navigation can be started directly from the route map. In active mode it switches to a
         // driver-focused HUD and follows GPS with route bearing/tilt while POIs remain visible.
@@ -473,6 +534,36 @@ fun ScenicMap(
             }
         }
     }
+    LaunchedEffect(visibleHighlights, styleLoaded, projectionTick) {
+        if (!styleLoaded) {
+            screenMarkers = emptyList()
+            return@LaunchedEffect
+        }
+        withContext(Dispatchers.Main.immediate) {
+            val map = mapRef
+            val width = mapView.width
+            val height = mapView.height
+            if (map == null || width <= 0 || height <= 0) {
+                screenMarkers = emptyList()
+            } else {
+                screenMarkers = visibleHighlights.mapNotNull { highlight ->
+                    runCatching {
+                        val projected = map.projection.toScreenLocation(
+                            LatLng(highlight.point.lat, highlight.point.lon),
+                        )
+                        if (!projected.x.isFinite() || !projected.y.isFinite() ||
+                            projected.x < -markerPaddingPx || projected.y < -markerPaddingPx ||
+                            projected.x > width + markerPaddingPx || projected.y > height + markerPaddingPx
+                        ) {
+                            null
+                        } else {
+                            ScenicScreenMarker(highlight, projected.x, projected.y)
+                        }
+                    }.getOrNull()
+                }
+            }
+        }
+    }
     LaunchedEffect(userLocation, routePoints, styleLoaded) {
         if (styleLoaded && routePoints.size < 2 && !initialLocationFocused) {
             userLocation?.let { point ->
@@ -515,6 +606,12 @@ fun ScenicMap(
             mapRef?.animateCamera(CameraUpdateFactory.newCameraPosition(camera), 700)
         }
     }
+}
+
+internal fun visibleForSceneKinds(point: ScenePointUi, activeKinds: Set<StopKind>): Boolean {
+    val normalized = StopKind.entries.firstOrNull { it.name.equals(point.kind, ignoreCase = true) }
+        ?: sceneKindForRawType(point.subtype ?: point.kind)
+    return normalized == StopKind.SCENIC || normalized in activeKinds
 }
 
 private fun ensureBaseLayers(style: Style) {
