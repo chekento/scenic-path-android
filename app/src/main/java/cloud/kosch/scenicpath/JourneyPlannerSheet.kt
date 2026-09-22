@@ -179,7 +179,7 @@ fun JourneyPlannerSheet(
                 label = { Text("Free exploration time") },
                 placeholder = { Text("e.g. 2w, 3d, 18h or 240m") },
                 supportingText = { Text("Up to ${explorationTimeLabel(MAX_EXPLORATION_MINUTES)} · $budget min = ${explorationTimeLabel(budget)}") },
-                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Text),
                 leadingIcon = { Icon(Icons.Default.EditCalendar, null) },
             )
             Text(
