@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.7.3-rc4 — Build 49
+
+- Repair recalculation after adding a POI waypoint: incoming and outgoing legs may be snapped to nearby different access roads by Valhalla.
+- Connect those provider snap points with a real vehicle-aware road request and include the connector in route distance and duration instead of rejecting the complete journey.
+- Keep the old strict stitcher for long-distance corridor sections, so genuinely disconnected road sections still fail safely without straight-line geometry.
+- Add regression tests for successful waypoint bridges and failed connector handling.
+
 ## 0.7.3-rc3 — Build 48
 
 - Render every retained POI batch immediately through a route-aware Compose marker overlay, with camera-following positions and clickable category markers.

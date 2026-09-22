@@ -75,6 +75,50 @@ class LongDistanceRoutingTest {
         } catch (_: IOException) { }
     }
 
+    @Test
+    fun waypointLegsUseARealRoadBridgeForNearbyProviderSnaps() = runBlocking {
+        val start = GeoPoint(50.0, 8.0)
+        val incomingSnap = GeoPoint(50.001, 8.010)
+        val outgoingSnap = GeoPoint(50.001, 8.011)
+        val destination = GeoPoint(50.0, 8.020)
+        val first = leg(start, incomingSnap)
+        val second = leg(outgoingSnap, destination)
+        val connector = RoadRoute(
+            distanceMeters = LongDistanceRouting.distance(incomingSnap, outgoingSnap),
+            durationSeconds = 42.0,
+            points = listOf(incomingSnap, outgoingSnap),
+        )
+
+        val result = LongDistanceRouting.stitchWithBridges(listOf(first, second)) { from, to ->
+            assertEquals(incomingSnap, from)
+            assertEquals(outgoingSnap, to)
+            connector
+        }
+
+        assertEquals(start, result.points.first())
+        assertEquals(destination, result.points.last())
+        assertTrue(result.points.contains(incomingSnap))
+        assertTrue(result.points.contains(outgoingSnap))
+        assertEquals(first.distanceMeters + connector.distanceMeters + second.distanceMeters, result.distanceMeters, 0.01)
+        assertEquals(first.durationSeconds + connector.durationSeconds + second.durationSeconds, result.durationSeconds, 0.01)
+    }
+
+    @Test
+    fun failedWaypointBridgeStillRejectsTheReplacementRoute() = runBlocking {
+        val start = GeoPoint(50.0, 8.0)
+        val incomingSnap = GeoPoint(50.001, 8.010)
+        val outgoingSnap = GeoPoint(50.001, 8.011)
+        val destination = GeoPoint(50.0, 8.020)
+        try {
+            LongDistanceRouting.stitchWithBridges(
+                listOf(leg(start, incomingSnap), leg(outgoingSnap, destination)),
+            ) { _, _ -> throw IOException("connector unavailable") }
+            fail("A missing road connector must not create a partial route")
+        } catch (expected: IOException) {
+            assertEquals("connector unavailable", expected.message)
+        }
+    }
+
     @Test fun distanceSplitsPreserveLoopsAndUseExistingVertices() {
         val bend = listOf(GeoPoint(52.0, 8.0), GeoPoint(55.0, 8.0), GeoPoint(55.0, 12.0), GeoPoint(52.0, 12.0))
         val pieces = LongDistanceRouting.splitByDistance(bend, 400_000.0)

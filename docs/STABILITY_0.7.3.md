@@ -1,4 +1,8 @@
-# Scenic Path 0.7.3-rc3 / Build 48
+# Scenic Path 0.7.3-rc4 / Build 49
+
+## POI waypoint recalculation
+
+When a discovered POI is added as a mandatory route waypoint, the incoming and outgoing Valhalla legs are still routed independently. If the provider snaps the two legs to nearby different access roads, Build 49 requests a real vehicle-aware connector between those road points and includes it in the committed route metrics. The strict corridor stitcher remains unchanged for genuinely disconnected sections; no straight-line geometry is inserted.
 
 ## Immediate POI marker rendering
 
@@ -32,4 +36,4 @@ The start picker offers the current fused-GPS position directly. It shows an acc
 
 ## Validation scope
 
-The repository CI workflow is the authoritative validation path for Build 48. It runs deterministic JVM tests, the Android debug build and APK verification, release lint, the unsigned AAB smoke build, the live Hamburg–Lisbon routing check and the API 35 native-map stress test. The installable APK and SHA-256 asset are published only by the successful main-branch release workflow.
+The repository CI workflow is the authoritative validation path for Build 49. It runs deterministic JVM tests, the Android debug build and APK verification, release lint, the unsigned AAB smoke build, the live Hamburg–Lisbon routing check and the API 35 native-map stress test. The installable APK and SHA-256 asset are published only by the successful main-branch release workflow.

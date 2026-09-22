@@ -90,6 +90,74 @@ internal object LongDistanceRouting {
         return RoadRoute(legs.sumOf { it.distanceMeters }, legs.sumOf { it.durationSeconds }, points)
     }
 
+    /**
+     * Stitch independently routed waypoint legs without turning a small provider snap
+     * difference into a journey-wide failure.
+     *
+     * A POI normally represents a building, park or museum centroid rather than the exact
+     * driveway. Valhalla can therefore snap `A -> POI` and `POI -> B` to two nearby road
+     * vertices. The old plain [stitch] function correctly rejects such a gap because it has no
+     * way to prove that the sections are connected. Waypoint routing does have that option: the
+     * caller supplies a real road request for the short connector. No straight-line geometry is
+     * ever inserted into the displayed route.
+     */
+    suspend fun stitchWithBridges(
+        legs: List<RoadRoute>,
+        bridge: suspend (from: GeoPoint, to: GeoPoint) -> RoadRoute,
+        joinToleranceMeters: Double = 75.0,
+    ): RoadRoute {
+        require(legs.isNotEmpty())
+        require(joinToleranceMeters > 0.0)
+
+        val points = mutableListOf<GeoPoint>()
+        var distanceMeters = 0.0
+        var durationSeconds = 0.0
+
+        fun validate(route: RoadRoute) {
+            require(route.points.size >= 2 && route.points.all(::validPoint) &&
+                route.distanceMeters.isFinite() && route.durationSeconds.isFinite() &&
+                route.distanceMeters >= 0.0 && route.durationSeconds >= 0.0) {
+                "The routing service returned an incomplete section."
+            }
+        }
+
+        fun appendConnected(route: RoadRoute) {
+            validate(route)
+            if (points.isNotEmpty()) {
+                val gap = distance(points.last(), route.points.first())
+                if (gap > joinToleranceMeters) {
+                    throw IOException("The road sections could not be connected. Please try again or add a waypoint.")
+                }
+                if (gap < 1.0) points.removeAt(points.lastIndex)
+            }
+            points += route.points
+            distanceMeters += route.distanceMeters
+            durationSeconds += route.durationSeconds
+        }
+
+        for (leg in legs) {
+            validate(leg)
+            if (points.isEmpty()) {
+                points += leg.points
+                distanceMeters += leg.distanceMeters
+                durationSeconds += leg.durationSeconds
+                continue
+            }
+
+            val from = points.last()
+            val to = leg.points.first()
+            if (distance(from, to) > joinToleranceMeters) {
+                // The connector is deliberately requested on the selected vehicle profile by
+                // the caller. It is counted in the final route metrics and validated like every
+                // other road section.
+                appendConnected(bridge(from, to))
+            }
+            appendConnected(leg)
+        }
+
+        return RoadRoute(distanceMeters, durationSeconds, points)
+    }
+
     fun isDistanceLimit(error: Throwable): Boolean {
         if (error is kotlinx.coroutines.CancellationException) return false
         val message = error.message.orEmpty().lowercase()
