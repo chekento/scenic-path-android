@@ -400,9 +400,11 @@ fun ScenicMap(
 
     LaunchedEffect(userLocation, styleLoaded) {
         if (styleLoaded) {
-            val source = mapRef?.style?.getSourceAs<GeoJsonSource>(USER_SOURCE)
-            if (userLocation != null) source?.setGeoJson(Feature.fromGeometry(Point.fromLngLat(userLocation.lon, userLocation.lat)))
-            else source?.setGeoJson(FeatureCollection.fromFeatures(emptyArray<Feature>()))
+            withContext(Dispatchers.Main.immediate) {
+                val source = mapRef?.style?.getSourceAs<GeoJsonSource>(USER_SOURCE)
+                if (userLocation != null) source?.setGeoJson(Feature.fromGeometry(Point.fromLngLat(userLocation.lon, userLocation.lat)))
+                else source?.setGeoJson(FeatureCollection.fromFeatures(emptyArray<Feature>()))
+            }
         }
     }
     LaunchedEffect(routePoints, styleLoaded) {
@@ -412,15 +414,19 @@ fun ScenicMap(
                     LineString.fromLngLats(routePoints.map { Point.fromLngLat(it.lon, it.lat) }))))
                 else FeatureCollection.fromFeatures(emptyArray<Feature>())
             }
-            mapRef?.style?.getSourceAs<GeoJsonSource>(ROUTE_SOURCE)?.setGeoJson(data)
+            withContext(Dispatchers.Main.immediate) {
+                mapRef?.style?.getSourceAs<GeoJsonSource>(ROUTE_SOURCE)?.setGeoJson(data)
+            }
         }
     }
     LaunchedEffect(visibleHighlights, styleLoaded) {
         if (styleLoaded) {
             val (pois, fixed) = withContext(Dispatchers.Default) { ScenicMapPois.features(visibleHighlights) }
-            mapRef?.style?.let { style ->
-                style.getSourceAs<GeoJsonSource>(ScenicMapPois.SOURCE)?.setGeoJson(pois)
-                style.getSourceAs<GeoJsonSource>(ScenicMapPois.STOPS_SOURCE)?.setGeoJson(fixed)
+            withContext(Dispatchers.Main.immediate) {
+                mapRef?.style?.let { style ->
+                    style.getSourceAs<GeoJsonSource>(ScenicMapPois.SOURCE)?.setGeoJson(pois)
+                    style.getSourceAs<GeoJsonSource>(ScenicMapPois.STOPS_SOURCE)?.setGeoJson(fixed)
+                }
             }
         }
     }

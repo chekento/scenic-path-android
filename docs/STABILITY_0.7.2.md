@@ -43,3 +43,5 @@ Android CI additionally runs the actual `ScenicMap` on an API 35 emulator with 7
 Observed JVM load run on GitHub Actions: 70,001 vertices / 2,000 candidates / 520 retained in 432 ms, with endpoint and middle coverage asserted. This measures selection and accumulation in the test runner, not network latency or physical-device frame rate. All 37 deterministic tests passed; the opt-in live routing test is counted separately.
 
 The first device run caught a native abort in the new marker setup: zero-density Android bitmaps produce an invalid MapLibre pixel ratio. Marker bitmaps now explicitly use 160 dpi, and style callback setup handles initialization failures without propagating an exception through JNI. Android lint also enforces the corrected cancellation-handler indentation.
+
+The instrumented test's continuation interceptor also exposed a worker-thread MapLibre source update after background GeoJSON preparation. All source writes explicitly dispatch to `Main.immediate`; CPU preparation stays on Default. This does not rely on the surrounding Compose effect's dispatcher.
