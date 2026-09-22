@@ -375,7 +375,7 @@ object PrecisionRoutePoiDiscovery {
                 try {
                     return executeGet(endpoint, encodedQuery, deep)
                 } catch (error: Exception) {
-                if (error is kotlinx.coroutines.CancellationException) throw error
+                    if (error is kotlinx.coroutines.CancellationException) throw error
                     lastError = error
                 }
             }

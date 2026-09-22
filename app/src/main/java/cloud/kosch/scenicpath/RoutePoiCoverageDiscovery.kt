@@ -170,7 +170,7 @@ object RoutePoiCoverageDiscovery {
                 try {
                     return get(endpoint, encoded)
                 } catch (error: Exception) {
-                if (error is kotlinx.coroutines.CancellationException) throw error
+                    if (error is kotlinx.coroutines.CancellationException) throw error
                     lastError = error
                 }
             }

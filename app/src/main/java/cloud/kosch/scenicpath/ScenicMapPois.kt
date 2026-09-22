@@ -67,8 +67,8 @@ internal object ScenicMapPois {
 
     private fun icon(emoji: String, planned: Boolean): Bitmap {
         val bitmap = Bitmap.createBitmap(88, 88, Bitmap.Config.ARGB_8888)
-        // Explicit density keeps symbol dimensions consistent across Android screen densities.
-        bitmap.density = Bitmap.DENSITY_NONE
+        // MapLibre derives pixelRatio from density / 160; zero density aborts native image setup.
+        bitmap.density = android.util.DisplayMetrics.DENSITY_DEFAULT
         val canvas = Canvas(bitmap)
         val paint = Paint(Paint.ANTI_ALIAS_FLAG)
         paint.color = Color.WHITE

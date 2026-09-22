@@ -98,6 +98,8 @@ Build 45 fixes long journeys that exceeded a routing-service distance limit. A c
 
 Address suggestions now appear progressively, remain stable during GPS updates, and support an explicit exact-address search while other providers are still loading. Route requests can be cancelled; older replies cannot replace newer input. The journey and search drafts survive screen rotation.
 
+Dense POI sessions now use native map clusters, bounded result buffers and background selection. GPS updates no longer reload the entire route. Background requests cancel promptly, and Smart Stops reuses discoveries already on the map.
+
 The new landscape-and-path icon is shared by the launcher, the in-app header and this page. Android themed icons are supported.
 
 [Changelog](CHANGELOG.md) · [Technical validation](docs/STABILITY_0.7.2.md)

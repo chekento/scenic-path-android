@@ -71,7 +71,8 @@ fun JourneyStopsSheet(
 
     val currentPoints = route?.points.orEmpty()
     val shared = ScenicPoiSharedState.pointsFor(currentPoints)
-    val merged by produceState<List<ScenePointUi>>(emptyList(), route, shared, enriched) {
+    val activeKinds = ScenicSceneSelectionState.activeKinds
+    val merged by produceState<List<ScenePointUi>>(emptyList(), route, shared, enriched, activeKinds) {
         value = withContext(Dispatchers.Default) {
             val routePoints = route?.scenePoints.orEmpty().map { point ->
                 if (point.includedInRoute || point.id in route?.autoStopIds.orEmpty()) point.copy(includedInRoute = true) else point

@@ -106,6 +106,7 @@ fun ScenicMap(
 
     val latestUserLocation by rememberUpdatedState(userLocation)
     val sharedHighlights = ScenicPoiSharedState.pointsFor(routePoints)
+    val activeKinds = ScenicSceneSelectionState.activeKinds
     val plannedStopIds = remember(stops) { stops.mapTo(mutableSetOf()) { it.id } }
     val plannedHighlights = remember(stops) {
         stops.mapNotNull { stop ->
@@ -131,10 +132,13 @@ fun ScenicMap(
         }
     }
 
-    val visibleHighlights = remember(sharedHighlights, plannedHighlights, plannedStopIds) {
+    val visibleHighlights = remember(sharedHighlights, plannedHighlights, plannedStopIds, activeKinds) {
         buildList {
             addAll(plannedHighlights)
-            sharedHighlights.forEach { point -> if (point.id !in plannedStopIds) add(point) }
+            sharedHighlights.forEach { point ->
+                val enabled = point.kind == StopKind.SCENIC.name || activeKinds.any { it.name == point.kind }
+                if (enabled && point.id !in plannedStopIds) add(point)
+            }
         }.take(MAX_SCENIC_MARKERS)
     }
 
@@ -161,7 +165,7 @@ fun ScenicMap(
     }
 
     // Preserve discoveries on reroutes, but cancel network work when the app is backgrounded.
-    LaunchedEffect(routePoints, lifecycleOwner, discoverPois) {
+    LaunchedEffect(routePoints, lifecycleOwner, discoverPois, activeKinds) {
         selectedHighlight = null
         if (routePoints.size < 2) {
             navigationActive = false
@@ -174,7 +178,7 @@ fun ScenicMap(
         var completed = false
         lifecycleOwner.lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
             if (completed) return@repeatOnLifecycle
-            val enabledKinds = prototypeSelectableSceneKinds.ifEmpty { allSelectableSceneKinds }
+            val enabledKinds = activeKinds
             val updates = PoiUpdateBuffer()
             val publisher = launch(Dispatchers.Default) {
                 updates.consume { ScenicPoiSharedState.publish(routePoints, it, epoch) }
@@ -310,9 +314,14 @@ fun ScenicMap(
                         runCatching {
                             map.setStyle(BuildConfig.MAP_STYLE_URL) { style ->
                                 if (!disposed.get()) {
-                                    ensureBaseLayers(style)
-                                    ScenicMapPois.install(style)
-                                    styleLoaded = true
+                                    runCatching {
+                                        ensureBaseLayers(style)
+                                        ScenicMapPois.install(style)
+                                        styleLoaded = true
+                                    }.onFailure { error ->
+                                        mapError = error.message ?: "Map layers could not be loaded"
+                                        onMapError(mapError!!)
+                                    }
                                 }
                             }
                         }.onFailure { error ->
