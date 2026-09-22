@@ -300,8 +300,11 @@ object PrecisionRoutePoiDiscovery {
             for (bucket in order) {
                 if (result.size >= maxResults) break
                 val candidates = buckets.getValue(bucket)
+                val boundaryPick = (bucket == 0 || bucket == bucketCount - 1) && laneCounts.keys.none { it.first == bucket }
+                val boundaryDistance = if (bucket == 0) 0.0 else geometry.lengthMeters
                 val candidate = candidates.minWithOrNull(
                     compareByDescending<ScenePointUi> { it.includedInRoute }
+                        .thenBy { if (boundaryPick) kotlin.math.abs(geometry.project(it.point).alongMeters - boundaryDistance) else 0.0 }
                         .thenBy { laneCounts[bucket to scenicCategoryLaneFor(it).id] ?: 0 }
                         .thenBy { globalCounts[scenicCategoryLaneFor(it).id] ?: 0 }
                         .thenByDescending { it.suggestionScore }

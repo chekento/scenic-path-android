@@ -70,6 +70,7 @@ fun ScenicMap(
     onToggleRouteStop: (ScenePointUi) -> Unit = {},
     onRecalculateRoute: () -> Unit = {},
     onMapError: (String) -> Unit = {},
+    discoverPois: Boolean = true,
 ) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
@@ -160,7 +161,7 @@ fun ScenicMap(
     }
 
     // Preserve discoveries on reroutes, but cancel network work when the app is backgrounded.
-    LaunchedEffect(routePoints, lifecycleOwner) {
+    LaunchedEffect(routePoints, lifecycleOwner, discoverPois) {
         selectedHighlight = null
         if (routePoints.size < 2) {
             navigationActive = false
@@ -169,6 +170,7 @@ fun ScenicMap(
         }
         val epoch = ScenicPoiSharedState.epoch()
         ScenicPoiSharedState.publish(routePoints, highlights, epoch)
+        if (!discoverPois) return@LaunchedEffect
         var completed = false
         lifecycleOwner.lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
             if (completed) return@repeatOnLifecycle

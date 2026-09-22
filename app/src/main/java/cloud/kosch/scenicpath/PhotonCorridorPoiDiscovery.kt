@@ -109,7 +109,7 @@ object PhotonCorridorPoiDiscovery {
             append("&lang=de&dedupe=1&include=").append(include)
         }
 
-        var features = runCatching { fetch(searchUrl) }.getOrElse { JSONArray() }
+        var features = optionalRequest { fetch(searchUrl) } ?: JSONArray()
         if (features.length() == 0) {
             currentCoroutineContext().ensureActive()
             // Some Photon deployments are stricter about textless `/api` queries. Reverse is
@@ -121,7 +121,7 @@ object PhotonCorridorPoiDiscovery {
                 append("&radius=28&limit=").append(pack.limit)
                 append("&lang=de&dedupe=1&include=").append(include)
             }
-            features = runCatching { fetch(reverseUrl) }.getOrElse { JSONArray() }
+            features = optionalRequest { fetch(reverseUrl) } ?: JSONArray()
         }
 
         return parseFeatures(windowIndex, features, routeForDistance, enabledKinds)
