@@ -174,13 +174,13 @@ object VehicleAwareJourneyPlanner {
         val legs = nodes.zipWithNext().map { (from, to) ->
             requestRoute(listOf(from, to), preferences, scenic)
         }
-        return LongDistanceRouting.stitchWithBridges(legs) { from, to ->
+        return LongDistanceRouting.stitchWithBridges(legs, bridge = { from, to ->
             // A POI is usually a centroid, not a road vertex. The incoming and outgoing
             // pairwise Valhalla requests can therefore snap to nearby different access roads.
             // Route that small gap on the same vehicle profile instead of discarding the whole
             // recalculation or drawing an invalid straight-line connector.
             requestSingleRoute(listOf(from, to), preferences, scenic = false)
-        }
+        })
     }
 
     private suspend fun requestRoute(

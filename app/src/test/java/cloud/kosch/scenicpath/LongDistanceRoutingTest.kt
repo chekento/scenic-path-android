@@ -89,11 +89,11 @@ class LongDistanceRoutingTest {
             points = listOf(incomingSnap, outgoingSnap),
         )
 
-        val result = LongDistanceRouting.stitchWithBridges(listOf(first, second)) { from, to ->
+        val result = LongDistanceRouting.stitchWithBridges(listOf(first, second), bridge = { from, to ->
             assertEquals(incomingSnap, from)
             assertEquals(outgoingSnap, to)
             connector
-        }
+        })
 
         assertEquals(start, result.points.first())
         assertEquals(destination, result.points.last())
@@ -112,7 +112,8 @@ class LongDistanceRoutingTest {
         try {
             LongDistanceRouting.stitchWithBridges(
                 listOf(leg(start, incomingSnap), leg(outgoingSnap, destination)),
-            ) { _, _ -> throw IOException("connector unavailable") }
+                bridge = { _, _ -> throw IOException("connector unavailable") },
+            )
             fail("A missing road connector must not create a partial route")
         } catch (expected: IOException) {
             assertEquals("connector unavailable", expected.message)
