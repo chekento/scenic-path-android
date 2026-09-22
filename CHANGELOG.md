@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.7.3-rc3 — Build 48
+
+- Render every retained POI batch immediately through a route-aware Compose marker overlay, with camera-following positions and clickable category markers.
+- Keep the native MapLibre source and cluster layers as a complementary renderer, while adding a visible native point fallback for devices/styles that delay dynamic symbol images.
+- Normalize provider raw types such as `museum`, `castle` and `viewpoint` before applying the active category filter, so found POIs cannot disappear between discovery and rendering.
+- Add regression coverage for raw provider categories and the strengthened native map marker layer.
+
 ## 0.7.3-rc2 — Build 47
 
 - Bind the shared POI pool to the active route. Starting a new journey clears old markers immediately and late results from the previous route are rejected.
