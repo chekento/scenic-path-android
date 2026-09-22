@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.7.3-rc1 — Build 46
+
+- Make long-distance vehicle routing resilient at automatically generated road-corridor anchors. Endpoint matching no longer applies contradictory hard motorway/toll filters to those anchors; the selected vehicle costing remains authoritative for the final route.
+- Commit a valid road route without waiting for the public POI enrichment wave. Progressive Rapid/Fast/Precision scans continue after the route appears and retain the complete-route coverage model.
+- Add a visible animated Scenic status indicator for route calculation and ongoing POI discovery, including the number of candidates already available after scanning completes.
+- Add a direct current-GPS action to the start picker, with explicit permission, waiting-for-fix and accuracy states.
+- Keep the previous committed route when a replacement request fails; a slow or empty POI provider cannot turn a valid road route into a planning error.
+
 ## 0.7.2-rc2 — Build 45
 
 - Render POIs in native clustered map layers, retaining separately selectable fixed stops. Camera motion no longer recomposes hundreds of marker views.

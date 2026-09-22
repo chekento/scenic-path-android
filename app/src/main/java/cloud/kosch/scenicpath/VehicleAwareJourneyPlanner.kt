@@ -2,7 +2,6 @@ package cloud.kosch.scenicpath
 
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
-import kotlinx.coroutines.withTimeoutOrNull
 import org.json.JSONArray
 import org.json.JSONObject
 import kotlin.math.abs
@@ -63,19 +62,11 @@ object VehicleAwareJourneyPlanner {
             }?.takeIf { (it.durationSeconds - direct.durationSeconds) / 60.0 <= effective.maxExtraMinutes } ?: direct
         }
 
-        val discovered = if (plan.autoSuggestStops && plan.enabledSceneKinds.isNotEmpty()) {
-            withTimeoutOrNull(10_000) {
-                optionalRequest {
-                    FastRoutePoiDiscovery.discover(
-                        route = scenic.points,
-                        enabledKinds = plan.enabledSceneKinds,
-                        maxResults = 96,
-                    )
-                }.orEmpty()
-            }.orEmpty()
-        } else emptyList()
-
-        if (discovered.isNotEmpty()) ScenicPoiSharedState.publish(scenic.points, discovered)
+        // POI discovery is intentionally not part of the blocking route commit anymore. The
+        // map starts the full-route progressive scan immediately after this road route is
+        // committed and exposes its own animated status. A slow/empty public POI provider must
+        // therefore never make a valid A→B route look failed or delay its first render.
+        val discovered = emptyList<ScenePointUi>()
 
         val fixedHighlights = fixedStops.mapNotNull { stop ->
             stop.point?.let { point ->
@@ -198,8 +189,13 @@ object VehicleAwareJourneyPlanner {
         maxSpanMeters = if (preferences.vehicle.kind == VehicleKind.BICYCLE) 120_000.0 else 600_000.0,
         requestGuide = { OsmRoadCorridor.request(locations.first(), locations.last(), preferences) },
         requestLeg = { from, to ->
-            requestSingleRoute(listOf(from, to), preferences, scenic,
-                filterStartAnchor = from != locations.first(), filterEndAnchor = to != locations.last())
+            // LongDistanceRouting may call this lambda with an automatically generated
+            // network-corridor anchor. Those points already came from a real road geometry;
+            // applying a hard motorway/toll search filter while Valhalla snaps the anchor can
+            // reject the only road that reaches it and break an otherwise valid NY–LA-sized
+            // journey. Costing options below remain authoritative for the actual route; anchor
+            // matching must stay permissive.
+            requestSingleRoute(listOf(from, to), preferences, scenic)
         },
     )
 
@@ -207,28 +203,14 @@ object VehicleAwareJourneyPlanner {
         locations: List<GeoPoint>,
         preferences: ScenicPreferences,
         scenic: Boolean,
-        filterStartAnchor: Boolean = false,
-        filterEndAnchor: Boolean = false,
     ): RoadRoute {
         val vehicle = preferences.vehicle
         val costing = costingName(vehicle.kind)
         val options = costingOptions(vehicle, preferences, scenic)
         val body = JSONObject().apply {
             put("locations", JSONArray().apply {
-                locations.forEachIndexed { index, point ->
-                    val location = JSONObject().put("lat", point.lat).put("lon", point.lon).put("type", "break")
-                    val intermediate = (index == 0 && filterStartAnchor) || (index == locations.lastIndex && filterEndAnchor)
-                    if (intermediate && (preferences.avoidMotorways || preferences.avoidTolls)) {
-                        location.put("search_cutoff", 5_000)
-                        location.put("search_filter", JSONObject().apply {
-                            if (preferences.avoidMotorways) {
-                                put("max_road_class", "trunk")
-                                put("exclude_ramp", true)
-                            }
-                            if (preferences.avoidTolls) put("exclude_toll", true)
-                        })
-                    }
-                    put(location)
+                locations.forEach { point ->
+                    put(JSONObject().put("lat", point.lat).put("lon", point.lon).put("type", "break"))
                 }
             })
             put("costing", costing)

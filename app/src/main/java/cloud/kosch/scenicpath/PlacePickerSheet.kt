@@ -23,6 +23,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.delay
+import kotlin.math.roundToInt
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -30,6 +31,10 @@ fun PlacePickerSheet(
     title: String,
     initialQuery: String = "",
     bias: GeoPoint? = null,
+    currentLocation: GeoPoint? = null,
+    currentLocationAccuracyMeters: Float? = null,
+    onUseCurrentLocation: (() -> Unit)? = null,
+    onRequestLocationPermission: (() -> Unit)? = null,
     onDismiss: () -> Unit,
     onPick: (PlaceSuggestion) -> Unit,
     onQueryChange: (String) -> Unit = {},
@@ -106,6 +111,53 @@ fun PlacePickerSheet(
                     )
                 }
                 IconButton(onClick = onDismiss) { Icon(Icons.Default.Close, "Close") }
+            }
+
+            if (onUseCurrentLocation != null || onRequestLocationPermission != null) {
+                Card(
+                    colors = CardDefaults.cardColors(
+                        containerColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.62f),
+                    ),
+                ) {
+                    Row(
+                        Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Icon(Icons.Default.MyLocation, null, tint = MaterialTheme.colorScheme.primary)
+                        Spacer(Modifier.width(10.dp))
+                        Column(Modifier.weight(1f)) {
+                            Text("Use current GPS location", fontWeight = FontWeight.SemiBold)
+                            Text(
+                                when {
+                                    currentLocation != null && currentLocationAccuracyMeters != null ->
+                                        "Live position available · ±${currentLocationAccuracyMeters.roundToInt()} m"
+                                    currentLocation != null -> "Live position available"
+                                    onRequestLocationPermission != null -> "Allow location access to use this as your start"
+                                    else -> "Waiting for a GPS fix…"
+                                },
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onPrimaryContainer,
+                            )
+                        }
+                        when {
+                            currentLocation != null && onUseCurrentLocation != null -> {
+                                FilledTonalButton(onClick = { onUseCurrentLocation?.invoke() }) {
+                                    Icon(Icons.Default.GpsFixed, null, Modifier.size(18.dp))
+                                    Spacer(Modifier.width(6.dp))
+                                    Text("Use")
+                                }
+                            }
+                            currentLocation == null && onRequestLocationPermission != null -> {
+                                OutlinedButton(onClick = { onRequestLocationPermission?.invoke() }) {
+                                    Icon(Icons.Default.GpsFixed, null, Modifier.size(18.dp))
+                                    Spacer(Modifier.width(6.dp))
+                                    Text("Enable")
+                                }
+                            }
+                            else -> CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
+                        }
+                    }
+                }
             }
 
             OutlinedTextField(

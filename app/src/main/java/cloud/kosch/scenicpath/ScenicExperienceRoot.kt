@@ -6,6 +6,12 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
@@ -13,6 +19,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.res.painterResource
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.compose.ui.text.font.FontWeight
@@ -51,6 +58,8 @@ fun ScenicExperienceRoot(
     var routePlan by session.routePlan
     var selectedCandidateIndex by session.selectedCandidateIndex
     var routeLoading by session.routeLoading
+    var poiLoading by session.poiLoading
+    var poiCount by session.poiCount
     var routeError by session.routeError
     var mapError by remember { mutableStateOf<String?>(null) }
     var topExpanded by session.topExpanded
@@ -146,6 +155,7 @@ fun ScenicExperienceRoot(
             onToggleRouteStop = ::toggleMapStop,
             onRecalculateRoute = ::buildRoute,
             onMapError = { mapError = it },
+            onPoiSearchStateChange = { loading, count -> session.updatePoiSearchState(loading, count) },
         )
 
         ExperienceTopPanel(
@@ -164,6 +174,8 @@ fun ScenicExperienceRoot(
             plan = plan,
             preferences = preferences,
             routeLoading = routeLoading,
+            poiLoading = poiLoading,
+            poiCount = poiCount,
             onCancel = { session.invalidate() },
             hasDestination = destination != null,
             hasRoute = routePlan != null,
@@ -283,6 +295,15 @@ fun ScenicExperienceRoot(
             initialQuery = session.startQuery.value.ifBlank { startSelection?.title.orEmpty() },
             onQueryChange = { session.startQuery.value = it },
             bias = location.point,
+            currentLocation = location.point,
+            currentLocationAccuracyMeters = location.accuracyMeters,
+            onUseCurrentLocation = {
+                session.startQuery.value = ""
+                startSelection = null
+                showStartPicker = false
+                clearRouteForEndpointChange()
+            },
+            onRequestLocationPermission = if (!locationPermissionGranted) requestLocationPermission else null,
             onDismiss = { showStartPicker = false },
             onPick = {
                 session.startQuery.value = it.title
@@ -364,6 +385,8 @@ private fun ExperienceTopPanel(
     plan: TripPlan,
     preferences: ScenicPreferences,
     routeLoading: Boolean,
+    poiLoading: Boolean,
+    poiCount: Int,
     onCancel: () -> Unit,
     hasDestination: Boolean,
     hasRoute: Boolean,
@@ -410,16 +433,31 @@ private fun ExperienceTopPanel(
                     )
                 }
             }
-            if (routeLoading) {
-                CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
-                IconButton(onClick = onCancel) { Icon(Icons.Default.Close, "Cancel route calculation") }
+            if (routeLoading || poiLoading) {
+                ScenicBusyIndicator(Modifier.size(24.dp))
+                if (routeLoading) {
+                    IconButton(onClick = onCancel) { Icon(Icons.Default.Close, "Cancel route calculation") }
+                }
             }
             IconButton(onClick = onToggle) {
                 Icon(if (expanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore, if (expanded) "Minimize start and destination" else "Expand start and destination")
             }
         }
 
-        if (routeLoading) Text("Calculating the complete journey…", style = MaterialTheme.typography.bodySmall)
+        if (routeLoading || poiLoading) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                ScenicBusyIndicator(Modifier.size(22.dp))
+                Spacer(Modifier.width(8.dp))
+                Text(
+                    when {
+                        routeLoading -> "Calculating the complete road journey…"
+                        poiCount > 0 -> "Searching scenic places… $poiCount candidates already visible"
+                        else -> "Searching scenic places along the complete route…"
+                    },
+                    style = MaterialTheme.typography.bodySmall,
+                )
+            }
+        }
         if (expanded) {
             ExperiencePlaceField("Start", startLabel, Icons.Default.MyLocation, startSupporting, onStart)
             ExperiencePlaceField("Destination", destinationLabel.ifBlank { "Where do you want to go?" }, Icons.Default.Flag, destinationSupporting, onDestination)
@@ -454,6 +492,29 @@ private fun ExperienceTopPanel(
                 )
             }
         }
+    }
+}
+
+@Composable
+private fun ScenicBusyIndicator(modifier: Modifier = Modifier) {
+    val transition = rememberInfiniteTransition(label = "scenic-path-status")
+    val rotation by transition.animateFloat(
+        initialValue = 0f,
+        targetValue = 360f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(durationMillis = 1_250, easing = LinearEasing),
+            repeatMode = RepeatMode.Restart,
+        ),
+        label = "scenic-path-status-rotation",
+    )
+    Box(modifier, contentAlignment = Alignment.Center) {
+        CircularProgressIndicator(Modifier.fillMaxSize(), strokeWidth = 2.dp)
+        Icon(
+            Icons.Default.Explore,
+            contentDescription = null,
+            modifier = Modifier.size(12.dp).graphicsLayer { rotationZ = rotation },
+            tint = MaterialTheme.colorScheme.primary,
+        )
     }
 }
 

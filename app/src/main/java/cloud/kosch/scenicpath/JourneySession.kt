@@ -25,6 +25,8 @@ class JourneySession : ViewModel() {
     val routePlan = mutableStateOf<RoutePlanUi?>(null)
     val selectedCandidateIndex = mutableIntStateOf(0)
     val routeLoading = mutableStateOf(false)
+    val poiLoading = mutableStateOf(false)
+    val poiCount = mutableIntStateOf(0)
     val routeError = mutableStateOf<String?>(null)
     val topExpanded = mutableStateOf(true)
     val routeDirty = mutableStateOf(false)
@@ -44,6 +46,12 @@ class JourneySession : ViewModel() {
     fun draftChanged() {
         invalidate()
         routeDirty.value = routePlan.value != null
+    }
+
+    /** Map discovery owns the long-running POI phase after a road route is committed. */
+    fun updatePoiSearchState(loading: Boolean, count: Int = poiCount.intValue) {
+        poiLoading.value = loading
+        poiCount.intValue = count.coerceAtLeast(0)
     }
 
     fun buildRoute(origin: GeoPoint?, destination: GeoPoint?) {

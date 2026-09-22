@@ -70,6 +70,7 @@ fun ScenicMap(
     onToggleRouteStop: (ScenePointUi) -> Unit = {},
     onRecalculateRoute: () -> Unit = {},
     onMapError: (String) -> Unit = {},
+    onPoiSearchStateChange: (loading: Boolean, count: Int) -> Unit = { _, _ -> },
     discoverPois: Boolean = true,
 ) {
     val context = LocalContext.current
@@ -105,6 +106,7 @@ fun ScenicMap(
     val navigationSnapshot = navigationState.value
 
     val latestUserLocation by rememberUpdatedState(userLocation)
+    val latestPoiSearchStateChange by rememberUpdatedState(onPoiSearchStateChange)
     val sharedHighlights = ScenicPoiSharedState.pointsFor(routePoints)
     val activeKinds = ScenicSceneSelectionState.activeKinds
     val plannedStopIds = remember(stops) { stops.mapTo(mutableSetOf()) { it.id } }
@@ -170,18 +172,28 @@ fun ScenicMap(
         if (routePoints.size < 2) {
             navigationActive = false
             ScenicPoiSharedState.clear()
+            latestPoiSearchStateChange(false, 0)
             return@LaunchedEffect
         }
         val epoch = ScenicPoiSharedState.epoch()
         ScenicPoiSharedState.publish(routePoints, highlights, epoch)
-        if (!discoverPois) return@LaunchedEffect
+        if (!discoverPois) {
+            latestPoiSearchStateChange(false, ScenicPoiSharedState.pointsFor(routePoints).size)
+            return@LaunchedEffect
+        }
+        latestPoiSearchStateChange(true, ScenicPoiSharedState.pointsFor(routePoints).size)
         var completed = false
         lifecycleOwner.lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
             if (completed) return@repeatOnLifecycle
             val enabledKinds = activeKinds
             val updates = PoiUpdateBuffer()
             val publisher = launch(Dispatchers.Default) {
-                updates.consume { ScenicPoiSharedState.publish(routePoints, it, epoch) }
+                updates.consume {
+                    ScenicPoiSharedState.publish(routePoints, it, epoch)
+                    withContext(Dispatchers.Main.immediate) {
+                        latestPoiSearchStateChange(true, ScenicPoiSharedState.pointsFor(routePoints).size)
+                    }
+                }
             }
             try {
                 coroutineScope {
@@ -211,6 +223,7 @@ fun ScenicMap(
                 publisher.cancel()
             }
         }
+        latestPoiSearchStateChange(false, ScenicPoiSharedState.pointsFor(routePoints).size)
     }
     val latestHighlights by rememberUpdatedState(visibleHighlights)
     val disposed = remember { java.util.concurrent.atomic.AtomicBoolean(false) }
