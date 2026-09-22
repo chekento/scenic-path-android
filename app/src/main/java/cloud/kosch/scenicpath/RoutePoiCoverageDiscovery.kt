@@ -1,24 +1,16 @@
 package cloud.kosch.scenicpath
 
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.async
-import kotlinx.coroutines.awaitAll
-import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
-import java.net.HttpURLConnection
-import java.net.URL
 import java.net.URLEncoder
 import java.util.Locale
-import kotlin.math.asin
 import kotlin.math.cos
-import kotlin.math.max
-import kotlin.math.min
-import kotlin.math.pow
 import kotlin.math.roundToInt
-import kotlin.math.sin
-import kotlin.math.sqrt
 
 /**
  * Fast category-first POI coverage for long journeys.
@@ -67,44 +59,25 @@ object RoutePoiCoverageDiscovery {
         enabledKinds: Set<StopKind>,
         maxResults: Int = 96,
         corridorMeters: Int = 12_000,
+        onPartial: suspend (List<ScenePointUi>) -> Unit = {},
     ): List<ScenePointUi> = withContext(Dispatchers.IO) {
         if (route.size < 2 || enabledKinds.isEmpty() || maxResults <= 0) return@withContext emptyList()
 
         val activeSelectors = selectors.filter { it.kind == null || it.kind in enabledKinds }
         if (activeSelectors.isEmpty()) return@withContext emptyList()
 
-        val windows = splitRoute(route, maxSegmentMeters = 58_000.0)
-        val routeForDistance = sampleRoute(route, 520)
-        val collected = mutableListOf<ScenePointUi>()
-
-        for (batch in windows.chunked(2)) {
-            val results = coroutineScope {
-                batch.map { segment ->
-                    async(Dispatchers.IO) {
-                        runCatching {
-                            queryWindow(
-                                segment = segment,
-                                routeForDistance = routeForDistance,
-                                selectors = activeSelectors,
-                                corridorMeters = corridorMeters,
-                            )
-                        }.getOrElse { emptyList() }
-                    }
-                }.awaitAll()
+        val windows = RoutePoiGeometry(route).windows(58_000.0)
+        val collected = RoutePoiScan.collect(windows, route = route, onPartial = onPartial) { segment ->
+            RoutePoiScan.overpass.withPermit {
+                queryWindow(segment, RoutePoiGeometry(segment), activeSelectors, corridorMeters)
             }
-            results.forEach(collected::addAll)
         }
-
-        PrecisionRoutePoiDiscovery.mergeForDisplay(
-            first = collected,
-            second = emptyList(),
-            maxResults = maxResults,
-        )
+        PrecisionRoutePoiDiscovery.mergeForDisplay(collected, emptyList(), maxResults, route)
     }
 
-    private fun queryWindow(
+    private suspend fun queryWindow(
         segment: List<GeoPoint>,
-        routeForDistance: List<GeoPoint>,
+        routeForDistance: RoutePoiGeometry,
         selectors: List<Selector>,
         corridorMeters: Int,
     ): List<ScenePointUi> {
@@ -129,7 +102,7 @@ object RoutePoiCoverageDiscovery {
             val kind = sceneKindForRawType(rawType)
             if (kind != StopKind.SCENIC && selectors.none { it.kind == kind }) continue
 
-            val distance = routeForDistance.minOfOrNull { haversineMeters(point, it) } ?: continue
+            val distance = routeForDistance.project(point).distanceMeters
             if (distance > corridorMeters * 1.12) continue
 
             val name = tags.optString("name:de").ifBlank { tags.optString("name") }.trim()
@@ -177,23 +150,27 @@ object RoutePoiCoverageDiscovery {
         )
     }
 
-    private fun execute(query: String): JSONArray {
+    private suspend fun execute(query: String): JSONArray {
         val body = "data=" + URLEncoder.encode(query, Charsets.UTF_8.name())
         val encoded = URLEncoder.encode(query, Charsets.UTF_8.name())
         val start = Math.floorMod(query.hashCode(), endpoints.size)
         var lastError: Throwable? = null
 
         for (offset in endpoints.indices) {
+            currentCoroutineContext().ensureActive()
             val endpoint = endpoints[(start + offset) % endpoints.size]
             try {
                 return post(endpoint, body)
-            } catch (error: Throwable) {
+            } catch (error: Exception) {
+                if (error is kotlinx.coroutines.CancellationException) throw error
                 lastError = error
             }
             if (encoded.length < 6_500) {
+                currentCoroutineContext().ensureActive()
                 try {
                     return get(endpoint, encoded)
-                } catch (error: Throwable) {
+                } catch (error: Exception) {
+                    if (error is kotlinx.coroutines.CancellationException) throw error
                     lastError = error
                 }
             }
@@ -201,46 +178,11 @@ object RoutePoiCoverageDiscovery {
         throw lastError ?: IllegalStateException("POI coverage service unavailable")
     }
 
-    private fun post(endpoint: String, body: String): JSONArray {
-        val connection = (URL(endpoint).openConnection() as HttpURLConnection).apply {
-            requestMethod = "POST"
-            connectTimeout = 2_500
-            readTimeout = 8_500
-            doOutput = true
-            setRequestProperty("Content-Type", "application/x-www-form-urlencoded; charset=utf-8")
-            setRequestProperty("Accept", "application/json")
-            setRequestProperty("User-Agent", "ScenicPath-Android/${BuildConfig.VERSION_NAME} development")
-        }
-        return try {
-            connection.outputStream.bufferedWriter(Charsets.UTF_8).use { it.write(body) }
-            readJson(connection)
-        } finally {
-            connection.disconnect()
-        }
-    }
+    private suspend fun post(endpoint: String, body: String): JSONArray =
+        JSONObject(PoiNetwork.text(endpoint, body).ifBlank { "{}" }).optJSONArray("elements") ?: JSONArray()
 
-    private fun get(endpoint: String, encodedQuery: String): JSONArray {
-        val connection = (URL("$endpoint?data=$encodedQuery").openConnection() as HttpURLConnection).apply {
-            requestMethod = "GET"
-            connectTimeout = 2_500
-            readTimeout = 8_500
-            setRequestProperty("Accept", "application/json")
-            setRequestProperty("User-Agent", "ScenicPath-Android/${BuildConfig.VERSION_NAME} development")
-        }
-        return try {
-            readJson(connection)
-        } finally {
-            connection.disconnect()
-        }
-    }
-
-    private fun readJson(connection: HttpURLConnection): JSONArray {
-        val code = connection.responseCode
-        val stream = if (code in 200..299) connection.inputStream else connection.errorStream
-        val text = stream?.bufferedReader(Charsets.UTF_8)?.use { it.readText() }.orEmpty()
-        if (code !in 200..299) error("Overpass HTTP $code")
-        return JSONObject(text.ifBlank { "{}" }).optJSONArray("elements") ?: JSONArray()
-    }
+    private suspend fun get(endpoint: String, encodedQuery: String): JSONArray =
+        JSONObject(PoiNetwork.text("$endpoint?data=$encodedQuery").ifBlank { "{}" }).optJSONArray("elements") ?: JSONArray()
 
     private fun rawType(tags: JSONObject): String? {
         val tourism = tags.optString("tourism").lowercase(Locale.ROOT)
@@ -363,40 +305,4 @@ object RoutePoiCoverageDiscovery {
         return if (centerLat.isFinite() && centerLon.isFinite()) GeoPoint(centerLat, centerLon) else null
     }
 
-    private fun splitRoute(route: List<GeoPoint>, maxSegmentMeters: Double): List<List<GeoPoint>> {
-        if (route.size < 2) return emptyList()
-        val segments = mutableListOf<List<GeoPoint>>()
-        var current = mutableListOf(route.first())
-        var distance = 0.0
-        for (index in 1 until route.size) {
-            val point = route[index]
-            distance += haversineMeters(route[index - 1], point)
-            current += point
-            if (distance >= maxSegmentMeters && index < route.lastIndex) {
-                segments += sampleRoute(current, 18)
-                current = mutableListOf(point)
-                distance = 0.0
-            }
-        }
-        if (current.size >= 2) segments += sampleRoute(current, 18)
-        return segments.ifEmpty { listOf(sampleRoute(route, 18)) }
-    }
-
-    private fun sampleRoute(route: List<GeoPoint>, maxSamples: Int): List<GeoPoint> {
-        if (route.size <= maxSamples) return route
-        val step = (route.size - 1).toDouble() / (maxSamples - 1).coerceAtLeast(1)
-        return (0 until maxSamples).map { index ->
-            route[(index * step).roundToInt().coerceIn(0, route.lastIndex)]
-        }
-    }
-
-    private fun haversineMeters(a: GeoPoint, b: GeoPoint): Double {
-        val earth = 6_371_000.0
-        val dLat = Math.toRadians(b.lat - a.lat)
-        val dLon = Math.toRadians(b.lon - a.lon)
-        val lat1 = Math.toRadians(a.lat)
-        val lat2 = Math.toRadians(b.lat)
-        val h = sin(dLat / 2).pow(2) + cos(lat1) * cos(lat2) * sin(dLon / 2).pow(2)
-        return 2 * earth * asin(sqrt(h.coerceIn(0.0, 1.0)))
-    }
 }

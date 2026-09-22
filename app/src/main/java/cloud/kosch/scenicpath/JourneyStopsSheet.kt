@@ -18,6 +18,7 @@ import androidx.compose.ui.window.DialogProperties
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.withContext
 import kotlin.math.ln
 import kotlin.math.roundToInt
 
@@ -49,75 +50,34 @@ fun JourneyStopsSheet(
             return@LaunchedEffect
         }
 
+        if (refreshToken == 0) {
+            enrichmentLoading = false
+            return@LaunchedEffect
+        }
         enrichmentLoading = true
         enrichmentFailed = false
-        val result = runCatching {
-            val (fast, precision) = coroutineScope {
-                val fastJob = async(Dispatchers.IO) {
-                    FastRoutePoiDiscovery.discover(
-                        route = current.points,
-                        enabledKinds = prototypeSelectableSceneKinds,
-                        maxResults = 150,
-                    )
-                }
-                val precisionJob = async(Dispatchers.IO) {
-                    PrecisionRoutePoiDiscovery.discover(
-                        route = current.points,
-                        enabledKinds = prototypeSelectableSceneKinds,
-                        maxResults = 220,
-                        radiusMeters = 15_000,
-                        maxSamples = 10,
-                    )
-                }
-                fastJob.await() to precisionJob.await()
-            }
-
-            var combined = PrecisionRoutePoiDiscovery.mergeForDisplay(
-                first = precision,
-                second = fast,
-                maxResults = 240,
-            )
-
-            if (refreshToken > 0) {
-                val deep = PrecisionRoutePoiDiscovery.discover(
-                    route = current.points,
-                    enabledKinds = prototypeSelectableSceneKinds,
-                    maxResults = 340,
-                    radiusMeters = 30_000,
-                    maxSamples = 14,
-                )
-                combined = PrecisionRoutePoiDiscovery.mergeForDisplay(
-                    first = deep,
-                    second = combined,
-                    maxResults = 340,
-                )
-            }
-            combined
+        try {
+            enriched = PrecisionRoutePoiDiscovery.discover(current.points, prototypeSelectableSceneKinds,
+                maxResults = 340, radiusMeters = 30_000, maxSamples = 14)
+            ScenicPoiSharedState.publish(current.points, enriched)
+        } catch (cancelled: kotlinx.coroutines.CancellationException) {
+            throw cancelled
+        } catch (_: Exception) {
+            enrichmentFailed = true
+        } finally {
+            enrichmentLoading = false
         }
-
-        enriched = result.getOrElse { emptyList() }
-        enrichmentFailed = result.isFailure
-        enrichmentLoading = false
     }
 
-    val routePoints = route?.scenePoints.orEmpty().map { point ->
-        if (point.includedInRoute || point.id in route?.autoStopIds.orEmpty()) {
-            point.copy(includedInRoute = true)
-        } else point
-    }
-
-    val merged = remember(routePoints, enriched) {
-        PrecisionRoutePoiDiscovery.mergeForDisplay(
-            first = routePoints,
-            second = enriched,
-            maxResults = 360,
-        )
-    }
-
-    LaunchedEffect(route?.id, merged) {
-        val current = route
-        if (current != null && current.points.size >= 2) {
-            ScenicPoiSharedState.publish(current.points, merged)
+    val currentPoints = route?.points.orEmpty()
+    val shared = ScenicPoiSharedState.pointsFor(currentPoints)
+    val activeKinds = ScenicSceneSelectionState.activeKinds
+    val merged by produceState<List<ScenePointUi>>(emptyList(), route, shared, enriched, activeKinds) {
+        value = withContext(Dispatchers.Default) {
+            val routePoints = route?.scenePoints.orEmpty().map { point ->
+                if (point.includedInRoute || point.id in route?.autoStopIds.orEmpty()) point.copy(includedInRoute = true) else point
+            }
+            PrecisionRoutePoiDiscovery.mergeForDisplay(routePoints + shared, enriched, 360, currentPoints)
         }
     }
 

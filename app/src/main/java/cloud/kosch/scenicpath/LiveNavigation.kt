@@ -69,6 +69,16 @@ data class NavigationSnapshot(
  * street names. Provider maneuvers can later override these geometry instructions one-for-one.
  */
 object LiveNavigationEngine {
+    private var distanceRoute: List<GeoPoint>? = null
+    private var distances: List<Double> = emptyList()
+    @Synchronized private fun routeDistances(route: List<GeoPoint>): List<Double> {
+        if (distanceRoute !== route) {
+            distances = cumulativeMeters(route)
+            distanceRoute = route
+        }
+        return distances
+    }
+
     fun snapshot(
         route: List<GeoPoint>,
         location: GeoPoint,
@@ -82,7 +92,7 @@ object LiveNavigationEngine {
 
         val nearestIndex = nearestRouteIndex(route, location)
         val offRoute = haversineMeters(route[nearestIndex], location)
-        val cumulative = cumulativeMeters(route)
+        val cumulative = routeDistances(route)
         val total = cumulative.last().coerceAtLeast(1.0)
         val progressMeters = cumulative[nearestIndex]
         val remaining = (total - progressMeters).coerceAtLeast(0.0)

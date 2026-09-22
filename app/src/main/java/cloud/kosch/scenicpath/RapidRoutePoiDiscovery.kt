@@ -1,31 +1,25 @@
 package cloud.kosch.scenicpath
 
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.async
-import kotlinx.coroutines.awaitAll
-import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.withContext
-import kotlinx.coroutines.withTimeoutOrNull
 import org.json.JSONArray
 import org.json.JSONObject
 import java.net.HttpURLConnection
 import java.net.URL
 import java.net.URLEncoder
 import java.util.Locale
-import kotlin.math.asin
 import kotlin.math.cos
-import kotlin.math.pow
 import kotlin.math.roundToInt
-import kotlin.math.sin
-import kotlin.math.sqrt
 
 /**
  * First-screen POI pass for long routes.
  *
- * One bounded Overpass request is issued per ~65 km route window. All windows run in
- * parallel with a hard per-window timeout, so a 290 km trip does not wait for 15-20 serial
- * corridor queries before museums/restaurants can appear. Results are still filtered back
- * to the real route after download.
+ * One bounded Overpass request is issued per ~65 km route window, without a distance cap.
+ * Three shared network permits bound load; start, destination and middle are scheduled first.
+ * Each completed window is published immediately and filtered against its full route geometry.
  */
 object RapidRoutePoiDiscovery {
     private val endpoints = listOf(
@@ -38,30 +32,23 @@ object RapidRoutePoiDiscovery {
         route: List<GeoPoint>,
         enabledKinds: Set<StopKind>,
         maxResults: Int = 100,
+        onPartial: suspend (List<ScenePointUi>) -> Unit = {},
     ): List<ScenePointUi> = withContext(Dispatchers.IO) {
-        if (route.size < 2 || enabledKinds.isEmpty()) return@withContext emptyList()
+        if (route.size < 2 || enabledKinds.isEmpty() || maxResults <= 0) return@withContext emptyList()
 
-        val routeForDistance = sampleRoute(route, 520)
-        val windows = splitRoute(route, 65_000.0).take(7)
-        val results = coroutineScope {
-            windows.mapIndexed { index, segment ->
-                async(Dispatchers.IO) {
-                    withTimeoutOrNull(5_800) {
-                        runCatching {
-                            queryWindow(index, segment, routeForDistance, enabledKinds)
-                        }.getOrElse { emptyList() }
-                    }.orEmpty()
-                }
-            }.awaitAll()
-        }.flatten()
-
-        PrecisionRoutePoiDiscovery.mergeForDisplay(results, emptyList(), maxResults)
+        val windows = RoutePoiGeometry(route).windows(65_000.0)
+        val results = RoutePoiScan.collect(windows.withIndex().toList(), route = route, onPartial = onPartial) { (index, segment) ->
+            RoutePoiScan.overpass.withPermit {
+                queryWindow(index, segment, RoutePoiGeometry(segment), enabledKinds)
+            }
+        }
+        PrecisionRoutePoiDiscovery.mergeForDisplay(results, emptyList(), maxResults, route)
     }
 
-    private fun queryWindow(
+    private suspend fun queryWindow(
         windowIndex: Int,
         segment: List<GeoPoint>,
-        routeForDistance: List<GeoPoint>,
+        routeForDistance: RoutePoiGeometry,
         enabledKinds: Set<StopKind>,
     ): List<ScenePointUi> {
         val box = bbox(segment, 11_000)
@@ -101,7 +88,7 @@ object RapidRoutePoiDiscovery {
             val subtype = subtype(tags) ?: continue
             val kind = sceneKindForRawType(subtype)
             if (kind != StopKind.SCENIC && kind !in enabledKinds) continue
-            val distance = routeForDistance.minOfOrNull { haversineMeters(point, it) } ?: continue
+            val distance = routeForDistance.project(point).distanceMeters
             if (distance > 13_000) continue
             val name = tags.optString("name:de").ifBlank { tags.optString("name") }.trim()
             if (name.isBlank()) continue
@@ -144,31 +131,19 @@ object RapidRoutePoiDiscovery {
         return points
     }
 
-    private fun execute(windowIndex: Int, query: String): JSONArray {
+    private suspend fun execute(windowIndex: Int, query: String): JSONArray {
         val body = "data=" + URLEncoder.encode(query, Charsets.UTF_8.name())
         var lastError: Throwable? = null
         for (attempt in 0..1) {
+            currentCoroutineContext().ensureActive()
             val endpoint = endpoints[(windowIndex + attempt) % endpoints.size]
-            val connection = (URL(endpoint).openConnection() as HttpURLConnection).apply {
-                requestMethod = "POST"
-                connectTimeout = 1_800
-                readTimeout = 4_500
-                doOutput = true
-                setRequestProperty("Content-Type", "application/x-www-form-urlencoded; charset=utf-8")
-                setRequestProperty("Accept", "application/json")
-                setRequestProperty("User-Agent", "ScenicPath-Android/${BuildConfig.VERSION_NAME} development")
-            }
             try {
-                connection.outputStream.bufferedWriter(Charsets.UTF_8).use { it.write(body) }
-                val code = connection.responseCode
-                val stream = if (code in 200..299) connection.inputStream else connection.errorStream
-                val text = stream?.bufferedReader(Charsets.UTF_8)?.use { it.readText() }.orEmpty()
-                if (code !in 200..299) error("Overpass HTTP $code")
+                val text = PoiNetwork.text(endpoint, body, 4_500)
                 return JSONObject(text.ifBlank { "{}" }).optJSONArray("elements") ?: JSONArray()
-            } catch (error: Throwable) {
+            } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                throw cancelled
+            } catch (error: Exception) {
                 lastError = error
-            } finally {
-                connection.disconnect()
             }
         }
         throw lastError ?: IllegalStateException("Rapid POI scan unavailable")
@@ -262,36 +237,4 @@ object RapidRoutePoiDiscovery {
         return if (centerLat.isFinite() && centerLon.isFinite()) GeoPoint(centerLat, centerLon) else null
     }
 
-    private fun splitRoute(route: List<GeoPoint>, maxMeters: Double): List<List<GeoPoint>> {
-        val result = mutableListOf<List<GeoPoint>>()
-        var current = mutableListOf(route.first())
-        var meters = 0.0
-        for (i in 1 until route.size) {
-            meters += haversineMeters(route[i - 1], route[i])
-            current += route[i]
-            if (meters >= maxMeters && i < route.lastIndex) {
-                result += sampleRoute(current, 16)
-                current = mutableListOf(route[i])
-                meters = 0.0
-            }
-        }
-        if (current.size >= 2) result += sampleRoute(current, 16)
-        return result.ifEmpty { listOf(sampleRoute(route, 16)) }
-    }
-
-    private fun sampleRoute(route: List<GeoPoint>, maxSamples: Int): List<GeoPoint> {
-        if (route.size <= maxSamples) return route
-        val step = (route.size - 1).toDouble() / (maxSamples - 1).coerceAtLeast(1)
-        return (0 until maxSamples).map { i -> route[(i * step).roundToInt().coerceIn(0, route.lastIndex)] }
-    }
-
-    private fun haversineMeters(a: GeoPoint, b: GeoPoint): Double {
-        val earth = 6_371_000.0
-        val dLat = Math.toRadians(b.lat - a.lat)
-        val dLon = Math.toRadians(b.lon - a.lon)
-        val lat1 = Math.toRadians(a.lat)
-        val lat2 = Math.toRadians(b.lat)
-        val h = sin(dLat / 2).pow(2) + cos(lat1) * cos(lat2) * sin(dLon / 2).pow(2)
-        return 2 * earth * asin(sqrt(h.coerceIn(0.0, 1.0)))
-    }
 }

@@ -2,6 +2,10 @@ package cloud.kosch.scenicpath
 
 import android.content.Context
 import android.location.Geocoder
+import android.location.Address
+import android.os.Build
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
@@ -80,24 +84,17 @@ object ScenicApi {
         if (normalized.length < 2) return@withContext emptyList()
 
         if (BuildConfig.DEBUG) {
-            val device = searchDeviceGeocoder(context, normalized)
-            if (device.isNotEmpty()) return@withContext device
-
-            val osm = runCatching { OsmPlaceSearch.search(normalized, bias) }.getOrNull().orEmpty()
-            if (osm.isNotEmpty()) return@withContext osm
-
-            if (!baseUrl.contains("10.0.2.2") && !baseUrl.contains("127.0.0.1") && !baseUrl.contains("localhost")) {
-                val backend = runCatching { searchBackend(normalized, bias) }.getOrNull().orEmpty()
-                if (backend.isNotEmpty()) return@withContext backend
+            // Photon is already a separate lane in OriginalSearchStack; never call it twice.
+            val local = searchDeviceGeocoder(context, normalized)
+            if (local.isNotEmpty()) return@withContext local
+            if (baseUrl.startsWith("https://") && !baseUrl.contains("invalid.invalid")) {
+                return@withContext optionalRequest { searchBackend(normalized, bias) }.orEmpty()
             }
             return@withContext emptyList()
         }
-
         requireProductionServicesConfigured()
-        val backend = runCatching { searchBackend(normalized, bias) }.getOrNull().orEmpty()
-        if (backend.isNotEmpty()) return@withContext backend
-
-        searchDeviceGeocoder(context, normalized)
+        val backend = optionalRequest { searchBackend(normalized, bias) }.orEmpty()
+        if (backend.isNotEmpty()) backend else searchDeviceGeocoder(context, normalized)
     }
 
     suspend fun planRoute(
@@ -106,30 +103,21 @@ object ScenicApi {
         plan: TripPlan,
         preferences: ScenicPreferences,
     ): Result<RoutePlanUi> = withContext(Dispatchers.IO) {
-        // Vehicle settings are persistent/global. Copy the latest profile into the committed
-        // planner preferences so a vehicle change is guaranteed to affect the next rebuild.
-        val effectivePreferences = preferences
-            .copy(vehicle = VehicleSettingsState.profile)
-            .forCharacter(plan.routeCharacter)
-
-        if (BuildConfig.DEBUG) {
-            return@withContext runCatching {
-                VehicleAwareJourneyPlanner.plan(origin, destination, plan, effectivePreferences)
-            }.recoverCatching { primaryError ->
-                // Only the ordinary car profile may use the older OSM fallback. Other vehicle
-                // types must never silently degrade to car routing, because that would make
-                // bridge/tunnel/HGV or bicycle access promises false.
-                if (effectivePreferences.vehicle.kind == VehicleKind.CAR) {
-                    OsmScenicRoutingFallback.plan(origin, destination, plan, effectivePreferences)
-                } else {
-                    throw primaryError
-                }
+        val effective = preferences.forCharacter(plan.routeCharacter)
+        try {
+            require(LongDistanceRouting.validPoint(origin) && LongDistanceRouting.validPoint(destination)) {
+                "Choose a valid start and destination."
             }
-        }
-
-        runCatching {
-            requireProductionServicesConfigured()
-            planBackend(origin, destination, plan, effectivePreferences)
+            Result.success(if (BuildConfig.DEBUG) {
+                VehicleAwareJourneyPlanner.plan(origin, destination, plan, effective)
+            } else {
+                requireProductionServicesConfigured()
+                planBackend(origin, destination, plan, effective)
+            })
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (error: Exception) {
+            Result.failure(error)
         }
     }
 
@@ -144,16 +132,11 @@ object ScenicApi {
         }
     }
 
-    private fun searchBackend(query: String, bias: GeoPoint?): List<PlaceSuggestion> {
+    private suspend fun searchBackend(query: String, bias: GeoPoint?): List<PlaceSuggestion> {
         val encoded = URLEncoder.encode(query, Charsets.UTF_8.name())
         val biasQuery = bias?.let { "&lat=${it.lat}&lon=${it.lon}" } ?: ""
-        val connection = open(
-            "$baseUrl/v1/search?q=$encoded$biasQuery",
-            method = "GET",
-            connectTimeoutMs = 6_000,
-            readTimeoutMs = 10_000,
-        )
-        return connection.useJson { body ->
+        val body = JSONObject(CancellableNetwork.text("$baseUrl/v1/search?q=$encoded$biasQuery"))
+        return run {
             val results = body.optJSONArray("results") ?: JSONArray()
             buildList {
                 for (index in 0 until results.length()) {
@@ -176,32 +159,36 @@ object ScenicApi {
     }
 
     @Suppress("DEPRECATION")
-    private fun searchDeviceGeocoder(context: Context, query: String): List<PlaceSuggestion> {
+    private suspend fun searchDeviceGeocoder(context: Context, query: String): List<PlaceSuggestion> {
         if (!Geocoder.isPresent()) return emptyList()
-        return runCatching {
-            Geocoder(context, Locale.getDefault())
-                .getFromLocationName(query, 8)
-                .orEmpty()
-                .mapIndexed { index, address ->
-                    val title = listOfNotNull(address.featureName, address.locality)
-                        .distinct()
-                        .joinToString(", ")
-                        .ifBlank { query }
-                    val subtitle = (0..address.maxAddressLineIndex)
-                        .mapNotNull { address.getAddressLine(it) }
-                        .joinToString(" · ")
-                    PlaceSuggestion(
-                        id = "device-$index-${address.latitude}-${address.longitude}",
-                        title = title,
-                        subtitle = subtitle,
-                        point = GeoPoint(address.latitude, address.longitude),
-                    )
+        val geocoder = Geocoder(context.applicationContext, Locale.getDefault())
+        val addresses = optionalRequest {
+            if (Build.VERSION.SDK_INT >= 33) {
+                suspendCancellableCoroutine<List<Address>> { continuation ->
+                    geocoder.getFromLocationName(query, 12, object : Geocoder.GeocodeListener {
+                        override fun onGeocode(addresses: MutableList<Address>) {
+                            if (continuation.isActive) continuation.resumeWith(Result.success(addresses))
+                        }
+                        override fun onError(errorMessage: String?) {
+                            if (continuation.isActive) continuation.resumeWith(Result.success(emptyList()))
+                        }
+                    })
                 }
-                .distinctBy { "%.5f,%.5f".format(Locale.US, it.point.lat, it.point.lon) }
-        }.getOrElse { emptyList() }
+            } else {
+                CancellableNetwork.blocking { geocoder.getFromLocationName(query, 12).orEmpty() }
+            }
+        }.orEmpty()
+        return addresses.filter { it.hasLatitude() && it.hasLongitude() }.mapIndexed { index, address ->
+            PlaceSuggestion(
+                id = "device-$index-${address.latitude}-${address.longitude}",
+                title = listOfNotNull(address.featureName, address.locality).distinct().joinToString(", ").ifBlank { query },
+                subtitle = (0..address.maxAddressLineIndex).mapNotNull { address.getAddressLine(it) }.joinToString(" · "),
+                point = GeoPoint(address.latitude, address.longitude),
+            )
+        }.filter { LongDistanceRouting.validPoint(it.point) }
     }
 
-    private fun planBackend(
+    private suspend fun planBackend(
         origin: GeoPoint,
         destination: GeoPoint,
         plan: TripPlan,
@@ -235,17 +222,7 @@ object ScenicApi {
             })
         }
 
-        val connection = open(
-            "$baseUrl/v1/plan",
-            method = "POST",
-            connectTimeoutMs = 8_000,
-            readTimeoutMs = 45_000,
-        ).apply {
-            doOutput = true
-            setRequestProperty("Content-Type", "application/json; charset=utf-8")
-            outputStream.bufferedWriter(Charsets.UTF_8).use { it.write(body.toString()) }
-        }
-        return connection.useJson(::parsePlan)
+        return parsePlan(JSONObject(CancellableNetwork.text("$baseUrl/v1/plan", body.toString(), timeoutMs = 45_000)))
     }
 
     private fun parsePlan(response: JSONObject): RoutePlanUi {

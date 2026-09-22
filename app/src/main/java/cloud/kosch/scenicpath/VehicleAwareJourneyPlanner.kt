@@ -5,8 +5,6 @@ import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import org.json.JSONArray
 import org.json.JSONObject
-import java.net.HttpURLConnection
-import java.net.URL
 import kotlin.math.abs
 import kotlin.math.asin
 import kotlin.math.atan2
@@ -30,13 +28,7 @@ import kotlin.math.sqrt
  */
 object VehicleAwareJourneyPlanner {
     private const val VALHALLA_URL = "https://valhalla1.openstreetmap.de"
-    private const val CLIENT_ID = "scenic-path-android-dev"
-
-    private data class RawRoute(
-        val distanceMeters: Double,
-        val durationSeconds: Double,
-        val points: List<GeoPoint>,
-    )
+    private val pacer = RequestPacer()
 
     suspend fun plan(
         origin: GeoPoint,
@@ -53,7 +45,7 @@ object VehicleAwareJourneyPlanner {
         val fixedStops = orderedFixedStops(plan, baseNoStops.points)
         val fixedPoints = fixedStops.mapNotNull { it.point }
 
-        val direct = routeThrough(
+        val direct = if (fixedPoints.isEmpty()) baseNoStops else routeThrough(
             nodes = listOf(origin) + fixedPoints + destination,
             preferences = effective,
             scenic = false,
@@ -62,24 +54,24 @@ object VehicleAwareJourneyPlanner {
         val scenic = if (plan.routeCharacter == RouteCharacter.DIRECT) {
             direct
         } else {
-            runCatching {
+            optionalRequest {
                 routeThrough(
                     nodes = listOf(origin) + fixedPoints + destination,
                     preferences = effective,
                     scenic = true,
                 )
-            }.getOrElse { direct }
+            }?.takeIf { (it.durationSeconds - direct.durationSeconds) / 60.0 <= effective.maxExtraMinutes } ?: direct
         }
 
         val discovered = if (plan.autoSuggestStops && plan.enabledSceneKinds.isNotEmpty()) {
             withTimeoutOrNull(10_000) {
-                runCatching {
+                optionalRequest {
                     FastRoutePoiDiscovery.discover(
                         route = scenic.points,
                         enabledKinds = plan.enabledSceneKinds,
                         maxResults = 96,
                     )
-                }.getOrElse { emptyList() }
+                }.orEmpty()
             }.orEmpty()
         } else emptyList()
 
@@ -154,7 +146,7 @@ object VehicleAwareJourneyPlanner {
         )
 
         RoutePlanUi(
-            candidates = if (plan.routeCharacter == RouteCharacter.DIRECT) {
+            candidates = if (plan.routeCharacter == RouteCharacter.DIRECT || scenic === direct) {
                 listOf(directCandidate)
             } else {
                 listOf(scenicCandidate, directCandidate).distinctBy {
@@ -165,7 +157,7 @@ object VehicleAwareJourneyPlanner {
             baselineDistanceMeters = baseNoStops.distanceMeters,
             note = buildString {
                 append("${vehicle.kind.emoji} ${vehicle.kind.label} routing")
-                append(" · real-network route, no synthetic long-route anchors")
+                append(" · complete road route")
                 if (vehicle.hasPhysicalRestrictions) {
                     append(" · ${format1(vehicle.heightMeters)}m H × ${format1(vehicle.widthMeters)}m W × ${format1(vehicle.lengthMeters)}m L · ${format1(vehicle.weightTons)}t")
                 }
@@ -182,11 +174,11 @@ object VehicleAwareJourneyPlanner {
         return stops.sortedBy { routeProgressIndex(baseline, requireNotNull(it.point)) }
     }
 
-    private fun routeThrough(
+    private suspend fun routeThrough(
         nodes: List<GeoPoint>,
         preferences: ScenicPreferences,
         scenic: Boolean,
-    ): RawRoute {
+    ): RoadRoute {
         if (nodes.size <= 2) return requestRoute(nodes, preferences, scenic)
         val legs = nodes.zipWithNext().map { (from, to) ->
             requestRoute(listOf(from, to), preferences, scenic)
@@ -194,36 +186,49 @@ object VehicleAwareJourneyPlanner {
         return stitch(legs)
     }
 
-    private fun stitch(legs: List<RawRoute>): RawRoute {
-        val points = buildList {
-            legs.forEach { leg ->
-                if (isEmpty()) addAll(leg.points)
-                else if (leg.points.isNotEmpty()) {
-                    if (haversineMeters(last(), leg.points.first()) < 20.0) addAll(leg.points.drop(1))
-                    else addAll(leg.points)
-                }
-            }
-        }
-        if (points.size < 2) error("Vehicle route returned no usable geometry")
-        return RawRoute(
-            distanceMeters = legs.sumOf { it.distanceMeters },
-            durationSeconds = legs.sumOf { it.durationSeconds },
-            points = points,
-        )
-    }
+    private fun stitch(legs: List<RoadRoute>): RoadRoute = LongDistanceRouting.stitch(legs)
 
-    private fun requestRoute(
+    private suspend fun requestRoute(
         locations: List<GeoPoint>,
         preferences: ScenicPreferences,
         scenic: Boolean,
-    ): RawRoute {
+    ): RoadRoute = LongDistanceRouting.route(
+        origin = locations.first(),
+        destination = locations.last(),
+        maxSpanMeters = if (preferences.vehicle.kind == VehicleKind.BICYCLE) 120_000.0 else 600_000.0,
+        requestGuide = { OsmRoadCorridor.request(locations.first(), locations.last(), preferences) },
+        requestLeg = { from, to ->
+            requestSingleRoute(listOf(from, to), preferences, scenic,
+                filterStartAnchor = from != locations.first(), filterEndAnchor = to != locations.last())
+        },
+    )
+
+    private suspend fun requestSingleRoute(
+        locations: List<GeoPoint>,
+        preferences: ScenicPreferences,
+        scenic: Boolean,
+        filterStartAnchor: Boolean = false,
+        filterEndAnchor: Boolean = false,
+    ): RoadRoute {
         val vehicle = preferences.vehicle
         val costing = costingName(vehicle.kind)
         val options = costingOptions(vehicle, preferences, scenic)
         val body = JSONObject().apply {
             put("locations", JSONArray().apply {
-                locations.forEach { point ->
-                    put(JSONObject().put("lat", point.lat).put("lon", point.lon).put("type", "break"))
+                locations.forEachIndexed { index, point ->
+                    val location = JSONObject().put("lat", point.lat).put("lon", point.lon).put("type", "break")
+                    val intermediate = (index == 0 && filterStartAnchor) || (index == locations.lastIndex && filterEndAnchor)
+                    if (intermediate && (preferences.avoidMotorways || preferences.avoidTolls)) {
+                        location.put("search_cutoff", 5_000)
+                        location.put("search_filter", JSONObject().apply {
+                            if (preferences.avoidMotorways) {
+                                put("max_road_class", "trunk")
+                                put("exclude_ramp", true)
+                            }
+                            if (preferences.avoidTolls) put("exclude_toll", true)
+                        })
+                    }
+                    put(location)
                 }
             })
             put("costing", costing)
@@ -231,22 +236,9 @@ object VehicleAwareJourneyPlanner {
             put("directions_options", JSONObject().put("units", "kilometers").put("language", "de-DE"))
         }
 
-        val connection = (URL("$VALHALLA_URL/route").openConnection() as HttpURLConnection).apply {
-            requestMethod = "POST"
-            connectTimeout = 5_000
-            readTimeout = 16_000
-            doOutput = true
-            setRequestProperty("Accept", "application/json")
-            setRequestProperty("Content-Type", "application/json; charset=utf-8")
-            setRequestProperty("User-Agent", "ScenicPath-Android/${BuildConfig.VERSION_NAME} development")
-            setRequestProperty("X-Client-Id", CLIENT_ID)
-            outputStream.bufferedWriter(Charsets.UTF_8).use { it.write(body.toString()) }
-        }
-        return try {
-            val code = connection.responseCode
-            val stream = if (code in 200..299) connection.inputStream else connection.errorStream
-            val text = stream?.bufferedReader(Charsets.UTF_8)?.use { it.readText() }.orEmpty()
-            if (code !in 200..299) error("Valhalla $costing HTTP $code ${text.take(180)}")
+        pacer.awaitTurn()
+        val text = CancellableNetwork.text("$VALHALLA_URL/route", body.toString())
+        return run {
             val response = JSONObject(text.ifBlank { "{}" })
             val trip = response.optJSONObject("trip") ?: error("Valhalla returned no trip")
             val summary = trip.optJSONObject("summary") ?: error("Valhalla returned no summary")
@@ -260,13 +252,11 @@ object VehicleAwareJourneyPlanner {
                 }
             }
             if (points.size < 2) error("Valhalla $costing route shape is empty")
-            RawRoute(
+            RoadRoute(
                 distanceMeters = summary.optDouble("length", 0.0) * 1000.0,
                 durationSeconds = summary.optDouble("time", 0.0),
                 points = points,
             )
-        } finally {
-            connection.disconnect()
         }
     }
 
@@ -424,7 +414,7 @@ object VehicleAwareJourneyPlanner {
                 var shift = 0
                 var b: Int
                 do {
-                    if (index >= encoded.length) return 0
+                    require(index < encoded.length && shift <= 30) { "Incomplete route geometry" }
                     b = encoded[index++].code - 63
                     result = result or ((b and 0x1f) shl shift)
                     shift += 5
@@ -433,7 +423,9 @@ object VehicleAwareJourneyPlanner {
             }
             lat += nextDelta()
             lon += nextDelta()
-            points += GeoPoint(lat / 1_000_000.0, lon / 1_000_000.0)
+            val point = GeoPoint(lat / 1_000_000.0, lon / 1_000_000.0)
+            require(LongDistanceRouting.validPoint(point)) { "Invalid route coordinates" }
+            points += point
         }
         return points
     }

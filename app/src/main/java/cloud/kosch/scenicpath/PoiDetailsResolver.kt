@@ -46,10 +46,10 @@ object PoiDetailsResolver {
         val baseline = baseline(point)
         val (osm, provider) = coroutineScope {
             val osmJob = async(Dispatchers.IO) {
-                runCatching { resolveOsm(point) }.getOrNull()
+                optionalRequest { resolveOsm(point) }
             }
             val providerJob = async(Dispatchers.IO) {
-                if (hasRemoteBackend()) runCatching { resolveProvider(point) }.getOrNull() else null
+                if (hasRemoteBackend()) optionalRequest { resolveProvider(point) } else null
             }
             osmJob.await() to providerJob.await()
         }
@@ -71,20 +71,11 @@ object PoiDetailsResolver {
         )
     }
 
-    private fun resolveOsm(point: ScenePointUi): ScenicPoiDetails? {
+    private suspend fun resolveOsm(point: ScenePointUi): ScenicPoiDetails? {
         val ref = parseOsmRef(point.id) ?: return null
-        val connection = (URL("https://api.openstreetmap.org/api/0.6/${ref.type}/${ref.id}.json").openConnection() as HttpURLConnection).apply {
-            requestMethod = "GET"
-            connectTimeout = 2_500
-            readTimeout = 4_500
-            setRequestProperty("Accept", "application/json")
-            setRequestProperty("User-Agent", "ScenicPath-Android/${BuildConfig.VERSION_NAME}")
-        }
-        return try {
-            val code = connection.responseCode
-            val stream = if (code in 200..299) connection.inputStream else connection.errorStream
-            val text = stream?.bufferedReader(Charsets.UTF_8)?.use { it.readText() }.orEmpty()
-            if (code !in 200..299 || text.isBlank()) return null
+        val text = CancellableNetwork.text("https://api.openstreetmap.org/api/0.6/${ref.type}/${ref.id}.json",
+            timeoutMs = 4_500, maxChars = 512 * 1024)
+        return run {
             val root = JSONObject(text)
             val elements = root.optJSONArray("elements") ?: return null
             val tags = (0 until elements.length())
@@ -93,8 +84,6 @@ object PoiDetailsResolver {
                 .firstOrNull { it.optLong("id", -1L) == ref.id }
                 ?.optJSONObject("tags") ?: return null
             fromOsmTags(tags)
-        } finally {
-            connection.disconnect()
         }
     }
 
@@ -130,22 +119,12 @@ object PoiDetailsResolver {
         )
     }
 
-    private fun resolveProvider(point: ScenePointUi): ScenicPoiDetails? {
+    private suspend fun resolveProvider(point: ScenePointUi): ScenicPoiDetails? {
         val base = BuildConfig.SCENIC_API_BASE_URL.trimEnd('/')
         val name = URLEncoder.encode(point.name, Charsets.UTF_8.name())
         val url = "$base/v1/poi-details?name=$name&lat=${point.point.lat}&lon=${point.point.lon}"
-        val connection = (URL(url).openConnection() as HttpURLConnection).apply {
-            requestMethod = "GET"
-            connectTimeout = 2_000
-            readTimeout = 3_500
-            setRequestProperty("Accept", "application/json")
-            setRequestProperty("User-Agent", "ScenicPath-Android/${BuildConfig.VERSION_NAME}")
-        }
-        return try {
-            val code = connection.responseCode
-            val stream = if (code in 200..299) connection.inputStream else connection.errorStream
-            val text = stream?.bufferedReader(Charsets.UTF_8)?.use { it.readText() }.orEmpty()
-            if (code !in 200..299 || text.isBlank()) return null
+        val text = CancellableNetwork.text(url, timeoutMs = 3_500, maxChars = 512 * 1024)
+        return run {
             val json = JSONObject(text)
             val officialUrl = json.optString("website").trim().takeIf { it.isNotBlank() }
             ScenicPoiDetails(
@@ -159,8 +138,6 @@ object PoiDetailsResolver {
                 ratingSource = json.optString("ratingSource").trim().takeIf { it.isNotBlank() },
                 openNow = if (json.has("openNow") && !json.isNull("openNow")) json.optBoolean("openNow") else null,
             )
-        } finally {
-            connection.disconnect()
         }
     }
 

@@ -1,7 +1,12 @@
 package cloud.kosch.scenicpath
 
 import android.content.Context
-import kotlinx.coroutines.async
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.coroutineScope
 import java.util.Locale
 
@@ -26,35 +31,39 @@ object OriginalSearchStack {
         bias: GeoPoint? = null,
         exactAddressRequested: Boolean = false,
         maxResults: Int = 16,
+        onPartial: (List<PlaceSuggestion>) -> Unit = {},
+    ): List<PlaceSuggestion> = searchLanes(
+        query, bias, maxResults, onPartial,
+        standard = { ScenicApi.searchPlaces(context, query, bias) },
+        photon = { OsmPlaceSearch.search(query, bias) },
+        exact = { if (exactAddressRequested) OsmAddressSearch.search(query, bias, 12) else emptyList() },
+    )
+
+    internal suspend fun searchLanes(
+        query: String,
+        bias: GeoPoint? = null,
+        maxResults: Int = 16,
+        onPartial: (List<PlaceSuggestion>) -> Unit = {},
+        standard: suspend () -> List<PlaceSuggestion>,
+        photon: suspend () -> List<PlaceSuggestion>,
+        exact: suspend () -> List<PlaceSuggestion>,
     ): List<PlaceSuggestion> = coroutineScope {
-        val normalized = query.trim()
-        if (normalized.length < 2 || maxResults <= 0) return@coroutineScope emptyList()
-
-        val standardJob = async {
-            runCatching { ScenicApi.searchPlaces(context, normalized, bias) }
-                .getOrElse { emptyList() }
-        }
-        val photonJob = async {
-            runCatching { OsmPlaceSearch.search(normalized, bias) }
-                .getOrElse { emptyList() }
-        }
-        val exactJob = async {
-            if (exactAddressRequested && normalized.length >= 3) {
-                runCatching { OsmAddressSearch.search(normalized, bias, maxResults = 12) }
-                    .getOrElse { emptyList() }
-            } else {
-                emptyList()
+        if (query.trim().length < 2 || maxResults <= 0) return@coroutineScope emptyList()
+        val values = Array(3) { emptyList<PlaceSuggestion>() }
+        val mutex = Mutex()
+        var merged = emptyList<PlaceSuggestion>()
+        listOf(standard, photon, exact).mapIndexed { index, lane ->
+            launch {
+                val found = withTimeoutOrNull(8_000) { optionalRequest { lane() } }.orEmpty()
+                currentCoroutineContext().ensureActive()
+                mutex.withLock {
+                    values[index] = found
+                    merged = mergeSuggestions(query, bias, values[2], values[1], values[0], maxResults)
+                    onPartial(merged)
+                }
             }
-        }
-
-        mergeSuggestions(
-            query = normalized,
-            bias = bias,
-            exact = exactJob.await(),
-            photon = photonJob.await(),
-            standard = standardJob.await(),
-            maxResults = maxResults,
-        )
+        }.forEach { it.join() }
+        merged
     }
 
     internal fun mergeSuggestions(
@@ -118,7 +127,7 @@ object OriginalSearchStack {
                 val coordinateKey = "%.5f,%.5f".format(Locale.US, item.point.lat, item.point.lon)
                 val titleKey = item.title.trim().lowercase(Locale.ROOT)
                 val key = "$coordinateKey:$titleKey"
-                if (seen.add(key)) add(item)
+                if (LongDistanceRouting.validPoint(item.point) && item.title.isNotBlank() && seen.add(key) && none { it.id == item.id }) add(item)
                 if (size >= maxResults) return@buildList
             }
         }

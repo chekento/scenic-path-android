@@ -16,6 +16,7 @@ import java.util.Locale
  * Scenic Path reliable street + house-number lookup without abusing an autocomplete service.
  */
 object OsmAddressSearch {
+    private val pacer = RequestPacer()
     private const val NOMINATIM_URL = "https://nominatim.openstreetmap.org/search"
 
     suspend fun search(
@@ -36,17 +37,9 @@ object OsmAddressSearch {
         }.orEmpty()
         val url = "$NOMINATIM_URL?format=jsonv2&addressdetails=1&namedetails=1&dedupe=1&limit=${maxResults.coerceIn(1, 12)}&accept-language=${URLEncoder.encode(language, Charsets.UTF_8.name())}&q=$encoded$biasQuery"
 
-        val connection = (URL(url).openConnection() as HttpURLConnection).apply {
-            requestMethod = "GET"
-            connectTimeout = 5_000
-            readTimeout = 5_000
-            setRequestProperty("Accept", "application/json")
-            setRequestProperty("User-Agent", "ScenicPath-Android/${BuildConfig.VERSION_NAME} address-search")
-        }
-
-        try {
-            if (connection.responseCode !in 200..299) return@withContext emptyList()
-            val text = connection.inputStream.bufferedReader(Charsets.UTF_8).use { it.readText() }
+        pacer.awaitTurn()
+        val text = CancellableNetwork.text(url, timeoutMs = 5_000)
+        run {
             val rows = JSONArray(text)
 
             buildList {
@@ -89,8 +82,6 @@ object OsmAddressSearch {
             }.distinctBy { suggestion ->
                 "${suggestion.title.lowercase(Locale.ROOT)}:${"%.5f".format(Locale.US, suggestion.point.lat)}:${"%.5f".format(Locale.US, suggestion.point.lon)}"
             }
-        } finally {
-            connection.disconnect()
         }
     }
 }

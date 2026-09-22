@@ -1,5 +1,8 @@
 package cloud.kosch.scenicpath
 
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
@@ -17,8 +20,8 @@ import kotlinx.coroutines.withTimeoutOrNull
  * geometry changed, so one temporary network/provider failure could leave the complete planning
  * session without clickable locations.
  *
- * The first wave still uses the two fast Photon strategies and publishes each successful partial
- * result immediately into ScenicPoiSharedState. If both are empty, an independent rescue wave uses
+ * The first wave still uses the two fast Photon strategies and passes each successful partial
+ * result to its caller. If both are empty, an independent rescue wave uses
  * bounded OSM/Overpass coverage plus a slower direct Photon retry. This keeps initial-route latency
  * low when the normal providers work, but prevents a one-shot outage from becoming a permanently
  * empty map. ScenicMap's deeper Rapid/Precision passes remain complementary enrichment.
@@ -28,112 +31,78 @@ object FastRoutePoiDiscovery {
         route: List<GeoPoint>,
         enabledKinds: Set<StopKind> = prototypeSelectableSceneKinds,
         maxResults: Int = 40,
+        completeRoute: Boolean = false,
+        onPartial: suspend (List<ScenePointUi>) -> Unit = {},
     ): List<ScenePointUi> = withContext(Dispatchers.IO) {
         if (route.size < 2 || enabledKinds.isEmpty() || maxResults <= 0) return@withContext emptyList()
+        val lock = Mutex()
+        var accumulated = emptyList<ScenePointUi>()
 
         suspend fun publishPartial(points: List<ScenePointUi>) {
             if (points.isEmpty()) return
-            val balanced = mergeResults(
-                first = points,
-                second = emptyList(),
-                enabledKinds = enabledKinds,
-                maxResults = maxResults,
-            )
-            if (balanced.isEmpty()) return
-            withContext(Dispatchers.Main.immediate) {
-                ScenicPoiSharedState.publish(route, balanced)
+            lock.withLock {
+                accumulated = mergeResults(points, accumulated, enabledKinds, maxResults, route)
+                onPartial(accumulated)
             }
         }
 
-        val (categoryPhoton, genericPhoton) = coroutineScope {
-            val categoryJob = async(Dispatchers.IO) {
-                val result = withTimeoutOrNull(7_200) {
-                    runCatching {
-                        PhotonCorridorPoiDiscovery.discover(
-                            route = route,
-                            enabledKinds = enabledKinds,
-                            maxResults = maxOf(96, minOf(maxResults * 3, 220)),
-                        )
-                    }.getOrElse { emptyList() }
-                }.orEmpty()
-                publishPartial(result)
-                result
+        suspend fun runProvider(timeoutMillis: Long, block: suspend () -> List<ScenePointUi>) {
+            val result = try {
+                if (completeRoute) block() else withTimeoutOrNull(timeoutMillis) { block() }.orEmpty()
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (_: Exception) {
+                emptyList()
             }
-            val genericJob = async(Dispatchers.IO) {
-                val result = withTimeoutOrNull(6_500) {
-                    runCatching {
-                        PhotonSceneFallback.discover(
-                            route = route,
-                            enabledKinds = enabledKinds,
-                            maxResults = maxOf(28, minOf(maxResults, 90)),
-                            fast = true,
-                            includeTargetedBackfill = false,
-                        )
-                    }.getOrElse { emptyList() }
-                }.orEmpty()
-                publishPartial(result)
-                result
-            }
-            categoryJob.await() to genericJob.await()
+            publishPartial(result)
         }
 
-        val firstWave = mergeResults(
-            first = categoryPhoton,
-            second = genericPhoton,
-            enabledKinds = enabledKinds,
-            maxResults = maxResults,
-        )
-        if (firstWave.isNotEmpty()) return@withContext firstWave
+        coroutineScope {
+            val category = async {
+                runProvider(7_200) {
+                    PhotonCorridorPoiDiscovery.discover(
+                        route, enabledKinds, maxOf(96, minOf(maxResults * 3, 220)),
+                        onPartial = ::publishPartial,
+                    )
+                }
+            }
+            val generic = async {
+                runProvider(6_500) {
+                    PhotonSceneFallback.discover(
+                        route, enabledKinds, maxOf(28, minOf(maxResults, 90)),
+                        fast = true, includeTargetedBackfill = false, onPartial = ::publishPartial,
+                    )
+                }
+            }
+            category.await()
+            generic.await()
+        }
+        // Planner timeouts retain completed windows. The map runs completeRoute=true and
+        // continues through the whole route instead of imposing a whole-journey deadline.
+        if (accumulated.isNotEmpty()) return@withContext accumulated
 
-        // One temporary provider miss must not freeze the route with zero POIs. Give the public
-        // services a brief cooldown, then use two independent rescue paths. RoutePoiCoverage uses
-        // explicit bounded OSM category queries; the Photon retry uses a slower reverse pass.
         delay(1_200)
-        val (coverageRescue, photonRescue) = coroutineScope {
-            val coverageJob = async(Dispatchers.IO) {
-                val result = withTimeoutOrNull(11_500) {
-                    runCatching {
-                        RoutePoiCoverageDiscovery.discover(
-                            route = route,
-                            enabledKinds = enabledKinds,
-                            maxResults = maxOf(96, minOf(maxResults, 180)),
-                            corridorMeters = 15_000,
-                        )
-                    }.getOrElse { emptyList() }
-                }.orEmpty()
-                publishPartial(result)
-                result
+        coroutineScope {
+            val coverage = async {
+                runProvider(11_500) {
+                    RoutePoiCoverageDiscovery.discover(
+                        route, enabledKinds, maxOf(96, minOf(maxResults, 180)),
+                        corridorMeters = 15_000, onPartial = ::publishPartial,
+                    )
+                }
             }
-            val photonJob = async(Dispatchers.IO) {
-                val result = withTimeoutOrNull(8_500) {
-                    runCatching {
-                        PhotonSceneFallback.discover(
-                            route = route,
-                            enabledKinds = enabledKinds,
-                            maxResults = maxOf(36, minOf(maxResults, 120)),
-                            fast = false,
-                            includeTargetedBackfill = false,
-                        )
-                    }.getOrElse { emptyList() }
-                }.orEmpty()
-                publishPartial(result)
-                result
+            val photon = async {
+                runProvider(8_500) {
+                    PhotonSceneFallback.discover(
+                        route, enabledKinds, maxOf(36, minOf(maxResults, 120)),
+                        fast = false, includeTargetedBackfill = false, onPartial = ::publishPartial,
+                    )
+                }
             }
-            coverageJob.await() to photonJob.await()
+            coverage.await()
+            photon.await()
         }
-
-        val rescued = mergeResults(
-            first = coverageRescue,
-            second = photonRescue,
-            enabledKinds = enabledKinds,
-            maxResults = maxResults,
-        )
-        if (rescued.isNotEmpty()) {
-            withContext(Dispatchers.Main.immediate) {
-                ScenicPoiSharedState.publish(route, rescued)
-            }
-        }
-        rescued
+        accumulated
     }
 
     internal suspend fun discoverTargetedOnly(
@@ -153,7 +122,7 @@ object FastRoutePoiDiscovery {
                     enabledKinds = enabledKinds,
                     maxResults = maxResults,
                 )
-            }.getOrElse { emptyList() }
+            }.getOrElse { if (it is CancellationException) throw it else emptyList() }
         }.orEmpty()
         if (!allowBackfill) return@withContext normal
 
@@ -171,9 +140,9 @@ object FastRoutePoiDiscovery {
                     radiusMeters = maxOf(24_000, radiusMeters + 8_000),
                     maxSamples = maxOf(12, maxSamples),
                 )
-            }.getOrElse { emptyList() }
+            }.getOrElse { if (it is CancellationException) throw it else emptyList() }
         }.orEmpty()
-        mergeResults(normal, wider, enabledKinds, maxResults)
+        mergeResults(normal, wider, enabledKinds, maxResults, route)
     }
 
     internal fun mergeResults(
@@ -181,11 +150,12 @@ object FastRoutePoiDiscovery {
         second: List<ScenePointUi>,
         enabledKinds: Set<StopKind>,
         maxResults: Int,
+        route: List<GeoPoint> = emptyList(),
     ): List<ScenePointUi> {
         val allowed = (first + second).filter { point ->
             val kind = StopKind.entries.firstOrNull { it.name == point.kind } ?: StopKind.SCENIC
             kind == StopKind.SCENIC || kind in enabledKinds
         }
-        return PrecisionRoutePoiDiscovery.mergeForDisplay(allowed, emptyList(), maxResults)
+        return PrecisionRoutePoiDiscovery.mergeForDisplay(allowed, emptyList(), maxResults, route)
     }
 }

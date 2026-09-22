@@ -21,11 +21,11 @@ jobs:
         run: |
           set -euo pipefail
           test -s assets/frontpage/scenic-path-logo.webp
-          test -s assets/frontpage/scenic-path-app-icon.webp
-          test -s app/src/main/res/drawable-nodpi/scenic_path_launcher_foreground.webp
+          test -s assets/frontpage/scenic-path-icon.png
+          test -s app/src/main/res/drawable-nodpi/scenic_path_app_icon.png
           test -s app/src/main/res/drawable/ic_launcher_foreground.xml
-          cmp assets/frontpage/scenic-path-app-icon.webp app/src/main/res/drawable-nodpi/scenic_path_launcher_foreground.webp
-          grep -q 'scenic_path_launcher_foreground' app/src/main/res/drawable/ic_launcher_foreground.xml
+          cmp assets/frontpage/scenic-path-icon.png app/src/main/res/drawable-nodpi/scenic_path_app_icon.png
+          grep -q 'scenic_path_app_icon' app/src/main/res/drawable/ic_launcher_foreground.xml
           grep -q 'android:icon="@mipmap/ic_launcher"' app/src/main/AndroidManifest.xml
           grep -q 'android:roundIcon="@mipmap/ic_launcher_round"' app/src/main/AndroidManifest.xml
           grep -q 'android:logo="@drawable/ic_launcher_foreground"' app/src/main/AndroidManifest.xml
@@ -50,6 +50,11 @@ jobs:
           grep -q 'FastRoutePoiDiscovery.discover' app/src/main/java/cloud/kosch/scenicpath/ScenicMap.kt
           grep -q 'PrecisionRoutePoiDiscovery.discover' app/src/main/java/cloud/kosch/scenicpath/ScenicMap.kt
 
+      - name: Decode brand images
+        run: |
+          python -m pip install Pillow
+          python -c "from PIL import Image; im = Image.open('assets/frontpage/scenic-path-icon.png'); im.load(); assert im.width == im.height; print(im.size)"
+
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
@@ -62,8 +67,25 @@ jobs:
       - name: Unit tests
         run: gradle :app:testDebugUnitTest
 
+      - name: Upload JVM regression results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: scenic-path-jvm-tests
+          path: app/build/test-results/testDebugUnitTest/*.xml
+          if-no-files-found: ignore
+
       - name: Build debug APK
         run: gradle :app:assembleDebug
+
+      - name: Verify installable APK
+        shell: bash
+        run: |
+          set -euo pipefail
+          scenic_build_tools=$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -n 1)
+          "$scenic_build_tools/apksigner" verify --verbose app/build/outputs/apk/debug/app-debug.apk
+          "$scenic_build_tools/aapt" dump badging app/build/outputs/apk/debug/app-debug.apk | sed -n '1,5p'
+          sha256sum app/build/outputs/apk/debug/app-debug.apk
 
       - name: Android lint
         run: gradle :app:lintRelease
@@ -89,4 +111,64 @@ jobs:
         with:
           name: scenic-path-lint-report
           path: app/build/reports/lint-results-*.html
+          if-no-files-found: ignore
+
+  live-route-smoke:
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '9.1.0'
+      - name: Real Hamburg to Lisbon route
+        env:
+          SCENIC_LIVE_ROUTING: '1'
+        run: gradle :app:testDebugUnitTest --tests '*LiveRoutingSmokeTest'
+      - name: Upload live route results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: scenic-path-live-route-results
+          path: app/build/test-results/testDebugUnitTest/*.xml
+          if-no-files-found: ignore
+
+  map-renderer-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '9.1.0'
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - name: Exercise native map with 70,001 vertices and 520 POIs
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 35
+          arch: x86_64
+          profile: pixel_2
+          disable-animations: true
+          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
+          script: gradle :app:connectedDebugAndroidTest
+      - name: Upload device test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: scenic-path-map-renderer-tests
+          path: |
+            app/build/outputs/androidTest-results/connected/
+            app/build/reports/androidTests/connected/
           if-no-files-found: ignore
