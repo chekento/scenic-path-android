@@ -1,4 +1,8 @@
-# Scenic Path — The Beautiful Way Finder\n\n<div align="center">\n<a href="PRIVACY.md"><strong>🔐 Datenschutz · KI · Drittanbieter</strong></a>\n</div>
+# Scenic Path — The Beautiful Way Finder
+
+<div align="center">
+<a href="PRIVACY.md"><strong>🔐 Datenschutz · KI · Drittanbieter</strong></a>
+</div>
 
 <div align="center">
   <img src="assets/frontpage/scenic-path-icon.png" alt="Scenic Path app icon" width="144" />
